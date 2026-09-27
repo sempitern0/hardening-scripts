@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# CIP AD Assistant - Debian/Ubuntu
+# DEBIAN AD Assistant - Debian/Ubuntu
 # Version 2.1.0
 #
 # One-shot interactive bootstrap/audit assistant for a Samba Active Directory
@@ -34,11 +34,11 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-SCRIPT_NAME="CIP AD Assistant"
+SCRIPT_NAME="DEBIAN AD Assistant"
 SCRIPT_VERSION="2.1.0"
-STATE_DIR="/var/lib/cip-ad-assistant"
-LOG_DIR="/var/log/cip-ad-assistant"
-RUN_LOCK="/run/lock/cip-ad-assistant.lock"
+STATE_DIR="/var/lib/debian-ad-assistant"
+LOG_DIR="/var/log/debian-ad-assistant"
+RUN_LOCK="/run/lock/debian-ad-assistant.lock"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 LOG_FILE="${LOG_DIR}/assistant-${TIMESTAMP}.log"
 REPORT_FILE="${LOG_DIR}/report-${TIMESTAMP}.txt"
@@ -420,7 +420,7 @@ configure_identity() {
 }
 
 write_hosts() {
-    local begin="# BEGIN CIP-AD-ASSISTANT" end="# END CIP-AD-ASSISTANT" tmp
+    local begin="# BEGIN DEBIAN-AD-ASSISTANT" end="# END DEBIAN-AD-ASSISTANT" tmp
     backup_file /etc/hosts
     tmp="$(mktemp)"
     trap 'rm -f -- "$tmp"' RETURN
@@ -454,13 +454,13 @@ configure_time() {
 
     mkdir -p /etc/chrony/conf.d
     backup_file /etc/chrony/chrony.conf
-    cat > /etc/chrony/conf.d/90-cip-ad.conf <<EOF_CHRONY
-# Managed by CIP AD Assistant.
+    cat > /etc/chrony/conf.d/90-debian-ad.conf <<EOF_CHRONY
+# Managed by debian AD Assistant.
 # NTP synchronises UTC; timezone controls local display.
 pool ${NTP_POOL} iburst maxsources 4
 EOF_CHRONY
     if [[ -n "$AD_CLIENT_CIDR" ]]; then
-        printf 'allow %s\n' "$AD_CLIENT_CIDR" >> /etc/chrony/conf.d/90-cip-ad.conf
+        printf 'allow %s\n' "$AD_CLIENT_CIDR" >> /etc/chrony/conf.d/90-debian-ad.conf
     fi
 
     systemctl enable --now chrony >/dev/null
@@ -868,8 +868,8 @@ configure_gpos() {
     ensure_kerberos_ticket
 
     local user_guid machine_guid base_dn
-    user_guid="$(ensure_gpo 'CIP - User Baseline')"
-    machine_guid="$(ensure_gpo 'CIP - Computer Baseline')"
+    user_guid="$(ensure_gpo 'DC - User Baseline')"
+    machine_guid="$(ensure_gpo 'DC - Computer Baseline')"
 
     # gpo load supports JSON content. {} around the GUID are intentional.
     samba-tool gpo load "$user_guid" --content="${GPO_DIR}/user-baseline.json" --use-kerberos=required >/dev/null
@@ -903,15 +903,15 @@ configure_gpos() {
     fi
 
     cat > "${GPO_DIR}/README.txt" <<EOF_GPO_README
-CIP AD Assistant GPOs
+DC AD Assistant GPOs
 
 User GPO:
-  Name: CIP - User Baseline
+  Name: DC - User Baseline
   GUID: ${user_guid}
   Source: ${GPO_DIR}/user-baseline.json
 
 Computer GPO:
-  Name: CIP - Computer Baseline
+  Name: DC - Computer Baseline
   GUID: ${machine_guid}
   Source: ${GPO_DIR}/machine-baseline.json
 
@@ -927,6 +927,7 @@ EOF_GPO_README
     result PASS "User GPO" "$user_guid" "linked to domain root"
     result PASS "Computer GPO" "$machine_guid" "linked to domain root"
 }
+
 # ---------------------------------------------------------------------------
 # Validation / reporting
 # ---------------------------------------------------------------------------
