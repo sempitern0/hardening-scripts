@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant - review candidate
-# Version 3.0.0-review
+# Version 3.1.0-review
 #
 # Targets:
 #   - Debian 13
@@ -28,7 +28,7 @@ IFS=$'\n\t'
 umask 077
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="3.0.0-review"
+SCRIPT_VERSION="3.1.0-review"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -73,10 +73,28 @@ DISTRO_VERSION=""
 DISTRO_CODENAME=""
 PRETTY_NAME_SAFE="unknown"
 SAMBA_ROLE="none"
-PRIMARY_IFACE=""
+PRIMARY_IFACE=""  # compatibility alias; points to AD_IFACE after discovery
 PRIMARY_CIDR=""
 PRIMARY_IP=""
 DEFAULT_GW=""
+NETWORK_MODE="unknown"
+WAN_IFACE=""
+WAN_IP=""
+WAN_CIDR=""
+AD_IFACE=""
+AD_IP=""
+AD_CIDR=""
+MGMT_IFACE=""
+SSH_LOCAL_IP=""
+AD_ADDRESS_METHOD="unknown"
+SAMBA_INTERFACE_SCOPED="no"
+POST_INSTALL_FILE="${STATE_DIR}/POST-INSTALL.txt"
+
+DNS_TRANSACTION_ACTIVE=0
+RESOLV_SNAPSHOT=""
+RESOLVED_WAS_ACTIVE=0
+RESOLVED_WAS_ENABLED=0
+UPSTREAM_RESOLVER=""
 
 KRB5_CACHE=""
 export KRB5CCNAME=""
@@ -106,6 +124,7 @@ Usage:
   sudo bash $0 --bootstrap     guided NEW AD/DC provisioning
   sudo bash $0 --manage        manage an EXISTING AD/DC
   sudo bash $0 --backup        create an online Samba domain backup
+  sudo bash $0 --status        compact current-state + AD health report
   sudo bash $0 --no-color      disable ANSI colors
   sudo bash $0 --help
 
@@ -116,7 +135,10 @@ Notes:
   - Interactive modes require a controlling TTY.
   - This script never reprovisions an existing AD database.
   - Static network addressing is not changed automatically.
+  - Single-NIC and dual-NIC servers are detected separately.
+  - DNS resolver transitions are transactional and roll back on failure.
   - High-impact repairs require separate explicit confirmation.
+  - 99.9% availability requires architecture (redundant DC/DNS, monitoring, backups), not only a script.
 EOF
 }
 
@@ -128,6 +150,7 @@ parse_args() {
             --bootstrap) MODE="bootstrap" ;;
             --manage) MODE="manage" ;;
             --backup) MODE="backup" ;;
+            --status) MODE="status" ;;
             --no-color) FORCE_NO_COLOR=1 ;;
             --help|-h) usage; exit 0 ;;
             *)
@@ -160,6 +183,9 @@ detect_terminal() {
     if [[ -n "${SSH_CONNECTION:-}" || -n "${SSH_CLIENT:-}" ]]; then
         REMOTE_SESSION=1
         SSH_CLIENT_IP="${SSH_CLIENT%% *}"
+        if [[ -n "${SSH_CONNECTION:-}" ]]; then
+            SSH_LOCAL_IP="$(awk '{print $3}' <<<"$SSH_CONNECTION")"
+        fi
     fi
 }
 
@@ -212,6 +238,9 @@ init_runtime() {
 
 cleanup() {
     local rc=$?
+    if [[ ${DNS_TRANSACTION_ACTIVE:-0} -eq 1 ]]; then
+        rollback_dns_transaction "process exit before DNS commit" || true
+    fi
     if [[ -n "${KRB5CCNAME:-}" ]] && command_exists kdestroy; then
         kdestroy -c "$KRB5CCNAME" >/dev/null 2>&1 || true
     fi
@@ -414,20 +443,114 @@ detect_os() {
     result INFO "Distribution" "$PRETTY_NAME_SAFE" "Debian 13 / Ubuntu 26.04"
 }
 
-select_primary_interface() {
-    local candidate=""
-    if [[ -n "$SSH_CLIENT_IP" ]] && is_valid_ipv4 "$SSH_CLIENT_IP"; then
-        candidate="$(ip route get "$SSH_CLIENT_IP" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' || true)"
-    fi
-    [[ -n "$candidate" ]] || candidate="$(ip route show default 2>/dev/null | sort -k5,5n | awk 'NR==1{print $5}' || true)"
-    PRIMARY_IFACE="$candidate"
+discover_network_topology() {
+    WAN_IFACE=""
+    WAN_IP=""
+    WAN_CIDR=""
+    AD_IFACE=""
+    AD_IP=""
+    AD_CIDR=""
+    MGMT_IFACE=""
+    DEFAULT_GW=""
 
-    if [[ -n "$PRIMARY_IFACE" ]]; then
-        PRIMARY_CIDR="$(ip -4 -o addr show dev "$PRIMARY_IFACE" scope global 2>/dev/null | awk 'NR==1{print $4}' || true)"
-        PRIMARY_IP="${PRIMARY_CIDR%%/*}"
+    local default_line
+    default_line="$(ip -4 route show default 2>/dev/null | awk '{m=0; for(i=1;i<=NF;i++) if($i=="metric") m=$(i+1); printf "%010d %s\n", m, $0}' | sort -n | sed 's/^[0-9][0-9]* //' | head -n1 || true)"
+    WAN_IFACE="$(awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' <<<"$default_line")"
+    DEFAULT_GW="$(awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}' <<<"$default_line")"
+
+    if [[ -n "$WAN_IFACE" ]]; then
+        WAN_CIDR="$(ip -4 -o addr show dev "$WAN_IFACE" scope global 2>/dev/null | awk 'NR==1{print $4}' || true)"
+        WAN_IP="${WAN_CIDR%%/*}"
     fi
-    DEFAULT_GW="$(ip route show default 2>/dev/null | awk 'NR==1{print $3}' || true)"
+
+    local -a global_ifaces=()
+    mapfile -t global_ifaces < <(ip -4 -o addr show scope global 2>/dev/null | awk '{print $2}' | sort -u)
+
+    if [[ ${#global_ifaces[@]} -eq 0 ]]; then
+        NETWORK_MODE="no-ipv4"
+        return 0
+    elif [[ ${#global_ifaces[@]} -eq 1 ]]; then
+        NETWORK_MODE="single-nic"
+        AD_IFACE="${global_ifaces[0]}"
+    else
+        NETWORK_MODE="dual-or-multihomed"
+        local candidate="" iface
+        for iface in "${global_ifaces[@]}"; do
+            if [[ "$iface" != "$WAN_IFACE" ]]; then
+                candidate="$iface"
+                break
+            fi
+        done
+        AD_IFACE="${candidate:-$WAN_IFACE}"
+    fi
+
+    AD_CIDR="$(ip -4 -o addr show dev "$AD_IFACE" scope global 2>/dev/null | awk 'NR==1{print $4}' || true)"
+    AD_IP="${AD_CIDR%%/*}"
+
+    if [[ $REMOTE_SESSION -eq 1 && -n "$SSH_LOCAL_IP" ]]; then
+        MGMT_IFACE="$(ip -4 route get "$SSH_CLIENT_IP" from "$SSH_LOCAL_IP" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' || true)"
+        [[ -n "$MGMT_IFACE" ]] || MGMT_IFACE="$(ip -4 -o addr show | awk -v ip="$SSH_LOCAL_IP" '$4 ~ "^"ip"/" {print $2; exit}')"
+    fi
+    [[ -n "$MGMT_IFACE" ]] || MGMT_IFACE="${WAN_IFACE:-$AD_IFACE}"
+
+    # Compatibility aliases used by older helpers.
+    PRIMARY_IFACE="$AD_IFACE"
+    PRIMARY_CIDR="$AD_CIDR"
+    PRIMARY_IP="$AD_IP"
 }
+
+show_network_topology() {
+    section "NETWORK TOPOLOGY"
+    printf 'Detected mode : %s
+' "$NETWORK_MODE"
+    printf 'WAN/default   : %-12s %-18s gateway=%s
+' "${WAN_IFACE:-none}" "${WAN_CIDR:-none}" "${DEFAULT_GW:-none}"
+    printf 'AD candidate  : %-12s %-18s
+' "${AD_IFACE:-none}" "${AD_CIDR:-none}"
+    printf 'Management    : %-12s local-ip=%s client=%s
+' "${MGMT_IFACE:-none}" "${SSH_LOCAL_IP:-n/a}" "${SSH_CLIENT_IP:-n/a}"
+
+    local iface
+    while read -r iface; do
+        [[ -n "$iface" ]] || continue
+        printf '  %-12s IPv4=%-20s IPv6=%s
+' \
+            "$iface" \
+            "$(ip -4 -o addr show dev "$iface" scope global 2>/dev/null | awk '{print $4}' | paste -sd, -)" \
+            "$(ip -6 -o addr show dev "$iface" scope global 2>/dev/null | awk '{print $4}' | paste -sd, -)"
+    done < <(ip -o link show | awk -F': ' '{print $2}' | cut -d@ -f1)
+}
+
+choose_ad_interface() {
+    discover_network_topology
+    show_network_topology
+
+    local -a candidates=()
+    mapfile -t candidates < <(ip -4 -o addr show scope global 2>/dev/null | awk '{print $2}' | sort -u)
+    ((${#candidates[@]})) || { fail_msg "No global IPv4 interface detected."; return 1; }
+
+    if ((${#candidates[@]} > 1)); then
+        local chosen
+        chosen="$(ask 'Interface dedicated/preferred for Active Directory' "$AD_IFACE")"
+        if ! ip link show dev "$chosen" >/dev/null 2>&1; then
+            fail_msg "Interface '$chosen' does not exist."
+            return 1
+        fi
+        AD_IFACE="$chosen"
+        AD_CIDR="$(ip -4 -o addr show dev "$AD_IFACE" scope global 2>/dev/null | awk 'NR==1{print $4}' || true)"
+        AD_IP="${AD_CIDR%%/*}"
+        PRIMARY_IFACE="$AD_IFACE"; PRIMARY_CIDR="$AD_CIDR"; PRIMARY_IP="$AD_IP"
+    fi
+
+    if [[ "$NETWORK_MODE" != "single-nic" && "$AD_IFACE" == "$WAN_IFACE" ]]; then
+        warn_msg "AD and WAN/default-route interfaces are the same despite a multihomed host. Review topology before production."
+    fi
+
+    if [[ "$NETWORK_MODE" != "single-nic" ]] && ip -4 route show default dev "$AD_IFACE" 2>/dev/null | grep -q '^default'; then
+        warn_msg "AD interface $AD_IFACE has a default route. In a typical dual-NIC DC, keep the default gateway only on the WAN/management interface."
+    fi
+}
+
 
 detect_samba_role() {
     SAMBA_ROLE="none"
@@ -580,13 +703,13 @@ install_required_packages() {
 collect_identity() {
     step "Domain and network identity"
 
-    select_primary_interface
+    choose_ad_interface
 
     DC_HOSTNAME="$(ask 'Short hostname for the DC' "${DC_HOSTNAME:-dc01}")"
     DOMAIN="$(ask 'AD DNS domain' "${DOMAIN:-example.internal}")"
     REALM="${DOMAIN^^}"
     DC_FQDN="${DC_HOSTNAME}.${DOMAIN}"
-    DC_IP="$(ask 'DC IPv4 address' "${DC_IP:-${PRIMARY_IP:-192.168.1.10}}")"
+    DC_IP="$(ask 'DC IPv4 address (must already exist on AD interface)' "${DC_IP:-${AD_IP:-192.168.56.10}}")"
     NETBIOS_DOMAIN="$(ask 'NetBIOS domain' "${NETBIOS_DOMAIN:-$(netbios_from_domain "$DOMAIN")}")"
     NETBIOS_DOMAIN="${NETBIOS_DOMAIN^^}"
     DC_NETBIOS="$(ask 'NetBIOS name of DC' "${DC_NETBIOS:-${DC_HOSTNAME^^}}")"
@@ -599,32 +722,41 @@ collect_identity() {
 
     local first_label="${DOMAIN%%.*}"
     if [[ "${first_label,,}" == "${DC_HOSTNAME,,}" ]]; then
-        warn_msg "Hostname '$DC_HOSTNAME' equals the first DNS label of '$DOMAIN'; resulting FQDN is '$DC_FQDN'."
+        warn_msg "Hostname '$DC_HOSTNAME' equals the first DNS label of '$DOMAIN'; resulting FQDN is '$DC_FQDN'. Prefer a distinct DC hostname such as dc01."
     fi
 
-    if ! ip -4 addr show | grep -Fq " ${DC_IP}/"; then
-        fail_msg "DC IP $DC_IP is not currently assigned to this server. Configure stable addressing first."
+    if ! ip -4 addr show dev "$AD_IFACE" | grep -Fq " ${DC_IP}/"; then
+        fail_msg "DC IP $DC_IP is not assigned to selected AD interface $AD_IFACE."
+        fail_msg "Configure an address first; the assistant deliberately does not change the live network remotely."
         return 1
     fi
 
-    result INFO "Primary interface" "${PRIMARY_IFACE:-unknown}" "management/data interface"
+    AD_CIDR="$(ip -4 -o addr show dev "$AD_IFACE" scope global | awk -v ip="$DC_IP" '$4 ~ "^"ip"/" {print $4; exit}')"
+    [[ -n "$AD_CIDR" ]] || AD_CIDR="$(ip -4 -o addr show dev "$AD_IFACE" scope global | awk 'NR==1{print $4}')"
+    AD_IP="$DC_IP"
+    PRIMARY_IFACE="$AD_IFACE"; PRIMARY_CIDR="$AD_CIDR"; PRIMARY_IP="$DC_IP"
+
+    result INFO "Network model" "$NETWORK_MODE" "known"
+    result INFO "WAN interface" "${WAN_IFACE:-none} ${WAN_CIDR:-}" "default route / Internet"
+    result INFO "AD interface" "$AD_IFACE $AD_CIDR" "AD client network"
     result INFO "DC FQDN" "$DC_FQDN" "unique hostname"
-    result INFO "DC IP" "$DC_IP" "stable address"
+    result INFO "DC IP" "$DC_IP" "stable/static before production"
 }
+
 
 collect_network_policy() {
     step "Network policy inputs"
 
-    local route_cidr="${PRIMARY_CIDR:-192.168.1.10/24}"
-    local default_net="192.168.1.0/24"
+    local route_cidr="${AD_CIDR:-${PRIMARY_CIDR:-192.168.56.10/24}}"
+    local default_net="192.168.56.0/24"
     if command_exists python3 && [[ -n "$route_cidr" ]]; then
-        default_net="$(python3 - "$route_cidr" <<'PY'
+        default_net="$(python3 - "$route_cidr" <<'PYNET'
 import ipaddress, sys
 try:
     print(ipaddress.ip_interface(sys.argv[1]).network)
 except Exception:
-    print("192.168.1.0/24")
-PY
+    print("192.168.56.0/24")
+PYNET
 )"
     fi
 
@@ -639,9 +771,10 @@ PY
     is_valid_ipv4 "$SSH_SOURCE" && SSH_SOURCE="${SSH_SOURCE}/32"
     is_valid_cidr "$SSH_SOURCE" || { fail_msg "Invalid SSH source: $SSH_SOURCE"; return 1; }
 
-    result INFO "AD clients" "$AD_CLIENT_CIDR" "restricted source"
-    result INFO "SSH source" "$SSH_SOURCE" "restricted management"
+    result INFO "AD clients" "$AD_CLIENT_CIDR via $AD_IFACE" "restricted source/interface"
+    result INFO "SSH source" "$SSH_SOURCE via ${MGMT_IFACE:-any}" "preserve admin access"
 }
+
 
 configure_hostname_hosts() {
     step "Hostname and hosts file"
@@ -700,6 +833,230 @@ EOF
     result PASS "Chrony" "$(safe_systemctl_state chrony)" "active"
 }
 
+detect_address_method() {
+    AD_ADDRESS_METHOD="unknown"
+    if command_exists netplan; then
+        local value
+        value="$(netplan get "ethernets.${AD_IFACE}.dhcp4" 2>/dev/null | tr -d '[:space:]' || true)"
+        case "$value" in
+            true) AD_ADDRESS_METHOD="dhcp" ;;
+            false) AD_ADDRESS_METHOD="static-or-manual" ;;
+        esac
+    fi
+    if [[ "$AD_ADDRESS_METHOD" == "unknown" ]] && command_exists nmcli; then
+        local conn method
+        conn="$(nmcli -g GENERAL.CONNECTION dev show "$AD_IFACE" 2>/dev/null || true)"
+        if [[ -n "$conn" && "$conn" != "--" ]]; then
+            method="$(nmcli -g ipv4.method con show "$conn" 2>/dev/null || true)"
+            case "$method" in
+                auto) AD_ADDRESS_METHOD="dhcp" ;;
+                manual) AD_ADDRESS_METHOD="static-or-manual" ;;
+            esac
+        fi
+    fi
+    printf '%s' "$AD_ADDRESS_METHOD"
+}
+
+set_smb_global_option() {
+    local key="$1" value="$2"
+    require_cmd python3 "safe smb.conf editing" || return 1
+    python3 - "$key" "$value" <<'PYSMB'
+from pathlib import Path
+import re, sys
+p=Path('/etc/samba/smb.conf')
+key, value=sys.argv[1], sys.argv[2]
+text=p.read_text(encoding='utf-8')
+rx=re.compile(r'(?mi)^[ \t]*'+re.escape(key)+r'[ \t]*=.*$')
+line=f'\t{key} = {value}'
+if rx.search(text):
+    text=rx.sub(line,text,count=1)
+else:
+    text=re.sub(r'(?mi)^\[global\][ \t]*$',lambda m:m.group(0)+'\n'+line,text,count=1)
+p.write_text(text,encoding='utf-8')
+PYSMB
+}
+
+configure_samba_interface_scope() {
+    [[ -f /etc/samba/smb.conf ]] || return 0
+    if [[ "$NETWORK_MODE" == "single-nic" ]]; then
+        result INFO "Samba interface scope" "all local interfaces (single NIC)" "reviewed"
+        return 0
+    fi
+
+    printf '\nMultihomed server detected. AD services should normally not listen on the WAN/NAT interface.\n'
+    printf 'Proposed Samba bind addresses: 127.0.0.1 %s\n' "$DC_IP"
+    printf 'This also avoids Samba binding AD/Kerberos listeners to unrelated IPv6 addresses.\n'
+    if confirm "Restrict Samba services to loopback + AD IPv4 ($DC_IP)?" Y; then
+        backup_file /etc/samba/smb.conf
+        set_smb_global_option "interfaces" "127.0.0.1 ${DC_IP}"
+        set_smb_global_option "bind interfaces only" "yes"
+        testparm -s >/dev/null
+        SAMBA_INTERFACE_SCOPED="yes"
+        change APPLIED "Samba interfaces restricted to 127.0.0.1 ${DC_IP}"
+        result PASS "Samba interface scope" "loopback + $DC_IP" "WAN excluded"
+    else
+        SAMBA_INTERFACE_SCOPED="no"
+        warn_msg "Samba remains able to bind all host interfaces; review exposure and IPv6 bindings before production."
+    fi
+}
+
+capture_resolver_state() {
+    RESOLV_SNAPSHOT="${RUN_ROOT}/resolv.conf.before"
+    rm -f "$RESOLV_SNAPSHOT"
+    if [[ -e /etc/resolv.conf || -L /etc/resolv.conf ]]; then
+        cp -a --no-dereference /etc/resolv.conf "$RESOLV_SNAPSHOT"
+    fi
+    systemctl is-active --quiet systemd-resolved 2>/dev/null && RESOLVED_WAS_ACTIVE=1 || RESOLVED_WAS_ACTIVE=0
+    systemctl is-enabled --quiet systemd-resolved 2>/dev/null && RESOLVED_WAS_ENABLED=1 || RESOLVED_WAS_ENABLED=0
+}
+
+restore_resolv_snapshot() {
+    rm -f /etc/resolv.conf
+    if [[ -e "$RESOLV_SNAPSHOT" || -L "$RESOLV_SNAPSHOT" ]]; then
+        cp -a --no-dereference "$RESOLV_SNAPSHOT" /etc/resolv.conf
+    fi
+}
+
+rollback_dns_transaction() {
+    local reason="${1:-DNS transaction failed}"
+    log WARN "DNS rollback: $reason"
+    restore_resolv_snapshot || true
+    if [[ $RESOLVED_WAS_ENABLED -eq 1 ]]; then
+        systemctl enable systemd-resolved >/dev/null 2>&1 || true
+    fi
+    if [[ $RESOLVED_WAS_ACTIVE -eq 1 ]]; then
+        systemctl start systemd-resolved >/dev/null 2>&1 || true
+    fi
+    DNS_TRANSACTION_ACTIVE=0
+    change APPLIED "DNS resolver rollback completed"
+}
+
+write_external_resolver() {
+    local ns="$1" tmp="${RUN_ROOT}/resolv.external"
+    printf 'nameserver %s\noptions timeout:2 attempts:2\n' "$ns" >"$tmp"
+    chmod 644 "$tmp"
+    rm -f /etc/resolv.conf
+    cp "$tmp" /etc/resolv.conf
+    chmod 644 /etc/resolv.conf
+}
+
+prepare_dns_transaction() {
+    step "Prepare DNS transition"
+    require_cmd dig "DNS preflight" || return 1
+
+    capture_resolver_state
+    DNS_TRANSACTION_ACTIVE=1
+
+    [[ -n "$DNS_FORWARDER" ]] || DNS_FORWARDER="$(detect_dns_forwarder)"
+    DNS_FORWARDER="$(ask 'Upstream DNS forwarder for external names' "${DNS_FORWARDER:-1.1.1.1}")"
+    is_valid_ipv4 "$DNS_FORWARDER" || { fail_msg "Invalid DNS forwarder: $DNS_FORWARDER"; return 1; }
+
+    if ! dig +time=3 +tries=1 @"$DNS_FORWARDER" raw.githubusercontent.com A >/dev/null 2>&1; then
+        fail_msg "Upstream resolver $DNS_FORWARDER cannot resolve external names. No resolver changes were committed."
+        return 1
+    fi
+    UPSTREAM_RESOLVER="$DNS_FORWARDER"
+    result PASS "Upstream DNS" "$DNS_FORWARDER resolves external names" "reachable"
+
+    # Free port 53 while preserving external DNS through a temporary static resolver.
+    if [[ $RESOLVED_WAS_ACTIVE -eq 1 ]]; then
+        systemctl stop systemd-resolved
+        change APPLIED "systemd-resolved stopped temporarily for Samba DNS"
+    fi
+    write_external_resolver "$DNS_FORWARDER"
+
+    if ! getent ahostsv4 raw.githubusercontent.com >/dev/null 2>&1; then
+        fail_msg "External resolution failed after temporary resolver transition."
+        return 1
+    fi
+    result PASS "Temporary resolver" "$DNS_FORWARDER" "external DNS preserved"
+}
+
+wait_for_samba() {
+    local i listeners
+    for i in {1..20}; do
+        if systemctl is-active --quiet samba-ad-dc; then
+            listeners="$(ss -lntup 2>/dev/null || true)"
+            if grep -Eq ':53([[:space:]]|$)' <<<"$listeners" && \
+               grep -Eq ':88([[:space:]]|$)' <<<"$listeners" && \
+               grep -Eq ':389([[:space:]]|$)' <<<"$listeners" && \
+               grep -Eq ':445([[:space:]]|$)' <<<"$listeners"; then
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+
+commit_samba_dns_resolver() {
+    step "Start Samba DNS / commit resolver"
+    require_cmd testparm "Samba configuration validation" || return 1
+    require_cmd dig "DNS validation" || return 1
+
+    backup_file /etc/samba/smb.conf
+    set_smb_global_option "dns forwarder" "$DNS_FORWARDER"
+    testparm -s >/dev/null
+
+    systemctl restart samba-ad-dc || {
+        journalctl -u samba-ad-dc -b --no-pager -n 80 >"${RUN_ROOT}/samba-start-failure.log" 2>&1 || true
+        fail_msg "samba-ad-dc failed to start; resolver will be rolled back. See ${RUN_ROOT}/samba-start-failure.log"
+        return 1
+    }
+    if ! wait_for_samba; then
+        journalctl -u samba-ad-dc -b --no-pager -n 80 >"${RUN_ROOT}/samba-health-failure.log" 2>&1 || true
+        fail_msg "Samba listeners did not become healthy; resolver will be rolled back."
+        return 1
+    fi
+
+    if ! dig +time=3 +tries=1 @127.0.0.1 "$DC_FQDN" A +short | grep -Fxq "$DC_IP"; then
+        fail_msg "Samba DNS does not resolve $DC_FQDN to $DC_IP. Resolver will be rolled back."
+        return 1
+    fi
+    result PASS "Samba authoritative DNS" "$DC_FQDN -> $DC_IP" "correct"
+
+    if ! dig +time=4 +tries=1 @127.0.0.1 raw.githubusercontent.com A +short | grep -Eq '^[0-9]'; then
+        fail_msg "Samba DNS forwarding to $DNS_FORWARDER is not working. Resolver will be rolled back."
+        return 1
+    fi
+    result PASS "Samba DNS forwarding" "external resolution works" "$DNS_FORWARDER"
+
+    local tmp="${RUN_ROOT}/resolv.local-samba"
+    printf 'nameserver 127.0.0.1\nsearch %s\noptions timeout:2 attempts:2\n' "$DOMAIN" >"$tmp"
+    chmod 644 "$tmp"
+    rm -f /etc/resolv.conf
+    cp "$tmp" /etc/resolv.conf
+    chmod 644 /etc/resolv.conf
+
+    if ! getent ahostsv4 raw.githubusercontent.com >/dev/null 2>&1 || ! getent ahostsv4 "$DC_FQDN" >/dev/null 2>&1; then
+        fail_msg "Host resolver verification failed after switching to Samba DNS."
+        return 1
+    fi
+
+    # Keep resolved disabled after a successful Samba DNS transition so it does not reclaim port 53.
+    systemctl disable systemd-resolved >/dev/null 2>&1 || true
+
+    [[ -f /var/lib/samba/private/krb5.conf ]] || { fail_msg "Missing Samba-generated krb5.conf"; return 1; }
+    backup_file /etc/krb5.conf
+    cp -f /var/lib/samba/private/krb5.conf /etc/krb5.conf
+    chmod 644 /etc/krb5.conf
+
+    DNS_TRANSACTION_ACTIVE=0
+    change APPLIED "Host resolver committed to Samba DNS 127.0.0.1"
+    result PASS "Host resolver" "127.0.0.1 search $DOMAIN" "Samba DNS"
+}
+
+repair_dns_stack() {
+    set_progress_plan 2
+    prepare_dns_transaction
+    configure_samba_interface_scope
+    if ! commit_samba_dns_resolver; then
+        rollback_dns_transaction "DNS/Samba repair failed"
+        return 1
+    fi
+}
+
 configure_samba_service_model() {
     step "Samba service model"
 
@@ -745,7 +1102,9 @@ provision_new_domain() {
         mv /etc/samba/smb.conf "${BACKUP_DIR}/smb.conf.pre-provision"
     fi
 
-    printf '\nSamba will request the initial Administrator password directly.\n'
+    printf '
+Samba will request the initial Administrator password directly.
+'
     samba-tool domain provision \
         --domain="$NETBIOS_DOMAIN" \
         --realm="$REALM" \
@@ -753,19 +1112,29 @@ provision_new_domain() {
         --use-rfc2307 \
         --dns-backend=SAMBA_INTERNAL <"$INPUT_FD"
 
-    systemctl restart samba-ad-dc
-    result PASS "Domain provision" "$DOMAIN" "new AD/DC"
+    configure_samba_interface_scope
+    result PASS "Domain provision" "$DOMAIN" "database created; service not yet trusted until DNS health checks pass"
 }
 
+
 detect_dns_forwarder() {
-    local candidates=""
+    local candidates="" existing=""
+    if [[ -f /etc/samba/smb.conf ]] && command_exists testparm; then
+        existing="$(testparm -s --parameter-name='dns forwarder' 2>/dev/null | awk 'NF{print $1; exit}' || true)"
+        if is_valid_ipv4 "$existing" && [[ "$existing" != "127.0.0.1" && "$existing" != "127.0.0.53" ]]; then
+            printf '%s' "$existing"
+            return 0
+        fi
+    fi
     if command_exists resolvectl && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
         candidates="$(resolvectl dns 2>/dev/null | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' || true)"
     else
         candidates="$(awk '/^[[:space:]]*nameserver[[:space:]]+/{print $2}' /etc/resolv.conf 2>/dev/null || true)"
     fi
-    printf '%s\n' "$candidates" | grep -Ev '^(127\.0\.0\.1|127\.0\.0\.53)$' | head -n1 || true
+    printf '%s
+' "$candidates" | grep -Ev '^(127\.0\.0\.1|127\.0\.0\.53)$' | head -n1 || true
 }
+
 
 atomic_write_resolv_conf() {
     local tmp="${RUN_ROOT}/resolv.conf.new"
@@ -784,82 +1153,10 @@ EOF
 }
 
 configure_resolver_kerberos() {
-    step "DNS resolver and Kerberos"
-
-    require_cmd dig "DNS validation" || return 1
-    require_cmd testparm "Samba configuration validation" || return 1
-
-    if [[ -z "$DNS_FORWARDER" ]]; then
-        DNS_FORWARDER="$(detect_dns_forwarder)"
-    fi
-    DNS_FORWARDER="$(ask 'External DNS forwarder' "${DNS_FORWARDER:-1.1.1.1}")"
-    is_valid_ipv4 "$DNS_FORWARDER" || { fail_msg "Invalid forwarder: $DNS_FORWARDER"; return 1; }
-
-    backup_file /etc/samba/smb.conf
-    python3 - "$DNS_FORWARDER" <<'PY'
-from pathlib import Path
-import re, sys
-p = Path("/etc/samba/smb.conf")
-text = p.read_text()
-forwarder = sys.argv[1]
-rx = re.compile(r"(?mi)^[ \t]*dns forwarder[ \t]*=.*$")
-if rx.search(text):
-    text = rx.sub(f"\tdns forwarder = {forwarder}", text, count=1)
-else:
-    text = re.sub(r"(?mi)^\[global\][ \t]*$", lambda m: m.group(0) + f"\n\tdns forwarder = {forwarder}", text, count=1)
-p.write_text(text)
-PY
-    testparm -s >/dev/null
-
-    systemctl restart samba-ad-dc
-    sleep 1
-    if ! dig @127.0.0.1 +short -t A "$DC_FQDN" | grep -Fxq "$DC_IP"; then
-        fail_msg "Local Samba DNS does not yet resolve $DC_FQDN to $DC_IP; refusing resolver switch."
-        return 1
-    fi
-
-    if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-        if confirm "Disable systemd-resolved and switch host resolver to Samba DNS?" Y; then
-            systemctl disable --now systemd-resolved
-            change APPLIED "systemd-resolved disabled"
-        else
-            warn_msg "Resolver not changed; local DNS integration remains operator-managed."
-            return 0
-        fi
-    fi
-
-    if systemctl is-active --quiet NetworkManager 2>/dev/null && command_exists nmcli; then
-        local conn
-        conn="$(nmcli -g GENERAL.CONNECTION dev show "$PRIMARY_IFACE" 2>/dev/null || true)"
-        if [[ -n "$conn" && "$conn" != "--" ]]; then
-            if confirm "Set NetworkManager connection '$conn' DNS to 127.0.0.1?" Y; then
-                nmcli connection modify "$conn" ipv4.ignore-auto-dns yes ipv4.dns "127.0.0.1"
-                nmcli device reapply "$PRIMARY_IFACE" >/dev/null 2>&1 || true
-                change APPLIED "NetworkManager DNS=127.0.0.1"
-            fi
-        fi
-    fi
-
-    atomic_write_resolv_conf
-
-    if ! dig +short "$DC_FQDN" | grep -Fxq "$DC_IP"; then
-        warn_msg "Resolver verification failed; restoring previous /etc/resolv.conf backup if available."
-        local b="${BACKUP_DIR}/rootfs/etc/resolv.conf"
-        [[ -e "$b" || -L "$b" ]] && cp -a "$b" /etc/resolv.conf
-        return 1
-    fi
-
-    [[ -f /var/lib/samba/private/krb5.conf ]] || {
-        fail_msg "Missing Samba-generated krb5.conf"
-        return 1
-    }
-    backup_file /etc/krb5.conf
-    cp -f /var/lib/samba/private/krb5.conf /etc/krb5.conf
-    chmod 644 /etc/krb5.conf
-
-    result PASS "Resolver" "127.0.0.1 / $DOMAIN" "Samba DNS"
-    result PASS "Kerberos config" "/etc/krb5.conf" "Samba-generated"
+    # Compatibility wrapper used by manage mode.
+    repair_dns_stack
 }
+
 
 ensure_kerberos_ticket() {
     require_cmd kinit "Kerberos authentication" || return 1
@@ -1066,15 +1363,25 @@ configure_ufw() {
     [[ "$ENABLE_UFW" == "yes" ]] || { result SKIP "UFW" "disabled by operator" "reviewed firewall"; return 0; }
     require_cmd ufw "UFW configuration" || return 0
 
-    printf 'Management rule will be installed before default inbound policy changes.\n'
-    printf '  SSH source : %s\n  AD clients : %s\n  DC IP      : %s\n' "$SSH_SOURCE" "$AD_CLIENT_CIDR" "$DC_IP"
+    printf 'Firewall plan:
+'
+    printf '  AD services : interface=%s source=%s destination=%s
+' "$AD_IFACE" "$AD_CLIENT_CIDR" "$DC_IP"
+    printf '  SSH admin   : interface=%s source=%s destination=%s
+' "${MGMT_IFACE:-any}" "$SSH_SOURCE" "${SSH_LOCAL_IP:-any-local-address}"
 
     if [[ $REMOTE_SESSION -eq 1 ]]; then
-        warn_msg "Remote SSH session detected from ${SSH_CLIENT_IP:-unknown}; firewall changes can affect availability."
+        warn_msg "Remote SSH session detected from ${SSH_CLIENT_IP:-unknown}; management access rule will be added before default-deny."
     fi
     confirm "Apply/update UFW policy?" Y || { result SKIP "UFW" "operator skipped" "unchanged"; return 0; }
 
-    ufw_allow allow from "$SSH_SOURCE" to "$DC_IP" port 22 proto tcp
+    # Preserve management path first. Use the actual SSH-facing interface when known.
+    if [[ -n "$MGMT_IFACE" ]]; then
+        ufw allow in on "$MGMT_IFACE" from "$SSH_SOURCE" to any port 22 proto tcp >/dev/null
+    else
+        ufw allow from "$SSH_SOURCE" to any port 22 proto tcp >/dev/null
+    fi
+
     ufw default deny incoming >/dev/null
     ufw default allow outgoing >/dev/null
 
@@ -1082,16 +1389,18 @@ configure_ufw() {
     local tcp_ports=(53 88 135 139 389 445 464 3268)
     local udp_ports=(53 88 123 137 138 389 464)
     for p in "${tcp_ports[@]}"; do
-        ufw_allow allow from "$AD_CLIENT_CIDR" to "$DC_IP" port "$p" proto tcp
+        ufw allow in on "$AD_IFACE" from "$AD_CLIENT_CIDR" to "$DC_IP" port "$p" proto tcp >/dev/null
     done
     for p in "${udp_ports[@]}"; do
-        ufw_allow allow from "$AD_CLIENT_CIDR" to "$DC_IP" port "$p" proto udp
+        ufw allow in on "$AD_IFACE" from "$AD_CLIENT_CIDR" to "$DC_IP" port "$p" proto udp >/dev/null
     done
-    ufw_allow allow from "$AD_CLIENT_CIDR" to "$DC_IP" port 49152:65535 proto tcp
+    ufw allow in on "$AD_IFACE" from "$AD_CLIENT_CIDR" to "$DC_IP" port 49152:65535 proto tcp >/dev/null
     ufw --force enable >/dev/null
 
     result PASS "UFW" "$(ufw status | head -n1)" "active"
+    result PASS "AD firewall scope" "$AD_IFACE / $AD_CLIENT_CIDR" "WAN not used for AD client rules"
 }
+
 
 create_domain_backup() {
     local progress="${1:-yes}"
@@ -1120,43 +1429,69 @@ validate_ad() {
     step "AD/DC validation"
 
     local fail=0
+    discover_network_topology
+    [[ -n "$DC_IP" ]] || DC_IP="${AD_IP:-$PRIMARY_IP}"
+
     if systemctl is-active --quiet samba-ad-dc; then
         result PASS "samba-ad-dc" "active" "active"
     else
-        result FAIL "samba-ad-dc" "inactive" "active"; fail=1
+        result FAIL "samba-ad-dc" "inactive" "active"
+        journalctl -u samba-ad-dc -b --no-pager -n 80 >"${RUN_ROOT}/samba-validation-journal.txt" 2>&1 || true
+        fail=1
     fi
 
     if command_exists testparm; then
-        if testparm -s >/dev/null 2>&1; then
-            result PASS "smb.conf" "valid" "valid"
-        else
-            result FAIL "smb.conf" "invalid" "valid"; fail=1
-        fi
+        testparm -s >/dev/null 2>&1 \
+            && result PASS "smb.conf" "valid" "valid" \
+            || { result FAIL "smb.conf" "invalid" "valid"; fail=1; }
     else
         result ERROR "testparm" "missing" "installed"; fail=1
     fi
 
+    if command_exists ss; then
+        local port
+        for port in 53 88 389 445; do
+            if ss -lntup 2>/dev/null | grep -Eq ":${port}([[:space:]]|$)"; then
+                result PASS "Listener $port" "present" "present"
+            else
+                result FAIL "Listener $port" "missing" "present"; fail=1
+            fi
+        done
+    fi
+
     if command_exists dig && [[ -n "$DOMAIN" && -n "$DC_FQDN" ]]; then
-        local expected_ip="${DC_IP:-$PRIMARY_IP}"
-        if [[ -n "$expected_ip" ]] && dig @127.0.0.1 +short A "$DC_FQDN" | grep -Fxq "$expected_ip"; then
-            result PASS "DNS A" "$DC_FQDN -> $expected_ip" "correct"
+        if [[ -n "$DC_IP" ]] && dig +time=3 +tries=1 @127.0.0.1 +short A "$DC_FQDN" | grep -Fxq "$DC_IP"; then
+            result PASS "DNS A" "$DC_FQDN -> $DC_IP" "correct"
         else
-            result WARN "DNS A" "unexpected/no answer" "$DC_FQDN"
+            result FAIL "DNS A" "unexpected/no answer" "$DC_FQDN -> $DC_IP"; fail=1
         fi
 
         local srv ans
         for srv in _ldap._tcp _kerberos._tcp _kerberos._udp _kpasswd._udp; do
-            ans="$(dig @127.0.0.1 +short SRV "${srv}.${DOMAIN}" 2>/dev/null | tr '\n' ' ')"
-            [[ -n "$ans" ]] && result PASS "SRV $srv" "$ans" "present" || result FAIL "SRV $srv" "missing" "present"
+            ans="$(dig +time=3 +tries=1 @127.0.0.1 +short SRV "${srv}.${DOMAIN}" 2>/dev/null | tr '
+' ' ')"
+            [[ -n "$ans" ]] && result PASS "SRV $srv" "$ans" "present" || { result FAIL "SRV $srv" "missing" "present"; fail=1; }
         done
+
+        if dig +time=4 +tries=1 @127.0.0.1 raw.githubusercontent.com A +short | grep -Eq '^[0-9]'; then
+            result PASS "DNS forwarding" "external names resolve through Samba" "working"
+        else
+            result FAIL "DNS forwarding" "failed" "working"; fail=1
+        fi
     else
         result SKIP "DNS validation" "dig/domain data unavailable" "available"
+    fi
+
+    if getent ahostsv4 raw.githubusercontent.com >/dev/null 2>&1; then
+        result PASS "Host resolver" "external resolution works" "working"
+    else
+        result FAIL "Host resolver" "external resolution failed" "working"; fail=1
     fi
 
     if command_exists samba-tool; then
         samba-tool domain info 127.0.0.1 >"${RUN_ROOT}/domain-info.txt" 2>&1 \
             && result PASS "Domain info" "reachable" "$DOMAIN" \
-            || result FAIL "Domain info" "failed" "reachable"
+            || { result FAIL "Domain info" "failed" "reachable"; fail=1; }
 
         samba-tool dbcheck --cross-ncs >"${RUN_ROOT}/dbcheck.txt" 2>&1 \
             && result PASS "AD dbcheck" "completed" "clean/no fatal errors" \
@@ -1165,16 +1500,17 @@ validate_ad() {
         samba-tool ntacl sysvolcheck >"${RUN_ROOT}/sysvolcheck.txt" 2>&1 \
             && result PASS "SYSVOL ACL" "consistent" "consistent" \
             || result WARN "SYSVOL ACL" "differences" "review ${RUN_ROOT}/sysvolcheck.txt"
+    fi
 
-        if samba-tool gpo aclcheck >"${RUN_ROOT}/gpo-aclcheck.txt" 2>&1; then
-            result PASS "GPO ACL" "consistent" "consistent"
-        else
-            result WARN "GPO ACL" "differences/unavailable" "review"
-        fi
+    if systemctl is-failed --quiet systemd-networkd-wait-online.service 2>/dev/null; then
+        result WARN "networkd-wait-online" "failed" "review required; must not block DC boot"
+    else
+        result INFO "networkd-wait-online" "not failed" "healthy boot dependency"
     fi
 
     return "$fail"
 }
+
 
 audit_security_baseline() {
     step "Security baseline evidence"
@@ -1217,17 +1553,19 @@ audit_security_baseline() {
 
 audit_existing() {
     step "Current state audit"
+    discover_network_topology
 
     result INFO "OS" "$PRETTY_NAME_SAFE" "supported target"
     result INFO "Samba role" "$SAMBA_ROLE" "known"
     result INFO "Hostname" "$(hostname -f 2>/dev/null || hostname)" "FQDN"
-    result INFO "Interface" "${PRIMARY_IFACE:-unknown}" "known"
-    result INFO "IPv4" "${PRIMARY_CIDR:-unknown}" "stable"
-    result INFO "Gateway" "${DEFAULT_GW:-unknown}" "known"
+    result INFO "Network model" "$NETWORK_MODE" "known"
+    result INFO "WAN/default" "${WAN_IFACE:-none} ${WAN_CIDR:-} gw=${DEFAULT_GW:-none}" "Internet/default route"
+    result INFO "AD candidate" "${AD_IFACE:-none} ${AD_CIDR:-}" "AD client network"
+    result INFO "Management" "${MGMT_IFACE:-none} SSH=${SSH_CLIENT_IP:-local}" "preserved"
     result INFO "Remote session" "$([[ $REMOTE_SESSION -eq 1 ]] && echo yes || echo no)" "known"
 
     local u
-    for u in samba-ad-dc smbd nmbd winbind chrony systemd-resolved NetworkManager; do
+    for u in samba-ad-dc smbd nmbd winbind chrony systemd-resolved NetworkManager systemd-networkd-wait-online; do
         result INFO "service:$u" "$(safe_systemctl_state "$u")" "role-dependent"
     done
 
@@ -1237,6 +1575,7 @@ audit_existing() {
         result INFO "UFW" "not installed" "optional"
     fi
 }
+
 
 advanced_sysvol_repair() {
     printf '\nThis operation changes SYSVOL ACLs to Samba defaults.\n'
@@ -1252,6 +1591,103 @@ advanced_sysvol_repair() {
     change APPLIED "samba-tool ntacl sysvolreset"
 }
 
+write_post_install_checklist() {
+    step "Post-install checklist"
+    detect_address_method >/dev/null
+
+    local netplan_files=""
+    if compgen -G '/etc/netplan/*.yaml' >/dev/null; then
+        netplan_files="$(printf '%s ' /etc/netplan/*.yaml)"
+    fi
+
+    cat >"$POST_INSTALL_FILE" <<EOFPOST
+${SCRIPT_NAME} ${SCRIPT_VERSION} - POST-INSTALL CHECKLIST
+Generated: $(date -Is)
+
+CURRENT TOPOLOGY
+  Network mode : ${NETWORK_MODE}
+  WAN interface: ${WAN_IFACE:-none} ${WAN_CIDR:-}
+  AD interface : ${AD_IFACE:-none} ${AD_CIDR:-}
+  DC address   : ${DC_IP}
+  Domain       : ${DOMAIN}
+  Realm        : ${REALM}
+  Address mode : ${AD_ADDRESS_METHOD}
+  Netplan files: ${netplan_files:-not detected}
+
+[REQUIRED BEFORE PRODUCTION]
+  [ ] Make the AD/DC address persistent/static on ${AD_IFACE}.
+      Current target: ${DC_IP}${AD_CIDR:+/${AD_CIDR#*/}}
+      Do NOT change networking blindly over SSH; use console/out-of-band access or 'netplan try'.
+EOFPOST
+
+    if [[ "$NETWORK_MODE" != "single-nic" ]]; then
+        cat >>"$POST_INSTALL_FILE" <<EOFPOST
+  [ ] Dual/multihomed host: keep the normal default gateway on ${WAN_IFACE:-the WAN interface}.
+      The AD-only interface ${AD_IFACE} normally should not add another default gateway.
+EOFPOST
+    fi
+
+    cat >>"$POST_INSTALL_FILE" <<EOFPOST
+  [ ] Reboot once during the maintenance window, then verify persistence:
+        ip -br addr
+        ip route
+        sudo bash ./debian-ad-assistant-v3.1.0-review.sh --validate
+
+  [ ] Confirm the DC uses Samba DNS locally:
+        cat /etc/resolv.conf
+        dig @127.0.0.1 ${DC_FQDN}
+        dig @127.0.0.1 raw.githubusercontent.com
+
+  [ ] Configure domain clients to use ${DC_IP} as their AD DNS server.
+      Do not place public DNS directly on AD clients as a fallback for the AD namespace.
+
+[SECURITY]
+  [ ] Verify UFW scope and management access from the expected admin network.
+  [ ] Test the delegated/alternate administrative account before disabling built-in recovery accounts.
+  [ ] Review GPO scope and security filtering before broad production deployment.
+  [ ] Review CIS/vendor baseline findings; this assistant alone is not a CIS compliance certificate.
+
+[BACKUP / RECOVERY]
+  [ ] Create the first domain backup:
+        sudo bash ./debian-ad-assistant-v3.1.0-review.sh --backup
+  [ ] Copy verified backups OFF this DC and test a restore procedure in a lab.
+  [ ] Keep VM snapshots as short-term maintenance aids, not as the only AD backup strategy.
+
+[AVAILABILITY TARGET]
+  [ ] A single DC is a single point of failure. For a real 99.9% service objective,
+      deploy at least a second DC/DNS server on separate failure domains where feasible.
+  [ ] Monitor at minimum: host reachability, disk, time sync, DNS :53, Kerberos :88,
+      LDAP :389, SMB :445, samba-ad-dc state and backup freshness.
+  [ ] Define maintenance windows, alerting and an off-host recovery path.
+
+[CLIENT ACCEPTANCE TEST]
+  [ ] Join a test client to ${DOMAIN}.
+  [ ] Log in with a normal domain user.
+  [ ] Validate DNS and Kerberos from the client.
+  [ ] Apply/refresh policy and confirm expected GPO results.
+
+READINESS
+  Provisioned != production-ready. Complete the manual actions above and rerun --validate.
+EOFPOST
+    chmod 600 "$POST_INSTALL_FILE"
+
+    printf '\n%b==============================================================================%b\n' "$C_CYAN" "$C_RESET"
+    printf '%b POST-INSTALLATION CHECKLIST%b\n' "$C_CYAN" "$C_RESET"
+    printf '%b==============================================================================%b\n' "$C_CYAN" "$C_RESET"
+    printf 'AD interface : %s  %s\n' "$AD_IFACE" "$AD_CIDR"
+    printf 'WAN interface: %s  %s  gateway=%s\n' "${WAN_IFACE:-none}" "${WAN_CIDR:-}" "${DEFAULT_GW:-none}"
+    printf 'Address mode : %s\n' "$AD_ADDRESS_METHOD"
+    printf '\nRequired next steps:\n'
+    printf '  [ ] Make %s / %s persistent/static.\n' "$AD_IFACE" "$DC_IP"
+    [[ "$NETWORK_MODE" != "single-nic" ]] && printf '  [ ] Keep the default gateway on the WAN interface only (normally %s).\n' "${WAN_IFACE:-review topology}"
+    printf '  [ ] Reboot in a maintenance window and run --validate.\n'
+    printf '  [ ] Create and export an off-host domain backup.\n'
+    printf '  [ ] Join a test client and validate DNS/Kerberos/GPO.\n'
+    printf '  [ ] For genuine 99.9%% AD availability, add a second DC/DNS plus monitoring.\n'
+    printf '\nSaved checklist: %s\n' "$POST_INSTALL_FILE"
+    result INFO "Production readiness" "READY WITH MANUAL ACTIONS" "complete POST-INSTALL checklist"
+}
+
 write_report() {
     write_backup_manifest
     {
@@ -1265,7 +1701,12 @@ write_report() {
         printf 'Realm: %s\n' "$REALM"
         printf 'DC: %s\n' "$DC_FQDN"
         printf 'DC IP: %s\n' "$DC_IP"
+        printf 'Network mode: %s\n' "$NETWORK_MODE"
+        printf 'WAN interface: %s %s gateway=%s\n' "$WAN_IFACE" "$WAN_CIDR" "$DEFAULT_GW"
+        printf 'AD interface: %s %s\n' "$AD_IFACE" "$AD_CIDR"
+        printf 'Samba interface scoped: %s\n' "$SAMBA_INTERFACE_SCOPED"
         printf 'Remote: %s\n' "$REMOTE_SESSION"
+        printf 'Post-install checklist: %s\n' "$POST_INSTALL_FILE"
         printf '\n=== RESULTS ===\n'
         printf '%s\n' "${RESULTS[@]}"
         printf '\n=== CHANGES ===\n'
@@ -1297,6 +1738,14 @@ summary() {
     printf 'Report  : %s\n' "$REPORT_FILE"
     printf 'Backups : %s\n' "$BACKUP_DIR"
     printf 'Run data: %s\n' "$RUN_ROOT"
+    [[ -f "$POST_INSTALL_FILE" ]] && printf 'Checklist: %s\n' "$POST_INSTALL_FILE"
+    if (( fail > 0 )); then
+        printf '%bReadiness: ATTENTION REQUIRED%b\n' "$C_RED" "$C_RESET"
+    elif [[ "$MODE" == "bootstrap" || "$MODE" == "interactive" ]]; then
+        printf '%bReadiness: READY WITH MANUAL ACTIONS%b\n' "$C_YELLOW" "$C_RESET"
+    else
+        printf '%bReadiness: HEALTH CHECK COMPLETE%b\n' "$C_GREEN" "$C_RESET"
+    fi
 }
 
 bootstrap_mode() {
@@ -1307,18 +1756,24 @@ bootstrap_mode() {
         return 2
     fi
 
-    set_progress_plan 13
+    set_progress_plan 17
     audit_existing
     collect_identity
     snapshot_system
     install_required_packages
     collect_network_policy
-    configure_ufw
     configure_hostname_hosts
     configure_samba_service_model
+
+    # Critical ordering: preserve Internet DNS, free port 53, then provision/start Samba.
+    prepare_dns_transaction
     configure_time
     provision_new_domain
-    configure_resolver_kerberos
+    if ! commit_samba_dns_resolver; then
+        rollback_dns_transaction "Samba DNS did not become healthy"
+        return 1
+    fi
+
     ensure_directory_baseline
     if [[ "$ENABLE_GPOS" == "yes" ]] && confirm "Create/link baseline GPOs?" Y; then
         manage_gpos
@@ -1326,22 +1781,28 @@ bootstrap_mode() {
         step "Group Policy"
         result SKIP "GPO" "operator disabled" "optional"
     fi
+
+    # Firewall is intentionally late: services and management path are known first.
+    configure_ufw
     validate_ad
     save_config
+    write_post_install_checklist
 }
+
 
 manage_menu() {
     while true; do
         printf '\n%bManage existing AD/DC%b\n' "$C_CYAN" "$C_RESET"
         printf '  [1] Audit current state\n'
         printf '  [2] Validate AD/DC health\n'
-        printf '  [3] Configure local resolver/Kerberos\n'
+        printf '  [3] Repair/reconfigure Samba DNS + local resolver/Kerberos (transactional)\n'
         printf '  [4] Configure Chrony\n'
         printf '  [5] Configure UFW\n'
         printf '  [6] Ensure directory baseline\n'
         printf '  [7] Create/update baseline GPOs\n'
         printf '  [8] Create domain backup\n'
         printf '  [9] Advanced SYSVOL ACL repair\n'
+        printf '  [10] Show/regenerate post-install checklist\n'
         printf '  [0] Exit\n'
         local choice
         choice="$(ask 'Choice' '1')"
@@ -1355,6 +1816,7 @@ manage_menu() {
             7) set_progress_plan 1; manage_gpos ;;
             8) set_progress_plan 1; create_domain_backup ;;
             9) set_progress_plan 2; advanced_sysvol_repair ;;
+            10) set_progress_plan 1; write_post_install_checklist ;;
             0) break ;;
             *) printf 'Invalid choice.\n' ;;
         esac
@@ -1369,6 +1831,7 @@ manage_mode() {
     }
 
     load_config || true
+    discover_network_topology
     discover_existing_identity
     snapshot_system
     manage_menu
@@ -1390,6 +1853,7 @@ audit_mode() {
 
 validate_mode() {
     set_progress_plan 1
+    discover_network_topology
     [[ "$SAMBA_ROLE" == "ad-dc" || "$SAMBA_ROLE" == "ad-dc-config" ]] || {
         fail_msg "No Samba AD/DC detected."
         return 2
@@ -1397,6 +1861,19 @@ validate_mode() {
     load_config || true
     discover_existing_identity
     validate_ad
+}
+
+status_mode() {
+    set_progress_plan 2
+    audit_existing
+    if [[ "$SAMBA_ROLE" == "ad-dc" || "$SAMBA_ROLE" == "ad-dc-config" ]]; then
+        load_config || true
+        discover_existing_identity
+        validate_ad || true
+    else
+        step "AD/DC health"
+        result SKIP "AD/DC" "not configured" "not applicable"
+    fi
 }
 
 backup_mode() {
@@ -1436,7 +1913,7 @@ main() {
     banner
 
     detect_os
-    select_primary_interface
+    discover_network_topology
     detect_samba_role
 
     case "$MODE" in
@@ -1445,6 +1922,7 @@ main() {
         bootstrap) bootstrap_mode ;;
         manage) manage_mode ;;
         backup) backup_mode ;;
+        status) status_mode ;;
         interactive) interactive_mode ;;
         *) fail_msg "Unknown mode: $MODE"; return 2 ;;
     esac
