@@ -769,6 +769,10 @@ configure_directory_objects() {
 # GPO source / management
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# GPO source / management
+# ---------------------------------------------------------------------------
+
 write_gpo_sources() {
     cat > "${GPO_DIR}/user-baseline.json" <<'EOF_USER_GPO'
 [
@@ -799,21 +803,21 @@ EOF_USER_GPO
     cat > "${GPO_DIR}/machine-baseline.json" <<EOF_MACHINE_GPO
 [
   {
-    "keyname": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+    "keyname": "SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Policies\\\\System",
     "valuename": "LegalNoticeCaption",
     "class": "MACHINE",
     "type": "REG_SZ",
     "data": "${DOMAIN}"
   },
   {
-    "keyname": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+    "keyname": "SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Policies\\\\System",
     "valuename": "LegalNoticeText",
     "class": "MACHINE",
     "type": "REG_SZ",
     "data": "Sistema perteneciente al dominio ${DOMAIN}. El acceso esta restringido a usuarios autorizados."
   },
   {
-    "keyname": "SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient",
+    "keyname": "SOFTWARE\\\\Policies\\\\Microsoft\\\\Windows NT\\\\DNSClient",
     "valuename": "EnableMulticast",
     "class": "MACHINE",
     "type": "REG_DWORD",
@@ -923,7 +927,6 @@ EOF_GPO_README
     result PASS "User GPO" "$user_guid" "linked to domain root"
     result PASS "Computer GPO" "$machine_guid" "linked to domain root"
 }
-
 # ---------------------------------------------------------------------------
 # Validation / reporting
 # ---------------------------------------------------------------------------
