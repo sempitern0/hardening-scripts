@@ -623,14 +623,20 @@ configure_ufw() {
     [[ "$ENABLE_UFW" == yes ]] || { result SKIP "UFW" "Disabled by configuration" "manual review"; return 0; }
     command_exists ufw || { warn_msg "UFW package is unavailable; firewall step skipped."; result WARN "UFW" "Unavailable" "manual firewall configuration"; return 0; }
 
-    local iface route_cidr ssh_ip
+    local iface route_cidr ssh_ip raw_ssh
     iface="$(primary_iface || true)"
     route_cidr="$(ip -4 route show dev "$iface" proto kernel scope link 2>/dev/null | awk 'NR==1{print $1}')"
     AD_CLIENT_CIDR="$(ask 'AD client source network (CIDR)' "${AD_CLIENT_CIDR:-${route_cidr:-192.168.1.0/24}}")"
+    
+    # Auto-completar /32 si se introduce una IP simple en lugar de formato CIDR
+    if is_valid_ipv4 "$AD_CLIENT_CIDR"; then
+        AD_CLIENT_CIDR="${AD_CLIENT_CIDR}/32"
+    fi
     is_valid_cidr "$AD_CLIENT_CIDR" || { echo "Invalid AD client CIDR: $AD_CLIENT_CIDR" >&2; exit 1; }
 
     if [[ -z "$SSH_SOURCE" ]]; then
-        ssh_ip="${SSH_CLIENT%% *}"
+        raw_ssh="${SSH_CLIENT:-}"
+        ssh_ip="${raw_ssh%% *}"
         if [[ "$ssh_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             SSH_SOURCE="${ssh_ip}/32"
         else
@@ -638,6 +644,10 @@ configure_ufw() {
         fi
     else
         SSH_SOURCE="$(ask 'SSH management source (CIDR or IP/32)' "$SSH_SOURCE")"
+    fi
+
+    if is_valid_ipv4 "$SSH_SOURCE"; then
+        SSH_SOURCE="${SSH_SOURCE}/32"
     fi
     is_valid_cidr "$SSH_SOURCE" || { echo "Invalid SSH source: $SSH_SOURCE" >&2; exit 1; }
 
@@ -675,7 +685,6 @@ configure_ufw() {
     result INFO "AD clients" "$AD_CLIENT_CIDR" "restricted"
     result INFO "SSH" "$SSH_SOURCE" "restricted"
 }
-
 # ---------------------------------------------------------------------------
 # Directory objects
 # ---------------------------------------------------------------------------
