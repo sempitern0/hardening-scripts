@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#
+
 # CIP AD Assistant - Debian/Ubuntu
 # Version 2.1.0
 #
@@ -479,7 +479,7 @@ set_admin_password() {
     echo
     echo "Set the AD Administrator password now." >&2
     echo "The password is entered interactively and is NOT stored by this script." >&2
-    samba-tool user setpassword Administrator
+    samba-tool user setpassword Administrator < "$INPUT_FD"
 }
 
 
@@ -507,7 +507,7 @@ provision_ad() {
         --realm="$REALM" \
         --server-role=dc \
         --use-rfc2307 \
-        --dns-backend=SAMBA_INTERNAL
+        --dns-backend=SAMBA_INTERNAL < "$INPUT_FD"
 
     result PASS "AD provisioning" "Created ${DOMAIN}" "Samba AD/DC"
 
@@ -686,7 +686,7 @@ ensure_kerberos_ticket() {
         return 0
     fi
     echo "Kerberos ticket required for ${ADMIN_USER}@${REALM}."
-    kinit "${ADMIN_USER}@${REALM}"
+    kinit "${ADMIN_USER}@${REALM}" < "$INPUT_FD"
     klist >/dev/null
 }
 
@@ -710,13 +710,13 @@ ensure_group() {
     fi
 }
 
-ensure_godzilla() {
+ensure_admin_user() {
     if samba-tool user show "$ADMIN_USER" >/dev/null 2>&1; then
         result PASS "User $ADMIN_USER" "Already exists" "present"
     else
         echo
         echo "Creating AD administrative account: $ADMIN_USER"
-        samba-tool user create "$ADMIN_USER"
+        samba-tool user create "$ADMIN_USER" < "$INPUT_FD"
         result PASS "User $ADMIN_USER" "Created" "present"
     fi
 
@@ -753,7 +753,7 @@ configure_directory_objects() {
     ensure_ou "OU=Grupos,${base_dn}" "Grupos"
     ensure_group Empleados
     ensure_group AdministradoresTI
-    ensure_godzilla
+    ensure_admin_user
 }
 
 # ---------------------------------------------------------------------------
