@@ -1,89 +1,89 @@
-# Server Assistants — Debian/Ubuntu + Windows Server
+# Hardening Scripts
 
-Colección de asistentes de administración y hardening pensados para **one-shot execution**, auditoría previa, cambios confirmados y trazabilidad.
+Asistentes **one-shot** para instalación, auditoría, configuración y hardening de servidores Linux y Windows.
 
-## Archivos
+El objetivo del repositorio es ofrecer herramientas prácticas para administradores de sistemas que:
 
-| Archivo | Plataforma | Propósito |
-|---|---|---|
-| `debian-ad-assistant.sh` | Debian 13 / Ubuntu 26.04 LTS | Bootstrap/auditoría de Samba AD DC + Kerberos + DNS + Chrony + UFW + OUs/grupos + GPO base. |
-| `pymes-windows-server-security.ps1` | Windows Server 2019/2022/2025 | Auditoría y hardening interactivo de firewall, Defender, SMB, RDP, administradores locales, LAPS, PowerShell y LLMNR. |
+- detecten el estado actual antes de modificar;
+- pidan confirmación en cambios sensibles;
+- mantengan logs y copias de seguridad;
+- validen el resultado después de cada bloque crítico;
+- funcionen tanto en servidores nuevos como en infraestructura existente;
+- prioricen disponibilidad, recuperación y herramientas nativas;
+- sirvan como base **CIS-oriented / baseline-aware**, sin afirmar cumplimiento completo por sí solas.
+
+> **Importante:** estos scripts no sustituyen una revisión de arquitectura, una política de backups, monitorización, alta disponibilidad ni una auditoría CIS completa.
 
 ---
 
-# 1. Filosofía de ejecución
+## Scripts
 
-El objetivo es poder pasar de un servidor recién instalado a una base funcional mediante una sola orden, pero **no se debe confundir one-shot con ejecución ciega**.
+| Archivo | Plataforma | Versión | Uso principal |
+|---|---|---:|---|
+| `debian-ad-assistant.sh` | Debian / Ubuntu Server | 3.1.x | Samba AD DC, DNS, Kerberos, Chrony, UFW, GPO, backups y validación |
+| `pymes-windows-server-security.ps1` | Windows Server 2019/2022/2025 | 0.3.x | Auditoría y hardening interactivo de Windows Server |
 
-Orden recomendado:
+---
+
+# Linux — Samba Active Directory Assistant
+
+## Objetivo
+
+Automatizar y asistir la preparación de un **Samba Active Directory Domain Controller** sin convertir el provisioning en una operación ciega.
+
+Soporta dos escenarios principales:
 
 ```text
-Repositorio versionado
-        ↓
-URL HTTPS concreta
-        ↓
-Descarga
-        ↓
-Integridad / revisión
-        ↓
-Ejecución con privilegios
-        ↓
-Auditoría + confirmaciones
-        ↓
-Cambios
-        ↓
-Validación
-        ↓
-Informe / logs
+Servidor nuevo
+    ↓
+bootstrap
+    ↓
+Samba AD/DC
+    ↓
+validación
+    ↓
+tareas manuales post-instalación
 ```
 
-`curl | sudo bash` y `Invoke-Expression` son mecanismos de conveniencia. Para producción, es preferible descargar, verificar y ejecutar el fichero concreto.
+y:
+
+```text
+AD/DC existente
+    ↓
+audit / validate / manage
+    ↓
+cambios controlados
+    ↓
+backup
+    ↓
+validación
+```
+
+El asistente **nunca reprovisiona automáticamente un dominio existente**.
 
 ---
 
-# 2. Linux — Debian / Ubuntu
+## Targets
 
-El script Linux está diseñado ahora para la familia Debian y no solo para Ubuntu. La matriz de referencia es:
+Objetivos principales de prueba:
 
-- Debian 13 (trixie)
-- Ubuntu 26.04 LTS
+- Debian 13
+- Ubuntu Server 26.04 LTS
+- Bash
+- systemd
+- Samba AD DC
+- IPv4 como camino principal de administración y AD
 
-Debian 13 publica `samba-ad-dc` y `samba-ad-provision`; Ubuntu 26.04 también publica ambos paquetes. Los nombres de paquete son compatibles entre ambas distribuciones, aunque las versiones de Samba pueden diferir.
+También intenta funcionar de forma conservadora en derivados Debian, pero esos entornos deben considerarse `best-effort` hasta ser probados.
 
-## One-shot con curl
+---
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/ORG/REPO/main/debian-ad-assistant.sh | sudo bash
-```
+# Ejecución Linux
 
-## One-shot con wget
-
-```bash
-wget -qO- https://raw.githubusercontent.com/ORG/REPO/main/debian-ad-assistant.sh | sudo bash
-```
-
-## One-shot versionado — recomendado frente a `main`
+## Ayuda
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ORG/REPO/v2.1.0/debian-ad-assistant.sh | sudo bash
-```
-
-La ventaja es que una instalación posterior no cambia porque el branch `main` haya evolucionado.
-
-## Descarga + SHA-256 + ejecución
-
-```bash
-curl -fsSLo /tmp/debian-ad-assistant.sh https://raw.githubusercontent.com/ORG/REPO/v2.1.0/debian-ad-assistant.sh \
-  && sha256sum /tmp/debian-ad-assistant.sh \
-  && sudo bash /tmp/debian-ad-assistant.sh
-```
-
-En un proceso serio, el hash calculado se compara con un valor publicado y confiable, no simplemente se muestra en pantalla.
-
-## Ejecución local
-
-```bash
-sudo bash ./debian-ad-assistant.sh
+sudo bash ./debian-ad-assistant.sh --help
 ```
 
 ## Auditoría sin cambios
@@ -92,203 +92,476 @@ sudo bash ./debian-ad-assistant.sh
 sudo bash ./debian-ad-assistant.sh --audit
 ```
 
-## Validación de un AD/DC existente
+Inventaría:
+
+- sistema operativo;
+- interfaces;
+- rutas;
+- modelo single-NIC / multi-NIC;
+- servicios Samba;
+- Chrony;
+- resolver;
+- UFW;
+- estado básico de seguridad;
+- presencia de AD/DC.
+
+## Estado rápido
+
+```bash
+sudo bash ./debian-ad-assistant.sh --status
+```
+
+Pensado para comprobaciones operativas rápidas:
+
+- red;
+- interfaz WAN;
+- interfaz AD;
+- Samba;
+- DNS;
+- Kerberos;
+- LDAP;
+- SMB;
+- SYSVOL;
+- resolver local.
+
+## Validar un AD/DC existente
 
 ```bash
 sudo bash ./debian-ad-assistant.sh --validate
 ```
 
-## Ayuda
+Comprueba, entre otros:
+
+- `samba-ad-dc`;
+- `smb.conf`;
+- DNS A;
+- registros SRV;
+- `samba-tool domain info`;
+- `samba-tool dbcheck`;
+- SYSVOL;
+- ACL de GPO;
+- Kerberos cuando esté disponible.
+
+## Provisionar un DC nuevo
 
 ```bash
-sudo bash ./debian-ad-assistant.sh --help
+sudo bash ./debian-ad-assistant.sh --bootstrap
 ```
 
-### Por qué el pipe sigue siendo interactivo
+Usar únicamente sobre un servidor preparado para convertirse en un **nuevo DC**.
 
-El script lee las respuestas desde `/dev/tty`, no desde stdin. Eso evita el problema clásico de:
+El modo bootstrap:
+
+1. detecta sistema y red;
+2. identifica entorno single-NIC o multi-NIC;
+3. solicita la interfaz destinada al AD;
+4. comprueba direccionamiento;
+5. instala dependencias;
+6. configura hostname;
+7. prepara Chrony;
+8. provisiona Samba AD;
+9. configura DNS/Kerberos;
+10. crea estructura AD opcional;
+11. aplica GPO base opcionales;
+12. configura UFW;
+13. valida el resultado;
+14. genera informe y checklist post-instalación.
+
+## Administrar un DC existente
 
 ```bash
-curl ... | sudo bash
+sudo bash ./debian-ad-assistant.sh --manage
 ```
 
-cuando el propio stdin está ocupado por el contenido del script.
+Permite trabajar sobre un AD ya provisionado sin ejecutar nuevamente `domain provision`.
+
+Incluye operaciones como:
+
+- auditoría;
+- validación;
+- DNS/resolver local;
+- Kerberos;
+- Chrony;
+- firewall;
+- OUs y grupos;
+- GPO;
+- backup;
+- comprobación de SYSVOL;
+- reparación avanzada confirmada.
+
+## Crear backup del dominio
+
+```bash
+sudo bash ./debian-ad-assistant.sh --backup
+```
+
+Utiliza las herramientas de Samba para crear una copia consistente del dominio.
+
+Los backups locales **no deben ser la única copia existente**.
 
 ---
 
-# 3. Linux — flujo de bootstrap
+# One-shot remoto
+
+## Recomendado: descargar, revisar y ejecutar
+
+```bash
+curl -fsSLo /tmp/debian-ad-assistant.sh \
+  https://raw.githubusercontent.com/sempitern0/hardening-scripts/main/debian-ad-assistant.sh
+
+sudo bash /tmp/debian-ad-assistant.sh --audit
+```
+
+Después de revisar:
+
+```bash
+sudo bash /tmp/debian-ad-assistant.sh --bootstrap
+```
+
+## Ejecución directa
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/sempitern0/hardening-scripts/main/debian-ad-assistant.sh \
+  | sudo bash -s -- --bootstrap
+```
+
+El asistente utiliza `/dev/tty` para mantener prompts interactivos incluso cuando stdin contiene el propio script.
+
+Para producción es preferible ejecutar una **tag/release concreta** y verificar su SHA-256.
+
+---
+
+# Red y servidores multi-NIC
+
+El asistente diferencia entre:
 
 ```text
-Audit
-  ↓
-Comprobación OS / red / hostname / IP
-  ↓
-Paquetes
-  ↓
-Servicio samba-ad-dc
-  ↓
-Chrony / timezone
-  ↓
-Provisioning del dominio
-  ↓
-DNS Samba + resolver local
-  ↓
-Kerberos
-  ↓
-OUs / grupos / Godzilla
-  ↓
-GPO base opcional
-  ↓
-UFW restringido por origen
-  ↓
-DNS / AD / dbcheck / SYSVOL
-  ↓
-Informe final
+WAN_IFACE     salida a Internet
+AD_IFACE      red donde viven los clientes del dominio
+MGMT_IFACE    interfaz utilizada por el administrador
 ```
 
-El bootstrap **se niega a reprovisionar automáticamente un AD existente**. Para una máquina ya provisionada utiliza `--validate`; la fase de reparación deliberada debe tratarse como una operación aparte.
+Ejemplo VirtualBox:
 
-La razón es evitar que una ejecución repetida modifique accidentalmente el dominio, `/etc/samba/smb.conf`, DNS o SYSVOL.
+```text
+enp0s3
+  NAT / DHCP
+  10.0.2.x
+  default gateway
+       │
+       ▼
+   Internet
+
+enp0s8
+  Host-only / LAN
+  192.168.56.x
+  sin gateway
+       │
+       ▼
+ AD clients
+```
+
+Recomendación:
+
+- el gateway por defecto debe estar normalmente en la interfaz WAN;
+- la interfaz AD debe utilizar una dirección estable;
+- los clientes del dominio deben utilizar el DC como DNS;
+- no añadir un segundo gateway por defecto en la interfaz AD salvo que la arquitectura lo requiera deliberadamente.
 
 ---
 
-# 4. Linux — decisiones importantes
+# DNS y disponibilidad
+
+Un DC Samba depende fuertemente de DNS.
+
+El modelo esperado es:
+
+```text
+Cliente AD
+   │
+   ▼
+Samba DNS
+   │
+   ├── dominio interno → Samba
+   │
+   └── Internet → DNS forwarder
+```
+
+El propio DC debe acabar resolviendo mediante Samba cuando el servicio haya sido validado.
+
+El asistente intenta evitar este fallo:
+
+```text
+Samba DNS falla
++
+resolver del host = 127.0.0.1
+=
+servidor sin resolución DNS
+```
+
+Antes de cambiar el resolver local debe comprobarse:
+
+```bash
+dig @127.0.0.1 dc.dominio
+dig @127.0.0.1 raw.githubusercontent.com
+```
+
+Si la transición falla, el objetivo es restaurar el resolver previo y conservar la conectividad administrativa.
+
+---
+
+# IP estática: responsabilidad manual del administrador
+
+El asistente **no cambia automáticamente el direccionamiento permanente** durante el bootstrap.
+
+Motivo:
+
+```text
+cambio de red
+    ↓
+sesión SSH perdida
+    ↓
+provisioning incompleto
+```
+
+Después del provisioning, configura una IP estática/persistente para la interfaz AD.
+
+En Ubuntu/Netplan, revisar primero:
+
+```bash
+ip -br addr
+ip route
+ls -l /etc/netplan/
+cat /etc/netplan/*.yaml
+```
+
+Después de editar Netplan, en una sesión remota es preferible:
+
+```bash
+sudo netplan try
+```
+
+en lugar de aplicar cambios a ciegas.
+
+Tras confirmar la configuración:
+
+```bash
+ip -br addr
+ip route
+```
+
+---
+
+# Checklist post-instalación Linux
+
+Después de `--bootstrap`, **provisionado no significa production-ready**.
+
+El asistente genera un recordatorio persistente:
+
+```text
+/var/lib/debian-ad-assistant/POST-INSTALL.txt
+```
+
+Completar como mínimo:
 
 ## Red
 
-El script no intenta convertir DHCP en una IP estática automáticamente. Un cambio de red durante una ejecución remota puede cortar la sesión SSH a mitad del provisioning.
+- [ ] hacer persistente la IP de `AD_IFACE`;
+- [ ] comprobar que la interfaz AD no recibe una IP inesperada por DHCP;
+- [ ] revisar rutas y gateways;
+- [ ] comprobar conectividad después de reiniciar;
+- [ ] confirmar que la interfaz WAN mantiene salida a Internet.
 
-Antes de provisionar el DC se comprueba que la IP indicada está realmente asignada a la máquina.
+Pruebas:
+
+```bash
+ip -br addr
+ip route
+ping -c 2 1.1.1.1
+getent hosts raw.githubusercontent.com
+```
 
 ## DNS
 
-Samba AD DC necesita ser el DNS autoritativo del dominio.
+- [ ] confirmar que Samba responde al dominio;
+- [ ] confirmar que Samba reenvía consultas externas;
+- [ ] configurar clientes para usar el DC como DNS.
 
-Ubuntu suele utilizar `systemd-resolved`; Debian no lo instala por defecto. El script detecta la situación y trata por separado `systemd-resolved` y NetworkManager.
+Pruebas:
 
-Si el gestor DNS puede sobrescribir el resolver local, el script no continua silenciosamente: obliga a dejar resuelto el camino `127.0.0.1 -> Samba DNS` antes de finalizar el bootstrap.
+```bash
+dig @127.0.0.1 "$(hostname -f)"
+dig @127.0.0.1 _ldap._tcp.$DOMAIN SRV
+dig @127.0.0.1 _kerberos._tcp.$DOMAIN SRV
+dig @127.0.0.1 raw.githubusercontent.com
+```
 
-## `systemd-networkd`
+También:
 
-No se deshabilita como efecto secundario del provisioning. Eso evita mezclar la gestión de red con la configuración del AD.
+```bash
+cat /etc/resolv.conf
+```
+
+## Samba / Active Directory
+
+```bash
+sudo systemctl status samba-ad-dc --no-pager
+sudo samba-tool domain info 127.0.0.1
+sudo samba-tool dbcheck --cross-ncs
+sudo samba-tool ntacl sysvolcheck
+```
+
+Y ejecutar:
+
+```bash
+sudo bash ./debian-ad-assistant.sh --validate
+```
+
+El resultado debe revisarse antes de pasar el servidor a producción.
 
 ## Kerberos
 
-La administración de GPO requiere un ticket del administrador AD, por ejemplo:
+```bash
+kinit Administrator@REALM
+klist
+```
+
+O utilizar la cuenta administrativa definida para el entorno.
+
+## Firewall
 
 ```bash
-sudo kinit Godzilla@CIP.DANIEL.ORG
-sudo klist
+sudo ufw status verbose
+```
+
+Revisar que:
+
+- SSH solo esté abierto desde la red/IP administrativa esperada;
+- los servicios AD solo estén accesibles desde redes autorizadas;
+- no se haya expuesto accidentalmente Samba hacia la interfaz WAN.
+
+## GPO
+
+```bash
+sudo samba-tool gpo listall
+sudo samba-tool gpo aclcheck
+sudo samba-tool ntacl sysvolcheck
+```
+
+Desde un cliente Windows unido al dominio:
+
+```powershell
+gpupdate /force
+gpresult /r
+```
+
+## Backup
+
+Crear el primer backup:
+
+```bash
+sudo bash ./debian-ad-assistant.sh --backup
 ```
 
 Después:
 
-```bash
-sudo samba-tool gpo listall --use-kerberos=required
-```
+- [ ] copiar el backup fuera del DC;
+- [ ] mantener varias generaciones;
+- [ ] probar recuperación en laboratorio;
+- [ ] proteger el almacenamiento de backup.
 
-## SYSVOL
+## Reinicio de aceptación
 
-Después de cargar GPO se ejecuta `samba-tool ntacl sysvolcheck`. `sysvolreset` no se ejecuta automáticamente sin confirmación explícita.
-
----
-
-# 5. Linux — ejemplo de dominio del laboratorio
-
-```text
-DNS domain:       cip.daniel.org
-Kerberos realm:   CIP.DANIEL.ORG
-NetBIOS domain:   CIPDANIEL
-DC FQDN:          cip.cip.daniel.org
-DC IP:            192.168.1.162
-Windows 7 lab:    192.168.1.119
-LAN:              192.168.1.0/24
-Timezone:         Europe/London
-```
-
-Los valores anteriores son solo la referencia del laboratorio de desarrollo. El script los solicita al operador y no debe depender de ellos para una instalación externa.
-
----
-
-# 6. Linux — estado, logs y backups
-
-Estado:
-
-```text
-/var/lib/cip-ad-assistant/
-```
-
-Logs e informes:
-
-```text
-/var/log/cip-ad-assistant/
-```
-
-Los backups se guardan por ejecución. Los ficheros de configuración y reportes usan permisos restrictivos.
-
-El password final de `Administrator` no se guarda por el script: tras el provisioning se establece mediante el prompt de `samba-tool user setpassword Administrator`.
-
----
-
-# 7. Linux — GPO
-
-Se generan fuentes JSON locales:
-
-```text
-/var/lib/cip-ad-assistant/gpo/
-├── user-baseline.json
-└── machine-baseline.json
-```
-
-Después se cargan mediante:
+Después de terminar red y tareas manuales:
 
 ```bash
-sudo samba-tool gpo load '{GUID}' \
-  --content=/var/lib/cip-ad-assistant/gpo/user-baseline.json \
-  --use-kerberos=required
+sudo reboot
 ```
 
-**Las llaves `{}` del GUID son intencionadas y necesarias para el formato utilizado.**
-
-Las GPO base del asistente se enlazan al dominio para el laboratorio. Esto no equivale a un filtrado de seguridad exclusivo por `Domain Users`; ese nivel de afinado debe hacerse con ACL/GPMC cuando sea necesario.
-
----
-
-# 8. Linux — UFW
-
-Cuando se habilita, el modelo es:
-
-```text
-default deny incoming
-default allow outgoing
-```
-
-Se solicitan dos ámbitos:
-
-```text
-AD_CLIENT_CIDR → clientes que deben consumir AD
-SSH_SOURCE     → estación/red de administración
-```
-
-Esto es preferible a:
+Tras volver:
 
 ```bash
-sudo ufw allow 22/tcp
+sudo bash ./debian-ad-assistant.sh --status
+sudo bash ./debian-ad-assistant.sh --validate
 ```
 
-Para un entorno pequeño se puede usar un `/32` para SSH y una subred específica para los servicios AD.
+Un servicio que solo funciona antes del primer reboot no está listo para producción.
 
 ---
 
-# 9. Windows Server — ejecución
+# Alta disponibilidad
 
-El script usa:
+Un único Domain Controller sigue siendo un punto único de fallo.
 
-```powershell
-#requires -RunAsAdministrator
+```text
+             Clients
+                │
+       ┌────────┴────────┐
+       │                 │
+     DC01              DC02
+   AD + DNS          AD + DNS
+       │                 │
+       └────────┬────────┘
+                │
+         replication
 ```
 
-## Ejecución local
+Para entornos donde la disponibilidad sea importante:
+
+- desplegar al menos dos DC/DNS;
+- separar fallos de host/hipervisor cuando sea posible;
+- monitorizar DNS, LDAP, Kerberos, SMB y replicación;
+- mantener backups off-host;
+- probar restauraciones;
+- documentar RTO/RPO;
+- planificar ventanas de mantenimiento.
+
+El script reduce riesgos operativos; **no garantiza por sí solo un SLA de 99,9 %**.
+
+---
+
+# Logs, estado y backups Linux
+
+Directorios principales:
+
+```text
+/var/lib/debian-ad-assistant/
+/var/log/debian-ad-assistant/
+```
+
+Cada ejecución mantiene información separada de:
+
+- resultados;
+- cambios;
+- warnings;
+- errores;
+- snapshots;
+- backups de configuración;
+- informes.
+
+Los secretos no deben almacenarse innecesariamente.
+
+---
+
+# Windows Server Security Assistant
+
+## Targets
+
+Targets principales:
+
+- Windows Server 2019
+- Windows Server 2022
+- Windows Server 2025
+- Windows PowerShell 5.1+
+
+El asistente es **role-aware** y diferencia, entre otros, Domain Controllers de member servers.
+
+---
+
+# Ejecución Windows
+
+## Interactivo
 
 ```powershell
 .\pymes-windows-server-security.ps1
@@ -297,107 +570,281 @@ El script usa:
 ## Solo auditoría
 
 ```powershell
-.\pymes-windows-server-security.ps1 -AuditOnly
+.\pymes-windows-server-security.ps1 -Mode Audit
 ```
 
-## Directorio de informes personalizado
+## Auditoría + hardening interactivo
 
 ```powershell
-.\pymes-windows-server-security.ps1 -ExportPath C:\SecurityAudit
+.\pymes-windows-server-security.ps1 -Mode Harden
 ```
 
-## One-shot descargando primero — recomendado
+Los cambios sensibles requieren confirmación.
+
+## Crear snapshot/configuration backup
 
 ```powershell
-$u='https://raw.githubusercontent.com/ORG/REPO/v0.2.0/pymes-windows-server-security.ps1'; $p=Join-Path $env:TEMP 'pymes-windows-server-security.ps1'; Invoke-WebRequest -Uri $u -OutFile $p; Get-FileHash $p -Algorithm SHA256; Unblock-File $p; & $p
+.\pymes-windows-server-security.ps1 -Mode Backup
 ```
 
-El hash mostrado debe compararse con el hash publicado para la versión elegida antes de ejecutar en producción.
-
-## One-shot directo con `Invoke-Expression`
+## Directorio personalizado
 
 ```powershell
-Invoke-Expression (Invoke-RestMethod 'https://raw.githubusercontent.com/ORG/REPO/v0.2.0/pymes-windows-server-security.ps1')
+.\pymes-windows-server-security.ps1 `
+  -Mode Audit `
+  -ExportPath C:\SecurityAudit
 ```
 
-Es cómodo, pero **no es el método recomendado** porque descarga y ejecuta el contenido sin una revisión intermedia. Microsoft documenta que `Bypass` no bloquea ni avisa y que la política de ejecución es defensa en profundidad, no una frontera de seguridad.
+## Sin colores
+
+```powershell
+.\pymes-windows-server-security.ps1 -Mode Audit -NoColor
+```
+
+## Firewall durante sesión remota
+
+Por defecto, el script evita cambios globales de firewall si detecta una sesión remota.
+
+Solo permitirlo deliberadamente:
+
+```powershell
+.\pymes-windows-server-security.ps1 `
+  -Mode Harden `
+  -AllowRemoteFirewallChange
+```
+
+Incluso entonces, los cambios de alto impacto requieren confirmación.
 
 ---
 
-# 10. Windows Server — alcance actual
+# Controles Windows actuales
 
-La versión actual audita:
+El asistente revisa principalmente:
 
-```text
-Sistema / rol
-Red
-Firewall
-Defender
-BitLocker
-TPM / Secure Boot
-SMB / SMBv1 / signing / guest
-RDP / NLA
-Administradores locales
-Windows LAPS
-PowerShell logging
-LLMNR
-Hotfix evidence
-```
+- versión/build;
+- rol del servidor;
+- roles/features instalados;
+- red;
+- Windows Firewall;
+- Microsoft Defender;
+- BitLocker;
+- TPM;
+- Secure Boot;
+- SMBv1;
+- SMB signing;
+- guest SMB;
+- RDP;
+- NLA;
+- administradores locales;
+- Windows LAPS;
+- PowerShell Script Block Logging;
+- PowerShell Module Logging;
+- LLMNR;
+- evidencia de updates.
 
-Las remediaciones son interactivas y se registran. No se deben aplicar indiscriminadamente sobre un Domain Controller. El script trata explícitamente algunos cambios como sensibles al rol.
+El informe no debe interpretarse como una certificación CIS completa.
 
 ---
 
-# 11. GitHub recomendado
+# Pruebas post-hardening Windows
 
-Una estructura sencilla:
+Después de cambios:
 
-```text
-repo/
-├── debian-ad-assistant.sh
-├── pymes-windows-server-security.ps1
-├── README.md
-└── checksums.txt
+```powershell
+.\pymes-windows-server-security.ps1 -Mode Audit
 ```
 
-Después:
+Revisar especialmente:
+
+```powershell
+Get-NetFirewallProfile
+Get-MpComputerStatus
+Get-MpPreference
+Get-SmbServerConfiguration
+Get-SmbClientConfiguration
+Get-BitLockerVolume
+```
+
+RDP/NLA:
+
+```powershell
+Get-ItemProperty `
+  'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+  -Name UserAuthentication
+```
+
+LLMNR debe tener:
+
+```text
+EnableMulticast = 0
+```
+
+Después de cambios relevantes o reboot, repetir auditoría.
+
+---
+
+# Baselines y CIS
+
+Estos scripts siguen principios de hardening y utilizan como referencia:
+
+- documentación oficial de Samba;
+- benchmarks CIS aplicables;
+- Microsoft Security Baselines;
+- Microsoft Security Compliance Toolkit;
+- herramientas nativas del sistema operativo.
+
+La filosofía es:
+
+```text
+baseline
+   ↓
+audit
+   ↓
+plan
+   ↓
+backup
+   ↓
+confirm
+   ↓
+apply
+   ↓
+validate
+```
+
+No:
+
+```text
+benchmark
+   ↓
+aplicar cientos de cambios a ciegas
+```
+
+Un `PASS` significa que el control implementado por el script ha pasado.
+
+**No significa que el servidor cumpla automáticamente todo el benchmark CIS.**
+
+---
+
+# Principios de seguridad del proyecto
+
+1. Detectar antes de modificar.
+2. Nunca reprovisionar silenciosamente un AD existente.
+3. Confirmar cambios de impacto.
+4. Crear backups/snapshots antes de cambios sensibles.
+5. Mantener la vía de administración durante cambios de red/firewall.
+6. Validar inmediatamente después de modificar.
+7. No almacenar secretos innecesariamente.
+8. Diferenciar servidor nuevo de infraestructura existente.
+9. Ser repetible o rechazar claramente operaciones peligrosas.
+10. Preferir herramientas oficiales/nativas.
+11. Mantener dependencias al mínimo.
+12. Diferenciar auditoría de cumplimiento.
+13. Tratar políticas y baselines como código versionado.
+14. Diseñar pensando en recuperación, no solo instalación.
+15. No considerar un servidor listo hasta superar reboot + validación.
+
+---
+
+# Validación antes de producción
+
+## Bash
+
+Como mínimo:
 
 ```bash
-git tag v2.1.0
-git push origin v2.1.0
+bash -n debian-ad-assistant.sh
+shellcheck debian-ad-assistant.sh
 ```
 
-Y para Windows, mantener una versión independiente, por ejemplo `v0.2.0`.
+Matriz recomendada:
 
-Publica también hashes SHA-256 de los artefactos. Para cambios importantes, usa una nueva versión/tag en lugar de sobrescribir silenciosamente un fichero ya utilizado por otros servidores.
+- Debian 13 limpio;
+- Ubuntu Server 26.04 limpio;
+- single NIC;
+- dual NIC;
+- ejecución local;
+- ejecución SSH;
+- `curl | sudo bash`;
+- AD nuevo;
+- AD existente;
+- segunda ejecución;
+- resolver roto;
+- UFW existente;
+- reboot;
+- `--status`;
+- `--audit`;
+- `--validate`;
+- `--backup`.
+
+## PowerShell
+
+Como mínimo:
+
+```powershell
+$errors = $null
+[System.Management.Automation.Language.Parser]::ParseFile(
+    (Resolve-Path .\pymes-windows-server-security.ps1),
+    [ref]$null,
+    [ref]$errors
+) | Out-Null
+
+$errors
+```
+
+También se recomienda PSScriptAnalyzer.
+
+Matriz:
+
+- Server 2019;
+- Server 2022;
+- Server 2025;
+- workgroup;
+- member server;
+- Domain Controller;
+- RDP;
+- WinRM;
+- Defender activo;
+- Defender pasivo/AV externo;
+- firewall administrado por GPO;
+- Windows no inglés.
 
 ---
 
-# 12. Revisión estricta — criterios que deben mantenerse
+# Referencias
 
-Los asistentes deben conservar estas reglas:
+Samba:
 
-```text
-1. Detectar antes de modificar
-2. No destruir configuración existente
-3. Confirmar cambios de impacto
-4. No guardar secretos innecesariamente
-5. No romper sesiones remotas durante el bootstrap
-6. Validar después de cada bloque crítico
-7. Registrar qué se hizo y qué no
-8. Ser repetibles o rechazar claramente una repetición peligrosa
-9. Diferenciar auditabilidad de cumplimiento
-10. Tratar las políticas de seguridad como código versionado
-```
+https://www.samba.org/samba/docs/current/man-html/samba-tool.8.html
+
+Netplan:
+
+https://netplan.readthedocs.io/
+
+Microsoft Security Baselines:
+
+https://learn.microsoft.com/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines
+
+Microsoft Security Compliance Toolkit:
+
+https://learn.microsoft.com/windows/security/operating-system-security/device-management/windows-security-configuration-framework/security-compliance-toolkit-10
+
+CIS Benchmarks:
+
+https://www.cisecurity.org/cis-benchmarks
 
 ---
 
-# 13. Referencias operativas
+# Estado del proyecto
 
-La parte Samba AD/DC se basa en el procedimiento actual de Ubuntu y en la separación de paquetes publicada por Debian/Ubuntu. Ver documentación oficial antes de promover estos scripts a producción.
+Este repositorio debe considerarse una colección de herramientas administrativas en evolución.
 
-- Ubuntu Server — Provisioning a Samba AD/DC
-- Debian packages — `samba-ad-dc` / `samba-ad-provision`
-- Microsoft Learn — Windows LAPS
-- Microsoft Learn — SMBv1
-- Microsoft Learn — PowerShell execution policies
+Antes de utilizar una nueva versión en producción:
+
+1. revisar cambios;
+2. verificar SHA-256/release;
+3. ejecutar en laboratorio;
+4. disponer de acceso out-of-band cuando sea posible;
+5. mantener un backup probado;
+6. documentar el estado previo;
+7. validar después de aplicar;
+8. comprobar nuevamente después de reiniciar.

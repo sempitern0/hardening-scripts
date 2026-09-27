@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant - review candidate
-# Version 3.1.0-review
+# Version 3.1.1-review
 #
 # Targets:
 #   - Debian 13
@@ -28,7 +28,7 @@ IFS=$'\n\t'
 umask 077
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="3.1.0-review"
+SCRIPT_VERSION="3.1.1-review"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -113,6 +113,42 @@ C_RED=$'\033[31m'
 C_MAGENTA=$'\033[35m'
 C_DIM=$'\033[2m'
 
+# ---------------------------------------------------------------------------
+# Common runtime helpers
+# Inspired by the patterns used in dotfiles/lib/common.sh, intentionally kept
+# self-contained so the one-shot has no dependency on the dotfiles repository.
+# ---------------------------------------------------------------------------
+
+msg_info()    { printf '%b[INFO]%b %s\n' "$C_CYAN" "$C_RESET" "$*" >&2; }
+msg_success() { printf '%b[OK]%b %s\n' "$C_GREEN" "$C_RESET" "$*" >&2; }
+msg_warn()    { printf '%b[WARN]%b %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
+msg_error()   { printf '%b[ERROR]%b %s\n' "$C_RED" "$C_RESET" "$*" >&2; }
+msg_exec()    { printf '%b[EXEC]%b %s\n' "$C_MAGENTA" "$C_RESET" "$*" >&2; }
+msg_skip()    { printf '%b[SKIP]%b %s\n' "$C_DIM" "$C_RESET" "$*" >&2; }
+msg_debug()   { [[ ${TTY_MODE:-0} -eq 1 ]] && printf '%b[DEBUG]%b %s\n' "$C_DIM" "$C_RESET" "$*" >&2 || true; }
+
+die() {
+    msg_error "$*"
+    exit 1
+}
+
+ensure_dir() {
+    local dir="$1"
+    [[ -d "$dir" ]] || mkdir -p -- "$dir" || die "Failed to create directory: $dir"
+}
+
+require_commands() {
+    local cmd
+    local -a missing=()
+    for cmd in "$@"; do
+        command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+    done
+    if ((${#missing[@]})); then
+        msg_error "Missing required commands: ${missing[*]}"
+        return 1
+    fi
+}
+
 usage() {
     cat <<EOF
 ${SCRIPT_NAME} v${SCRIPT_VERSION}
@@ -132,10 +168,12 @@ Remote one-shot:
   curl -fsSL <RAW_URL> | sudo bash -s -- --bootstrap
 
 Notes:
+  - Operational modes require root; local executions auto-escalate through sudo when possible.
   - Interactive modes require a controlling TTY.
   - This script never reprovisions an existing AD database.
   - Static network addressing is not changed automatically.
   - Single-NIC and dual-NIC servers are detected separately.
+  - Hostname/FQDN + /etc/hosts are validated before Samba provisioning.
   - DNS resolver transitions are transactional and roll back on failure.
   - High-impact repairs require separate explicit confirmation.
   - 99.9% availability requires architecture (redundant DC/DNS, monitoring, backups), not only a script.
@@ -163,11 +201,37 @@ parse_args() {
     done
 }
 
-require_root() {
-    if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
-        printf 'Run as root, for example: sudo bash %s --audit\n' "$0" >&2
-        exit 1
+ensure_privileges() {
+    # --help has already been handled by parse_args before this function runs.
+    # All operational modes need root because the assistant writes protected
+    # logs/state and may inspect privileged Samba/firewall information.
+    if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+        if [[ -n "${SUDO_USER:-}" ]]; then
+            INVOKING_ADMIN="$SUDO_USER"
+        else
+            INVOKING_ADMIN="root"
+            msg_warn "Running from a root shell instead of sudo. Supported, but 'sudo bash ...' is preferred for operator traceability."
+        fi
+        return 0
     fi
+
+    if ! command -v sudo >/dev/null 2>&1; then
+        die "Root privileges are required and sudo is not installed. Run from a root shell or install sudo."
+    fi
+
+    # Local script: make the comfortable path automatic.
+    if [[ -f "$0" && -r "$0" && "$0" != */bash && "$0" != "bash" ]]; then
+        msg_info "Root privileges required; re-executing through sudo."
+        exec sudo -- env \
+            SSH_CONNECTION="${SSH_CONNECTION:-}" \
+            SSH_CLIENT="${SSH_CLIENT:-}" \
+            TERM="${TERM:-dumb}" \
+            NO_COLOR="${NO_COLOR:-}" \
+            bash "$0" "$@"
+    fi
+
+    # Piped stdin cannot be replayed safely after privilege escalation.
+    die "This invocation is not root. For a one-shot pipe use: curl -fsSL <RAW_URL> | sudo bash -s -- <mode>"
 }
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
@@ -382,6 +446,29 @@ is_valid_cidr() {
     is_valid_ipv4 "$ip" || return 1
     [[ "$prefix" =~ ^[0-9]{1,2}$ ]] || return 1
     ((10#$prefix >= 0 && 10#$prefix <= 32))
+}
+
+is_valid_dns_hostname_label() {
+    local label="$1"
+    [[ ${#label} -ge 1 && ${#label} -le 63 ]] || return 1
+    [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]]
+}
+
+is_valid_ad_dc_hostname() {
+    # Keep the DC computer name within the classic 15-character NetBIOS limit
+    # for widest Windows/Samba interoperability, while also enforcing DNS syntax.
+    local label="$1"
+    is_valid_dns_hostname_label "$label" || return 1
+    [[ ${#label} -le 15 ]]
+}
+
+refresh_canonical_identity() {
+    # There is one source of truth for the DNS identity. DC_FQDN is derived;
+    # never accept a stale independently stored FQDN during critical steps.
+    DC_HOSTNAME="${DC_HOSTNAME,,}"
+    DOMAIN="${DOMAIN,,}"
+    REALM="${DOMAIN^^}"
+    DC_FQDN="${DC_HOSTNAME}.${DOMAIN}"
 }
 
 is_valid_dns_name() {
@@ -705,20 +792,29 @@ collect_identity() {
 
     choose_ad_interface
 
-    DC_HOSTNAME="$(ask 'Short hostname for the DC' "${DC_HOSTNAME:-dc01}")"
+    DC_HOSTNAME="$(ask 'Short DNS hostname for the DC (letters, numbers, hyphen)' "${DC_HOSTNAME:-dc01}")"
+    DC_HOSTNAME="${DC_HOSTNAME,,}"
     DOMAIN="$(ask 'AD DNS domain' "${DOMAIN:-example.internal}")"
-    REALM="${DOMAIN^^}"
-    DC_FQDN="${DC_HOSTNAME}.${DOMAIN}"
+    DOMAIN="${DOMAIN,,}"
+
+    if ! is_valid_ad_dc_hostname "$DC_HOSTNAME"; then
+        fail_msg "Invalid AD DC hostname: '$DC_HOSTNAME'. Use 1-15 letters/numbers/hyphens; no underscores and no leading/trailing hyphen."
+        return 1
+    fi
+    is_valid_dns_name "$DOMAIN" || { fail_msg "Invalid DNS domain: $DOMAIN"; return 1; }
+
+    refresh_canonical_identity
+
     DC_IP="$(ask 'DC IPv4 address (must already exist on AD interface)' "${DC_IP:-${AD_IP:-192.168.56.10}}")"
     NETBIOS_DOMAIN="$(ask 'NetBIOS domain' "${NETBIOS_DOMAIN:-$(netbios_from_domain "$DOMAIN")}")"
     NETBIOS_DOMAIN="${NETBIOS_DOMAIN^^}"
-    DC_NETBIOS="$(ask 'NetBIOS name of DC' "${DC_NETBIOS:-${DC_HOSTNAME^^}}")"
-    DC_NETBIOS="${DC_NETBIOS^^}"
+    # The DC NetBIOS/computer name is derived from the same canonical hostname.
+    # Keeping a second independently editable host identity caused DNS/TLS drift.
+    DC_NETBIOS="${DC_HOSTNAME^^}"
 
-    is_valid_dns_name "$DOMAIN" || { fail_msg "Invalid DNS domain: $DOMAIN"; return 1; }
     is_valid_ipv4 "$DC_IP" || { fail_msg "Invalid IPv4: $DC_IP"; return 1; }
     is_valid_netbios "$NETBIOS_DOMAIN" || { fail_msg "Invalid NetBIOS domain: $NETBIOS_DOMAIN"; return 1; }
-    is_valid_netbios "$DC_NETBIOS" || { fail_msg "Invalid NetBIOS DC name: $DC_NETBIOS"; return 1; }
+    is_valid_netbios "$DC_NETBIOS" || { fail_msg "Derived NetBIOS DC name is invalid: $DC_NETBIOS"; return 1; }
 
     local first_label="${DOMAIN%%.*}"
     if [[ "${first_label,,}" == "${DC_HOSTNAME,,}" ]]; then
@@ -739,10 +835,10 @@ collect_identity() {
     result INFO "Network model" "$NETWORK_MODE" "known"
     result INFO "WAN interface" "${WAN_IFACE:-none} ${WAN_CIDR:-}" "default route / Internet"
     result INFO "AD interface" "$AD_IFACE $AD_CIDR" "AD client network"
-    result INFO "DC FQDN" "$DC_FQDN" "unique hostname"
+    result INFO "DC hostname" "$DC_HOSTNAME" "valid DNS label"
+    result INFO "DC FQDN" "$DC_FQDN" "derived from hostname + domain"
     result INFO "DC IP" "$DC_IP" "stable/static before production"
 }
-
 
 collect_network_policy() {
     step "Network policy inputs"
@@ -776,38 +872,134 @@ PYNET
 }
 
 
-configure_hostname_hosts() {
-    step "Hostname and hosts file"
+validate_local_identity_preflight() {
+    refresh_canonical_identity
 
-    if [[ "$(hostname -s)" != "$DC_HOSTNAME" ]]; then
-        if confirm "Set hostname to $DC_HOSTNAME?" Y; then
-            backup_file /etc/hostname
-            hostnamectl set-hostname "$DC_HOSTNAME"
-            change APPLIED "hostname=$DC_HOSTNAME"
-        else
-            fail_msg "Provisioning requires the chosen hostname to be applied."
-            return 1
-        fi
+    local short fqdn
+    short="$(hostname -s 2>/dev/null || true)"
+    fqdn="$(hostname -f 2>/dev/null || true)"
+
+    if [[ "${short,,}" != "$DC_HOSTNAME" ]]; then
+        fail_msg "Hostname preflight failed: hostname -s='$short', expected '$DC_HOSTNAME'."
+        return 1
+    fi
+    if [[ "${fqdn,,}" != "$DC_FQDN" ]]; then
+        fail_msg "FQDN preflight failed: hostname -f='$fqdn', expected '$DC_FQDN'."
+        return 1
+    fi
+    if ! getent ahostsv4 "$DC_FQDN" 2>/dev/null | awk '{print $1}' | grep -Fxq "$DC_IP"; then
+        fail_msg "Local name preflight failed: $DC_FQDN does not resolve locally to $DC_IP."
+        return 1
     fi
 
-    local tmp begin="# BEGIN DEBIAN-AD-ASSISTANT" end="# END DEBIAN-AD-ASSISTANT"
+    result PASS "Local hostname" "$short" "$DC_HOSTNAME"
+    result PASS "Local FQDN" "$fqdn" "$DC_FQDN"
+    result PASS "Local hosts resolution" "$DC_FQDN -> $DC_IP" "correct before provisioning"
+}
+
+rewrite_hosts_for_dc() {
+    refresh_canonical_identity
+    require_cmd python3 "safe /etc/hosts editing" || return 1
+
+    local tmp="${RUN_ROOT}/hosts.new"
+    python3 - "$DC_IP" "$DC_FQDN" "$DC_HOSTNAME" /etc/hosts "$tmp" <<'PYHOSTS'
+from pathlib import Path
+import ipaddress, sys
+
+ip, fqdn, short, src, dst = sys.argv[1:]
+srcp, dstp = Path(src), Path(dst)
+begin = '# BEGIN DEBIAN-AD-ASSISTANT'
+end = '# END DEBIAN-AD-ASSISTANT'
+targets = {fqdn.lower(), short.lower()}
+
+lines = srcp.read_text(encoding='utf-8', errors='replace').splitlines()
+out = []
+skip = False
+for raw in lines:
+    stripped = raw.strip()
+    if stripped == begin:
+        skip = True
+        continue
+    if stripped == end:
+        skip = False
+        continue
+    if skip:
+        continue
+    if not stripped or stripped.startswith('#'):
+        out.append(raw)
+        continue
+
+    body, sep, comment = raw.partition('#')
+    fields = body.split()
+    if len(fields) >= 2:
+        try:
+            ipaddress.ip_address(fields[0])
+        except ValueError:
+            out.append(raw)
+            continue
+        aliases = [x for x in fields[1:] if x.lower() not in targets]
+        if aliases:
+            rebuilt = fields[0] + '\t' + ' '.join(aliases)
+            if sep:
+                rebuilt += '  # ' + comment.strip()
+            out.append(rebuilt)
+        # If the only aliases were our DC names, drop the stale mapping.
+        continue
+    out.append(raw)
+
+while out and not out[-1].strip():
+    out.pop()
+out.extend([
+    '',
+    begin,
+    f'{ip}\t{fqdn} {short}',
+    end,
+    '',
+])
+dstp.write_text('\n'.join(out), encoding='utf-8')
+PYHOSTS
+    chmod 644 "$tmp"
+    chown root:root "$tmp"
+    mv -f -- "$tmp" /etc/hosts
+}
+
+configure_hostname_hosts() {
+    step "Hostname / FQDN / hosts preflight"
+    refresh_canonical_identity
+
+    if ! is_valid_ad_dc_hostname "$DC_HOSTNAME"; then
+        fail_msg "Refusing hostname '$DC_HOSTNAME': AD DC hostname must be DNS-safe and <=15 characters for broad NetBIOS compatibility."
+        return 1
+    fi
+
+    local previous_hostname
+    previous_hostname="$(hostname -s 2>/dev/null || hostname)"
+
+    backup_file /etc/hostname
     backup_file /etc/hosts
-    tmp="$(mktemp)"
-    awk -v begin="$begin" -v end="$end" '
-        $0 == begin {skip=1; next}
-        $0 == end {skip=0; next}
-        !skip {print}
-    ' /etc/hosts >"$tmp"
-    {
-        cat "$tmp"
-        printf '%s\n' "$begin"
-        printf '%s\t%s %s\n' "$DC_IP" "$DC_FQDN" "$DC_HOSTNAME"
-        printf '%s\n' "$end"
-    } >"${tmp}.new"
-    chmod 644 "${tmp}.new"
-    mv -f "${tmp}.new" /etc/hosts
-    rm -f "$tmp"
-    result PASS "/etc/hosts" "$DC_FQDN -> $DC_IP" "present"
+
+    if [[ "${previous_hostname,,}" != "$DC_HOSTNAME" ]]; then
+        msg_exec "hostnamectl set-hostname $DC_HOSTNAME"
+        hostnamectl set-hostname "$DC_HOSTNAME"
+        change APPLIED "hostname=$DC_HOSTNAME"
+    fi
+
+    rewrite_hosts_for_dc
+
+    if ! validate_local_identity_preflight; then
+        msg_warn "Identity validation failed; restoring /etc/hosts and previous hostname."
+        local hosts_backup="${BACKUP_DIR}/rootfs/etc/hosts"
+        if [[ -e "$hosts_backup" || -L "$hosts_backup" ]]; then
+            rm -f /etc/hosts
+            cp -a -- "$hosts_backup" /etc/hosts
+        fi
+        if [[ -n "$previous_hostname" ]]; then
+            hostnamectl set-hostname "$previous_hostname" >/dev/null 2>&1 || true
+        fi
+        return 1
+    fi
+
+    change APPLIED "/etc/hosts canonical DC mapping: $DC_IP $DC_FQDN $DC_HOSTNAME"
 }
 
 configure_time() {
@@ -992,6 +1184,11 @@ wait_for_samba() {
 
 commit_samba_dns_resolver() {
     step "Start Samba DNS / commit resolver"
+    refresh_canonical_identity
+    validate_local_identity_preflight || {
+        fail_msg "Refusing to start Samba with an inconsistent local hostname/FQDN."
+        return 1
+    }
     require_cmd testparm "Samba configuration validation" || return 1
     require_cmd dig "DNS validation" || return 1
 
@@ -1089,33 +1286,72 @@ configure_samba_service_model() {
     result PASS "Samba service model" "samba-ad-dc" "dedicated AD/DC"
 }
 
+verify_provisioned_identity() {
+    refresh_canonical_identity
+    local actual_realm actual_workgroup actual_netbios
+    actual_realm="$(testparm -s --parameter-name=realm 2>/dev/null | tr -d '\r' || true)"
+    actual_workgroup="$(testparm -s --parameter-name=workgroup 2>/dev/null | tr -d '\r' || true)"
+    actual_netbios="$(testparm -s --parameter-name='netbios name' 2>/dev/null | tr -d '\r' || true)"
+
+    [[ "${actual_realm^^}" == "$REALM" ]] || { fail_msg "Provisioned realm mismatch: '$actual_realm' != '$REALM'."; return 1; }
+    [[ "${actual_workgroup^^}" == "$NETBIOS_DOMAIN" ]] || { fail_msg "Provisioned workgroup mismatch: '$actual_workgroup' != '$NETBIOS_DOMAIN'."; return 1; }
+    [[ "${actual_netbios^^}" == "$DC_NETBIOS" ]] || { fail_msg "Provisioned NetBIOS host mismatch: '$actual_netbios' != '$DC_NETBIOS'."; return 1; }
+    validate_local_identity_preflight
+}
+
 provision_new_domain() {
     step "Provision Samba AD/DC"
+    refresh_canonical_identity
 
     if [[ -f /var/lib/samba/private/sam.ldb ]]; then
         fail_msg "Existing sam.ldb detected. Reprovision is prohibited."
         return 1
     fi
 
+    # Hard gate: Samba must never see a hostname identity different from the
+    # one that subsequent DNS/TLS health checks will use.
+    validate_local_identity_preflight || {
+        fail_msg "AD provisioning aborted before any directory database was created."
+        return 1
+    }
+
     if [[ -f /etc/samba/smb.conf ]]; then
         backup_file /etc/samba/smb.conf
         mv /etc/samba/smb.conf "${BACKUP_DIR}/smb.conf.pre-provision"
     fi
 
-    printf '
-Samba will request the initial Administrator password directly.
-'
+    printf '\nSamba will request the initial Administrator password directly.\n'
+
+    local provision_help
+    local -a identity_args=()
+    provision_help="$(samba-tool domain provision --help 2>&1 || true)"
+    if grep -q -- '--host-name' <<<"$provision_help"; then
+        identity_args+=("--host-name=$DC_HOSTNAME")
+    else
+        warn_msg "Installed samba-tool does not advertise --host-name; relying on the validated system hostname '$DC_HOSTNAME'."
+    fi
+    if grep -q -- '--host-ip' <<<"$provision_help"; then
+        identity_args+=("--host-ip=$DC_IP")
+    else
+        warn_msg "Installed samba-tool does not advertise --host-ip; relying on interface discovery for $DC_IP."
+    fi
+
+    msg_exec "Provisioning AD realm=$REALM domain=$NETBIOS_DOMAIN host=$DC_HOSTNAME ip=$DC_IP"
     samba-tool domain provision \
         --domain="$NETBIOS_DOMAIN" \
         --realm="$REALM" \
         --server-role=dc \
         --use-rfc2307 \
-        --dns-backend=SAMBA_INTERNAL <"$INPUT_FD"
+        --dns-backend=SAMBA_INTERNAL \
+        "${identity_args[@]}" <"$INPUT_FD"
 
     configure_samba_interface_scope
-    result PASS "Domain provision" "$DOMAIN" "database created; service not yet trusted until DNS health checks pass"
+    verify_provisioned_identity || {
+        fail_msg "Samba was provisioned but its generated identity does not match the requested identity. Do not continue automatically."
+        return 1
+    }
+    result PASS "Domain provision" "$DOMAIN" "database created; identity verified; service pending DNS health checks"
 }
-
 
 detect_dns_forwarder() {
     local candidates="" existing=""
@@ -1906,8 +2142,8 @@ interactive_mode() {
 
 main() {
     parse_args "$@"
-    require_root
     detect_terminal
+    ensure_privileges "$@"
     need_tty
     init_runtime
     banner
