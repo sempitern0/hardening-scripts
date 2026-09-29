@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 4.3.0-platform-aware-gpo
+# Version 4.4.0-gpo-library
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -40,7 +40,7 @@ IFS=$'\n\t'
 umask 077
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="4.3.0-platform-aware-gpo"
+SCRIPT_VERSION="4.4.0-gpo-library"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -49,6 +49,10 @@ STATE_DIR="/var/lib/debian-ad-assistant"
 LOG_DIR="/var/log/debian-ad-assistant"
 CONFIG_FILE="${STATE_DIR}/config.env"
 GPO_DIR="${STATE_DIR}/gpo"
+GPO_BUILTIN_DIR="${GPO_DIR}/builtin"
+GPO_WINDOWS_DIR="${GPO_BUILTIN_DIR}/windows"
+GPO_CUSTOM_DIR="${GPO_DIR}/custom"
+GPO_DOC_FILE="${GPO_DIR}/GPO-GUIDE.md"
 POST_INSTALL_FILE="${STATE_DIR}/POST-INSTALL.txt"
 
 RUN_ROOT=""
@@ -490,8 +494,8 @@ init_runtime() {
     BACKUP_DIR="${RUN_ROOT}/backup"
     DOMAIN_BACKUP_DIR="${RUN_ROOT}/domain-backup"
 
-    mkdir -p "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR"
-    chmod 700 "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR"
+    mkdir -p "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR"
+    chmod 700 "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_BUILTIN_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR"
     touch "$LOG_FILE" "$REPORT_FILE"
     chmod 600 "$LOG_FILE" "$REPORT_FILE"
 
@@ -2741,7 +2745,7 @@ gpo_inventory_tsv() {
 show_gpo_inventory_indexed() {
     local -a entries=()
     mapfile -t entries < <(gpo_inventory_tsv)
-    local i guid name
+    local i guid name flags
     printf '\n'
     ui_rule
     printf '%b%b  GROUP POLICY OBJECTS%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET"
@@ -2749,10 +2753,13 @@ show_gpo_inventory_indexed() {
     if ((${#entries[@]} == 0)); then
         printf '  %bNo GPOs returned.%b\n' "$C_YELLOW" "$C_RESET"
     else
+        printf '  %-5s %-39s %-39s %s\n' "#" "NAME" "GUID" "STATUS"
         for i in "${!entries[@]}"; do
             guid="${entries[$i]%%$'\t'*}"
             name="${entries[$i]#*$'\t'}"
-            printf '  %b[%2d]%b  %-42s %s\n' "$C_DIM" "$((i+1))" "$C_RESET" "$name" "$guid"
+            flags="$(get_gpo_flags "$guid")"
+            printf '  [%2d]  %-39s %-39s %s\n' \
+                "$((i+1))" "$name" "$guid" "$(gpo_flags_label "$flags")"
         done
     fi
     ui_rule
@@ -2807,60 +2814,162 @@ backup_gpo_safe() {
 }
 
 write_security_gpo_catalog_sources() {
-    mkdir -p "$GPO_DIR"
+    mkdir -p "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR"
+    chmod 700 "$GPO_DIR" "$GPO_BUILTIN_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR"
 
-    cat >"${GPO_DIR}/sec-powershell-logging.json" <<'EOF'
+    cat >"${GPO_WINDOWS_DIR}/sec-powershell-logging.json" <<'EOF'
+[
+  {
+    "keyname": "SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging",
+    "valuename": "EnableScriptBlockLogging",
+    "class": "MACHINE",
+    "type": "REG_DWORD",
+    "data": 1
+  },
+  {
+    "keyname": "SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ModuleLogging",
+    "valuename": "EnableModuleLogging",
+    "class": "MACHINE",
+    "type": "REG_DWORD",
+    "data": 1
+  },
+  {
+    "keyname": "SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ModuleLogging\\ModuleNames",
+    "valuename": "*",
+    "class": "MACHINE",
+    "type": "REG_SZ",
+    "data": "*"
+  }
+]
+EOF
+
+    cat >"${GPO_WINDOWS_DIR}/sec-disable-llmnr.json" <<'EOF'
+[
+  {
+    "keyname": "SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient",
+    "valuename": "EnableMulticast",
+    "class": "MACHINE",
+    "type": "REG_DWORD",
+    "data": 0
+  }
+]
+EOF
+
+    cat >"${GPO_WINDOWS_DIR}/sec-smb-guest.json" <<'EOF'
+[
+  {
+    "keyname": "SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation",
+    "valuename": "AllowInsecureGuestAuth",
+    "class": "MACHINE",
+    "type": "REG_DWORD",
+    "data": 0
+  }
+]
+EOF
+
+    cat >"${GPO_WINDOWS_DIR}/sec-rdp-nla.json" <<'EOF'
+[
+  {
+    "keyname": "SOFTWARE\\Policies\\Microsoft\\Windows NT\\Terminal Services",
+    "valuename": "UserAuthentication",
+    "class": "MACHINE",
+    "type": "REG_DWORD",
+    "data": 1
+  }
+]
+EOF
+
+    cat >"${GPO_WINDOWS_DIR}/sec-screen-lock.json" <<'EOF'
+[
+  {
+    "keyname": "Software\\Policies\\Microsoft\\Windows\\Control Panel\\Desktop",
+    "valuename": "ScreenSaveActive",
+    "class": "USER",
+    "type": "REG_SZ",
+    "data": "1"
+  },
+  {
+    "keyname": "Software\\Policies\\Microsoft\\Windows\\Control Panel\\Desktop",
+    "valuename": "ScreenSaveTimeOut",
+    "class": "USER",
+    "type": "REG_SZ",
+    "data": "600"
+  },
+  {
+    "keyname": "Software\\Policies\\Microsoft\\Windows\\Control Panel\\Desktop",
+    "valuename": "ScreenSaverIsSecure",
+    "class": "USER",
+    "type": "REG_SZ",
+    "data": "1"
+  }
+]
+EOF
+
+    cat >"${GPO_WINDOWS_DIR}/sec-disable-alwaysinstallelevated.json" <<'EOF'
+[
+  {
+    "keyname": "SOFTWARE\\Policies\\Microsoft\\Windows\\Installer",
+    "valuename": "AlwaysInstallElevated",
+    "class": "MACHINE",
+    "type": "REG_DWORD",
+    "data": 0
+  },
+  {
+    "keyname": "Software\\Policies\\Microsoft\\Windows\\Installer",
+    "valuename": "AlwaysInstallElevated",
+    "class": "USER",
+    "type": "REG_DWORD",
+    "data": 0
+  }
+]
+EOF
+
+    cat >"${GPO_WINDOWS_DIR}/sec-legal-notice.json" <<EOF
+[
+  {
+    "keyname": "SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Policies\\\\System",
+    "valuename": "LegalNoticeCaption",
+    "class": "MACHINE",
+    "type": "REG_SZ",
+    "data": "${DOMAIN}"
+  },
+  {
+    "keyname": "SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Policies\\\\System",
+    "valuename": "LegalNoticeText",
+    "class": "MACHINE",
+    "type": "REG_SZ",
+    "data": "Sistema perteneciente al dominio ${DOMAIN}. Acceso restringido a usuarios autorizados."
+  }
+]
+EOF
+
+    # Combined starter file for administrators who prefer one GPO instead of
+    # several narrowly-scoped GPOs. The catalog still deploys separate GPOs by
+    # default because they are easier to troubleshoot and target independently.
+    cat >"${GPO_WINDOWS_DIR}/sec-workstation-starter-combined.json" <<'EOF'
 [
   {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging","valuename":"EnableScriptBlockLogging","class":"MACHINE","type":"REG_DWORD","data":1},
   {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ModuleLogging","valuename":"EnableModuleLogging","class":"MACHINE","type":"REG_DWORD","data":1},
-  {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ModuleLogging\\ModuleNames","valuename":"*","class":"MACHINE","type":"REG_SZ","data":"*"}
-]
-EOF
-
-    cat >"${GPO_DIR}/sec-disable-llmnr.json" <<'EOF'
-[
-  {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient","valuename":"EnableMulticast","class":"MACHINE","type":"REG_DWORD","data":0}
-]
-EOF
-
-    cat >"${GPO_DIR}/sec-smb-guest.json" <<'EOF'
-[
-  {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation","valuename":"AllowInsecureGuestAuth","class":"MACHINE","type":"REG_DWORD","data":0}
-]
-EOF
-
-    cat >"${GPO_DIR}/sec-rdp-nla.json" <<'EOF'
-[
-  {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows NT\\Terminal Services","valuename":"UserAuthentication","class":"MACHINE","type":"REG_DWORD","data":1}
-]
-EOF
-
-    cat >"${GPO_DIR}/sec-screen-lock.json" <<'EOF'
-[
+  {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ModuleLogging\\ModuleNames","valuename":"*","class":"MACHINE","type":"REG_SZ","data":"*"},
+  {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient","valuename":"EnableMulticast","class":"MACHINE","type":"REG_DWORD","data":0},
+  {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation","valuename":"AllowInsecureGuestAuth","class":"MACHINE","type":"REG_DWORD","data":0},
+  {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows NT\\Terminal Services","valuename":"UserAuthentication","class":"MACHINE","type":"REG_DWORD","data":1},
   {"keyname":"Software\\Policies\\Microsoft\\Windows\\Control Panel\\Desktop","valuename":"ScreenSaveActive","class":"USER","type":"REG_SZ","data":"1"},
   {"keyname":"Software\\Policies\\Microsoft\\Windows\\Control Panel\\Desktop","valuename":"ScreenSaveTimeOut","class":"USER","type":"REG_SZ","data":"600"},
-  {"keyname":"Software\\Policies\\Microsoft\\Windows\\Control Panel\\Desktop","valuename":"ScreenSaverIsSecure","class":"USER","type":"REG_SZ","data":"1"}
-]
-EOF
-
-    cat >"${GPO_DIR}/sec-disable-alwaysinstallelevated.json" <<'EOF'
-[
+  {"keyname":"Software\\Policies\\Microsoft\\Windows\\Control Panel\\Desktop","valuename":"ScreenSaverIsSecure","class":"USER","type":"REG_SZ","data":"1"},
   {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows\\Installer","valuename":"AlwaysInstallElevated","class":"MACHINE","type":"REG_DWORD","data":0},
   {"keyname":"Software\\Policies\\Microsoft\\Windows\\Installer","valuename":"AlwaysInstallElevated","class":"USER","type":"REG_DWORD","data":0}
 ]
 EOF
 
-    cat >"${GPO_DIR}/sec-legal-notice.json" <<EOF
-[
-  {"keyname":"SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Policies\\\\System","valuename":"LegalNoticeCaption","class":"MACHINE","type":"REG_SZ","data":"${DOMAIN}"},
-  {"keyname":"SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Policies\\\\System","valuename":"LegalNoticeText","class":"MACHINE","type":"REG_SZ","data":"Sistema perteneciente al dominio ${DOMAIN}. Acceso restringido a usuarios autorizados."}
-]
-EOF
+    chmod 600 "${GPO_WINDOWS_DIR}"/*.json
 
-    chmod 600 "${GPO_DIR}"/sec-*.json
     local f
-    for f in "${GPO_DIR}"/sec-*.json; do
-        python3 -m json.tool "$f" >/dev/null
+    for f in "${GPO_WINDOWS_DIR}"/*.json; do
+        python3 -m json.tool "$f" >/dev/null || {
+            fail_msg "Managed GPO JSON failed validation: $f"
+            return 1
+        }
     done
 }
 
@@ -2869,13 +2978,13 @@ deploy_security_gpo_template() {
     local name file guid="" output=""
 
     case "$id" in
-        1) name="SEC - PowerShell Logging"; file="${GPO_DIR}/sec-powershell-logging.json" ;;
-        2) name="SEC - Disable LLMNR"; file="${GPO_DIR}/sec-disable-llmnr.json" ;;
-        3) name="SEC - SMB Guest Hardening"; file="${GPO_DIR}/sec-smb-guest.json" ;;
-        4) name="SEC - RDP Network Level Authentication"; file="${GPO_DIR}/sec-rdp-nla.json" ;;
-        5) name="SEC - Secure Screen Lock"; file="${GPO_DIR}/sec-screen-lock.json" ;;
-        6) name="SEC - Disable AlwaysInstallElevated"; file="${GPO_DIR}/sec-disable-alwaysinstallelevated.json" ;;
-        7) name="SEC - Authorized Use Notice"; file="${GPO_DIR}/sec-legal-notice.json" ;;
+        1) name="SEC - PowerShell Logging"; file="${GPO_WINDOWS_DIR}/sec-powershell-logging.json" ;;
+        2) name="SEC - Disable LLMNR"; file="${GPO_WINDOWS_DIR}/sec-disable-llmnr.json" ;;
+        3) name="SEC - SMB Guest Hardening"; file="${GPO_WINDOWS_DIR}/sec-smb-guest.json" ;;
+        4) name="SEC - RDP Network Level Authentication"; file="${GPO_WINDOWS_DIR}/sec-rdp-nla.json" ;;
+        5) name="SEC - Secure Screen Lock"; file="${GPO_WINDOWS_DIR}/sec-screen-lock.json" ;;
+        6) name="SEC - Disable AlwaysInstallElevated"; file="${GPO_WINDOWS_DIR}/sec-disable-alwaysinstallelevated.json" ;;
+        7) name="SEC - Authorized Use Notice"; file="${GPO_WINDOWS_DIR}/sec-legal-notice.json" ;;
         *) msg_warn "Unknown security GPO template: $id"; return 1 ;;
     esac
 
@@ -2902,6 +3011,757 @@ deploy_security_gpo_template() {
 
     change APPLIED "Security GPO '$name' guid=$guid target=$target_dn"
     result PASS "$name" "$guid linked to $target_dn" "deployed"
+}
+
+
+
+# ---------------------------------------------------------------------------
+# Persistent GPO policy library
+# ---------------------------------------------------------------------------
+
+builtin_json_catalog_tsv() {
+    cat <<EOF
+1	SEC - PowerShell Logging	${GPO_WINDOWS_DIR}/sec-powershell-logging.json	MACHINE	PowerShell Script Block and Module Logging
+2	SEC - Disable LLMNR	${GPO_WINDOWS_DIR}/sec-disable-llmnr.json	MACHINE	Disable LLMNR multicast name resolution
+3	SEC - SMB Guest Hardening	${GPO_WINDOWS_DIR}/sec-smb-guest.json	MACHINE	Reject insecure SMB guest authentication
+4	SEC - RDP Network Level Authentication	${GPO_WINDOWS_DIR}/sec-rdp-nla.json	MACHINE	Require RDP NLA
+5	SEC - Secure Screen Lock	${GPO_WINDOWS_DIR}/sec-screen-lock.json	USER	Enable secure 10-minute screensaver lock
+6	SEC - Disable AlwaysInstallElevated	${GPO_WINDOWS_DIR}/sec-disable-alwaysinstallelevated.json	BOTH	Disable elevated MSI policy for user and machine
+7	SEC - Authorized Use Notice	${GPO_WINDOWS_DIR}/sec-legal-notice.json	MACHINE	Domain authorized-use logon notice
+8	SEC - Workstation Starter Combined	${GPO_WINDOWS_DIR}/sec-workstation-starter-combined.json	BOTH	Combined JSON containing catalog items 1-6
+EOF
+}
+
+write_gpo_manual() {
+    mkdir -p "$GPO_DIR"
+
+    cat >"$GPO_DOC_FILE" <<EOF
+# DEBIAN AD Assistant - GPO Operations Guide
+
+Generated by ${SCRIPT_NAME} ${SCRIPT_VERSION}
+
+## 1. Persistent policy library
+
+The assistant stores its GPO material under:
+
+    ${GPO_DIR}/
+    ├── builtin/windows/   Managed JSON shipped by the assistant
+    ├── custom/            Administrator-owned editable JSON
+    └── GPO-GUIDE.md       This guide
+
+Built-in policies are regenerated by the assistant and should be treated as
+read-only. Copy a built-in policy into custom/ before changing it.
+
+Current Windows built-ins:
+
+    sec-powershell-logging.json
+    sec-disable-llmnr.json
+    sec-smb-guest.json
+    sec-rdp-nla.json
+    sec-screen-lock.json
+    sec-disable-alwaysinstallelevated.json
+    sec-legal-notice.json
+    sec-workstation-starter-combined.json
+
+## 2. Samba JSON policy format
+
+samba-tool gpo load consumes a JSON array. A Registry policy entry normally has:
+
+    [
+      {
+        "keyname": "SOFTWARE\\\\Policies\\\\Vendor\\\\Product",
+        "valuename": "SettingName",
+        "class": "MACHINE",
+        "type": "REG_DWORD",
+        "data": 1
+      }
+    ]
+
+class:
+    MACHINE  -> Computer Configuration
+    USER     -> User Configuration
+    BOTH     -> both policy classes
+
+Common examples used by this assistant:
+    REG_DWORD
+    REG_SZ
+    REG_BINARY
+
+For REG_BINARY, a JSON array is interpreted as bytes.
+
+Validate a file before use:
+
+    python3 -m json.tool my-policy.json
+
+## 3. Merge versus replace
+
+Merge policy data into an existing GPO:
+
+    samba-tool gpo load {GUID} --content=/path/policy.json
+
+Replace existing Registry policies in the selected GPO:
+
+    samba-tool gpo load {GUID} --content=/path/policy.json --replace
+
+The assistant always offers a backup before loading JSON.
+
+## 4. Removing Registry policy values
+
+samba-tool gpo remove accepts JSON entries containing keyname, valuename and class.
+The assistant can derive this removal description from a full custom JSON file.
+
+Conceptual removal input:
+
+    [
+      {
+        "keyname": "SOFTWARE\\\\Policies\\\\Vendor\\\\Product",
+        "valuename": "SettingName",
+        "class": "MACHINE"
+      }
+    ]
+
+## 5. Where the real GPO is stored
+
+A GPO has two parts:
+
+1. LDAP Group Policy Container:
+       CN={GUID},CN=Policies,CN=System,<domain DN>
+
+2. SYSVOL Group Policy Template:
+       <SYSVOL>/${DOMAIN}/Policies/{GUID}/
+
+Do not manually create or delete these directories. Use samba-tool so LDAP,
+GPT.INI, Registry.pol and SYSVOL remain consistent.
+
+The assistant's JSON library is only source material; loading the JSON writes
+the actual policy into the selected GPO.
+
+## 6. GPO status
+
+The AD groupPolicyContainer "flags" attribute represents the GPO state:
+
+    0 = Enabled
+    1 = User Configuration disabled
+    2 = Computer Configuration disabled
+    3 = All settings disabled
+
+This is different from GPO linking.
+
+A GPO may be:
+    enabled but not linked,
+    linked but globally disabled,
+    or enabled with only one policy class active.
+
+Use:
+    ad-gpo -> GPO status
+
+## 7. Links and scope
+
+A GPO is not normally applied until it is linked to a domain/OU (unless a
+different inheritance path applies). The assistant keeps status and links as
+separate operations.
+
+Use:
+    ad-gpo -> Link / update
+    ad-gpo -> Remove link
+    ad-gpo -> List containers
+
+## 8. Windows policies
+
+Windows Registry/CSE JSON lives under:
+
+    ${GPO_WINDOWS_DIR}
+
+The default Registry Client Side Extension used by Samba covers most Registry
+policies. Policies requiring another CSE may need explicit machine/user
+extension GUIDs; do not assume every Windows policy is only a Registry value.
+
+## 9. Ubuntu ADSys
+
+Ubuntu ADSys uses Ubuntu-specific administrative templates. Canonical
+recommends keeping Ubuntu and Windows policy configuration separate.
+
+Generate templates on an Ubuntu client whose ADSys version matches that client:
+
+    mkdir -p ~/adsys-admx
+    cd ~/adsys-admx
+    adsysctl policy admx lts-only
+
+or:
+
+    adsysctl policy admx all
+
+This generates:
+    Ubuntu.admx
+    Ubuntu.adml
+
+The assistant detects the Samba SYSVOL path dynamically. The Central Store is:
+
+    <SYSVOL>/${DOMAIN}/Policies/PolicyDefinitions/Ubuntu.admx
+    <SYSVOL>/${DOMAIN}/Policies/PolicyDefinitions/en-US/Ubuntu.adml
+
+Use:
+    ad-gpo -> Platform GPO catalog -> Ubuntu ADSys clients
+
+Important:
+    Do not blindly reuse a Windows JSON policy as an Ubuntu ADSys policy.
+    Ubuntu policy Registry paths and values must match the Ubuntu.admx generated
+    for the ADSys version used by the client.
+
+## 10. Samba Linux policies
+
+Samba/winbind Linux policy types are normally managed with:
+
+    samba-tool gpo manage ...
+
+rather than generic Registry JSON.
+
+Examples include smb_conf, access, OpenSSH, sudoers, scripts, MOTD, issue,
+files and symlinks, depending on the Samba version installed.
+
+Use:
+    ad-gpo -> Platform GPO catalog -> Samba Linux clients
+
+## 11. Recommended staging workflow
+
+A safe production workflow is:
+
+1. Create/load policy content.
+2. Keep the GPO disabled and unlinked.
+3. Review JSON / GPO contents.
+4. Link to a test OU.
+5. Enable the required machine/user portion.
+6. Validate on a test client.
+7. Expand scope only after validation.
+
+The assistant can stage the recommended Windows starter GPOs in exactly this
+disabled/unlinked state.
+
+## 12. Useful commands
+
+List GPOs:
+    samba-tool gpo listall
+
+Inspect:
+    samba-tool gpo show {GUID}
+
+Linked containers:
+    samba-tool gpo listcontainers {GUID}
+
+Load JSON:
+    samba-tool gpo load {GUID} --content=/path/policy.json
+
+Remove JSON-defined settings:
+    samba-tool gpo remove {GUID} --content=/path/remove.json
+
+Check LDAP/SYSVOL ACL consistency:
+    samba-tool gpo aclcheck
+
+SYSVOL ACL check:
+    samba-tool ntacl sysvolcheck
+
+Never run sysvolreset merely because a GPO operation failed. Diagnose DNS,
+Kerberos, LDAP and GPO/SYSVOL ACL state first.
+EOF
+
+    chmod 600 "$GPO_DOC_FILE"
+}
+
+initialize_gpo_library() {
+    mkdir -p "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR"
+    chmod 700 "$GPO_DIR" "$GPO_BUILTIN_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR"
+
+    write_security_gpo_catalog_sources
+    write_gpo_manual
+
+    # A skeleton is created only once so administrators can keep editing it.
+    if [[ ! -e "${GPO_CUSTOM_DIR}/example-custom-policy.json" ]]; then
+        cat >"${GPO_CUSTOM_DIR}/example-custom-policy.json" <<'EOF'
+[
+  {
+    "keyname": "SOFTWARE\\Policies\\Example\\Product",
+    "valuename": "ExampleSetting",
+    "class": "MACHINE",
+    "type": "REG_DWORD",
+    "data": 1
+  }
+]
+EOF
+        chmod 600 "${GPO_CUSTOM_DIR}/example-custom-policy.json"
+    fi
+}
+
+show_gpo_library_paths() {
+    initialize_gpo_library
+    ui_menu_screen "GPO POLICY LIBRARY" "Persistent JSON sources and documentation paths"
+    printf '  %-22s %s\n' "Library root" "$GPO_DIR"
+    printf '  %-22s %s\n' "Windows built-ins" "$GPO_WINDOWS_DIR"
+    printf '  %-22s %s\n' "Custom JSON" "$GPO_CUSTOM_DIR"
+    printf '  %-22s %s\n' "Manual" "$GPO_DOC_FILE"
+    printf '  %-22s %s\n' "SYSVOL" "$(get_sysvol_path 2>/dev/null || printf 'not detected')"
+    printf '  %-22s %s\n' "PolicyDefinitions" "$(get_policy_definitions_path 2>/dev/null || printf 'not detected')"
+    ui_rule
+}
+
+show_gpo_manual() {
+    initialize_gpo_library
+    if command_exists less && [[ -t 1 ]]; then
+        LESS='-FRSX' less "$GPO_DOC_FILE"
+    else
+        cat "$GPO_DOC_FILE"
+    fi
+}
+
+json_policy_files_tsv() {
+    local scope="${1:-all}" f kind
+    initialize_gpo_library
+
+    if [[ "$scope" == "all" || "$scope" == "builtin" ]]; then
+        while IFS= read -r f; do
+            [[ -f "$f" ]] || continue
+            printf 'builtin\t%s\t%s\n' "$(basename "$f")" "$f"
+        done < <(find "$GPO_WINDOWS_DIR" -maxdepth 1 -type f -name '*.json' -print | sort)
+    fi
+
+    if [[ "$scope" == "all" || "$scope" == "custom" ]]; then
+        while IFS= read -r f; do
+            [[ -f "$f" ]] || continue
+            printf 'custom\t%s\t%s\n' "$(basename "$f")" "$f"
+        done < <(find "$GPO_CUSTOM_DIR" -maxdepth 1 -type f -name '*.json' -print | sort)
+    fi
+}
+
+show_json_policy_inventory() {
+    local scope="${1:-all}"
+    local -a entries=()
+    local i kind name path
+    mapfile -t entries < <(json_policy_files_tsv "$scope")
+
+    printf '\n'
+    ui_rule
+    printf '%b%b  JSON POLICY LIBRARY%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET"
+    ui_rule
+    printf '  %-5s %-9s %-38s %s\n' "#" "TYPE" "FILE" "PATH"
+    for i in "${!entries[@]}"; do
+        IFS=$'\t' read -r kind name path <<<"${entries[$i]}"
+        printf '  [%2d]  %-9s %-38s %s\n' "$((i+1))" "$kind" "$name" "$path"
+    done
+    ((${#entries[@]})) || printf '  %bNo JSON policies found.%b\n' "$C_YELLOW" "$C_RESET"
+    ui_rule
+}
+
+select_json_policy_file() {
+    local scope="${1:-all}"
+    local -a entries=()
+    local i kind name path choice
+    mapfile -t entries < <(json_policy_files_tsv "$scope")
+
+    printf '\n' >&2
+    ui_rule >&2
+    printf '%b%b  SELECT JSON POLICY%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET" >&2
+    ui_rule >&2
+
+    for i in "${!entries[@]}"; do
+        IFS=$'\t' read -r kind name path <<<"${entries[$i]}"
+        printf '  %b[%2d]%b  %-9s %-38s\n' "$C_DIM" "$((i+1))" "$C_RESET" "$kind" "$name" >&2
+    done
+    printf '  %b[M ]%b  Enter path manually\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[0 ]%b  Cancel\n' "$C_RED" "$C_RESET" >&2
+    ui_rule >&2
+
+    choice="$(ask 'Select JSON policy' '0')"
+    case "${choice^^}" in
+        0|"") return 1 ;;
+        M)
+            path="$(ask 'JSON policy path')"
+            [[ -f "$path" ]] || { msg_warn "File not found: $path"; return 1; }
+            printf '%s' "$path"
+            ;;
+        *)
+            [[ "$choice" =~ ^[0-9]+$ ]] || { msg_warn "Invalid JSON selection."; return 1; }
+            (( choice >= 1 && choice <= ${#entries[@]} )) || { msg_warn "JSON selection out of range."; return 1; }
+            printf '%s' "${entries[$((choice-1))]##*$'\t'}"
+            ;;
+    esac
+}
+
+validate_gpo_json_file() {
+    local file="$1"
+    [[ -f "$file" ]] || { msg_warn "File not found: $file"; return 1; }
+
+    if ! python3 -m json.tool "$file" >/dev/null 2>&1; then
+        result FAIL "GPO JSON" "$file" "valid JSON"
+        return 1
+    fi
+
+    if ! python3 -c '
+import json,sys
+p=sys.argv[1]
+data=json.load(open(p,encoding="utf-8"))
+if not isinstance(data,list) or not data:
+    raise SystemExit(2)
+for n,item in enumerate(data,1):
+    if not isinstance(item,dict):
+        raise SystemExit(3)
+    for k in ("keyname","valuename","class"):
+        if k not in item or not isinstance(item[k],str) or not item[k]:
+            raise SystemExit(4)
+    if item["class"] not in ("MACHINE","USER","BOTH"):
+        raise SystemExit(5)
+    if "type" in item and not isinstance(item["type"],str):
+        raise SystemExit(6)
+' "$file"; then
+        result FAIL "GPO JSON schema" "$file" "array with keyname/valuename/class"
+        return 1
+    fi
+
+    result PASS "GPO JSON" "$file" "valid"
+}
+
+copy_builtin_json_to_custom() {
+    local src base dest stem n=1
+    src="$(select_json_policy_file builtin)" || return 1
+    base="$(basename "$src")"
+    dest="${GPO_CUSTOM_DIR}/${base}"
+
+    if [[ -e "$dest" ]]; then
+        stem="${base%.json}"
+        while [[ -e "${GPO_CUSTOM_DIR}/${stem}-${n}.json" ]]; do
+            n=$((n+1))
+        done
+        dest="${GPO_CUSTOM_DIR}/${stem}-${n}.json"
+    fi
+
+    cp -a "$src" "$dest"
+    chmod 600 "$dest"
+    change APPLIED "Copied built-in GPO JSON to custom library: $dest"
+    result PASS "Custom JSON copy" "$dest" "editable"
+}
+
+create_custom_json_skeleton() {
+    local name file
+    name="$(ask 'Custom JSON file name' 'custom-policy.json')"
+    [[ "$name" == *.json ]] || name="${name}.json"
+    name="$(basename "$name")"
+    file="${GPO_CUSTOM_DIR}/${name}"
+
+    [[ ! -e "$file" ]] || {
+        msg_warn "Custom JSON already exists: $file"
+        return 1
+    }
+
+    cat >"$file" <<'EOF'
+[
+  {
+    "keyname": "SOFTWARE\\Policies\\Example\\Product",
+    "valuename": "SettingName",
+    "class": "MACHINE",
+    "type": "REG_DWORD",
+    "data": 1
+  }
+]
+EOF
+    chmod 600 "$file"
+    result PASS "Custom JSON" "$file" "created"
+}
+
+edit_custom_json_file() {
+    local file editor backup
+    file="$(select_json_policy_file custom)" || return 1
+    editor="${EDITOR:-}"
+    if [[ -z "$editor" ]]; then
+        if command_exists nano; then editor="nano"
+        elif command_exists vim; then editor="vim"
+        else editor="vi"
+        fi
+    fi
+
+    backup="${RUN_ROOT}/$(basename "$file").before-edit"
+    cp -a "$file" "$backup"
+
+    "$editor" "$file"
+
+    if validate_gpo_json_file "$file"; then
+        change APPLIED "Edited custom GPO JSON: $file"
+        return 0
+    fi
+
+    msg_warn "Edited JSON is invalid."
+    if confirm "Restore the pre-edit copy?" Y; then
+        cp -a "$backup" "$file"
+        result PASS "Custom JSON rollback" "$file" "restored"
+    fi
+    return 1
+}
+
+select_or_create_gpo_guid() {
+    local choice name guid
+    printf '\n' >&2
+    printf '  %b[E]%b Select existing GPO\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[N]%b Create new GPO\n' "$C_GREEN" "$C_RESET" >&2
+    printf '  %b[0]%b Cancel\n' "$C_RED" "$C_RESET" >&2
+
+    choice="$(ask 'GPO target' 'E')"
+    case "${choice^^}" in
+        E) select_gpo_guid ;;
+        N)
+            name="$(ask 'New GPO display name')"
+            [[ -n "$name" ]] || return 1
+            create_gpo_safe "$name"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+apply_json_policy_interactive() {
+    local scope="${1:-all}"
+    local file guid mode output=""
+    file="$(select_json_policy_file "$scope")" || return 1
+    validate_gpo_json_file "$file" || return 1
+    guid="$(select_or_create_gpo_guid)" || return 1
+
+    printf '\n  JSON : %s\n  GPO  : %s\n' "$file" "$guid"
+    mode="$(ask 'Load mode [merge/replace]' 'merge')"
+    case "$mode" in
+        merge|replace) ;;
+        *) msg_warn "Expected merge or replace."; return 1 ;;
+    esac
+
+    backup_gpo_safe "$guid" || true
+
+    if [[ "$mode" == "replace" ]]; then
+        confirm_high_risk "Replace Registry policy content in GPO $guid with $(basename "$file")" || return 1
+        if ! capture_samba_gpo output load "$guid" --content="$file" --replace; then
+            printf '%s\n' "$output" >&2
+            msg_warn "GPO JSON replace failed."
+            return 1
+        fi
+    else
+        confirm "Merge $(basename "$file") into GPO $guid?" N || return 1
+        if ! capture_samba_gpo output load "$guid" --content="$file"; then
+            printf '%s\n' "$output" >&2
+            msg_warn "GPO JSON merge failed."
+            return 1
+        fi
+    fi
+
+    change APPLIED "Loaded JSON $(basename "$file") into GPO=$guid mode=$mode"
+    result PASS "GPO JSON load" "$(basename "$file") -> $guid" "$mode"
+}
+
+remove_json_policy_interactive() {
+    local file guid remove_file output=""
+    file="$(select_json_policy_file all)" || return 1
+    validate_gpo_json_file "$file" || return 1
+    guid="$(select_gpo_guid)" || return 1
+
+    remove_file="${RUN_ROOT}/remove-$(basename "$file")"
+    if ! python3 -c '
+import json,sys
+src,dst=sys.argv[1:3]
+data=json.load(open(src,encoding="utf-8"))
+out=[]
+for item in data:
+    out.append({
+        "keyname": item["keyname"],
+        "valuename": item["valuename"],
+        "class": item["class"],
+    })
+json.dump(out,open(dst,"w",encoding="utf-8"),indent=2)
+' "$file" "$remove_file"; then
+        msg_warn "Unable to build GPO removal JSON."
+        return 1
+    fi
+
+    backup_gpo_safe "$guid" || true
+    confirm_high_risk "Remove settings described by $(basename "$file") from GPO $guid" || return 1
+
+    if ! capture_samba_gpo output remove "$guid" --content="$remove_file"; then
+        printf '%s\n' "$output" >&2
+        msg_warn "GPO JSON removal failed."
+        return 1
+    fi
+
+    change APPLIED "Removed JSON-described settings from GPO=$guid source=$(basename "$file")"
+    result PASS "GPO JSON remove" "$(basename "$file") -> $guid" "removed"
+}
+
+gpo_dn_from_guid() {
+    local guid="$1"
+    printf 'CN=%s,CN=Policies,CN=System,%s' "$guid" "$(domain_dn "$DOMAIN")"
+}
+
+get_gpo_flags() {
+    local guid="$1" dn flags=""
+    dn="$(gpo_dn_from_guid "$guid")"
+
+    if [[ -f /var/lib/samba/private/sam.ldb ]]; then
+        flags="$(
+            ldbsearch -H /var/lib/samba/private/sam.ldb -b "$dn" -s base flags 2>/dev/null |
+            awk -F': ' '/^flags:/{print $2;exit}' || true
+        )"
+    fi
+
+    [[ "$flags" =~ ^[0-3]$ ]] || flags=0
+    printf '%s' "$flags"
+}
+
+gpo_flags_label() {
+    case "${1:-0}" in
+        0) printf 'ENABLED' ;;
+        1) printf 'USER_DISABLED' ;;
+        2) printf 'COMPUTER_DISABLED' ;;
+        3) printf 'ALL_DISABLED' ;;
+        *) printf 'UNKNOWN' ;;
+    esac
+}
+
+set_gpo_flags() {
+    local guid="$1" flags="$2" dn file actual
+    [[ "$flags" =~ ^[0-3]$ ]] || return 1
+    dn="$(gpo_dn_from_guid "$guid")"
+    file="${RUN_ROOT}/gpo-${guid//[{}]/}-flags.ldif"
+
+    cat >"$file" <<EOF
+dn: $dn
+changetype: modify
+replace: flags
+flags: $flags
+-
+EOF
+    chmod 600 "$file"
+
+    ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"
+    ldbmodify_with_assistant_ticket "$file" >/dev/null
+
+    actual="$(get_gpo_flags "$guid")"
+    [[ "$actual" == "$flags" ]] || {
+        msg_warn "GPO status verification failed: requested=$flags actual=$actual"
+        return 1
+    }
+
+    change APPLIED "GPO status guid=$guid flags=$flags ($(gpo_flags_label "$flags"))"
+    result PASS "GPO status" "$guid -> $(gpo_flags_label "$flags")" "updated"
+}
+
+gpo_status_menu() {
+    local guid flags choice newflags
+    guid="$(select_gpo_guid)" || return 1
+    flags="$(get_gpo_flags "$guid")"
+
+    while true; do
+        ui_menu_screen "GPO STATUS" "Enable/disable the whole GPO or one policy class; links are managed separately"
+        printf '  GUID           : %s\n' "$guid"
+        printf '  Current flags  : %s\n' "$flags"
+        printf '  Current state  : %s\n\n' "$(gpo_flags_label "$flags")"
+        ui_menu_item "1" "Enabled" "Machine + user settings enabled"
+        ui_menu_item "2" "Disable user settings" "Computer settings remain enabled"
+        ui_menu_item "3" "Disable computer settings" "User settings remain enabled"
+        ui_menu_item "4" "Disable all settings" "Keep GPO object/content but do not process settings" "$C_YELLOW"
+        ui_menu_exit
+        ui_rule
+
+        choice="$(ask 'Select GPO state' '0')"
+        case "$choice" in
+            1) newflags=0 ;;
+            2) newflags=1 ;;
+            3) newflags=2 ;;
+            4) newflags=3 ;;
+            0) break ;;
+            *) msg_warn "Invalid state."; ui_pause; continue ;;
+        esac
+
+        if [[ "$newflags" == "$flags" ]]; then
+            result SKIP "GPO status" "$(gpo_flags_label "$flags")" "already selected"
+        elif confirm "Change GPO status to $(gpo_flags_label "$newflags")?" N; then
+            backup_gpo_safe "$guid" || true
+            set_gpo_flags "$guid" "$newflags"
+            flags="$(get_gpo_flags "$guid")"
+        fi
+        ui_pause
+    done
+}
+
+stage_windows_starter_gpos() {
+    local id name file guid output=""
+    initialize_gpo_library
+
+    printf '\nThis stages six Windows security GPOs with policy content loaded,\n'
+    printf 'but leaves them ALL_DISABLED and UNLINKED for safe review/testing.\n\n'
+    confirm "Stage the recommended Windows GPO set?" N || return 0
+
+    for id in 1 2 3 4 5 6; do
+        case "$id" in
+            1) name="SEC - PowerShell Logging"; file="${GPO_WINDOWS_DIR}/sec-powershell-logging.json" ;;
+            2) name="SEC - Disable LLMNR"; file="${GPO_WINDOWS_DIR}/sec-disable-llmnr.json" ;;
+            3) name="SEC - SMB Guest Hardening"; file="${GPO_WINDOWS_DIR}/sec-smb-guest.json" ;;
+            4) name="SEC - RDP Network Level Authentication"; file="${GPO_WINDOWS_DIR}/sec-rdp-nla.json" ;;
+            5) name="SEC - Secure Screen Lock"; file="${GPO_WINDOWS_DIR}/sec-screen-lock.json" ;;
+            6) name="SEC - Disable AlwaysInstallElevated"; file="${GPO_WINDOWS_DIR}/sec-disable-alwaysinstallelevated.json" ;;
+        esac
+
+        guid="$(find_gpo_guid "$name" || true)"
+        if [[ -z "$guid" ]]; then
+            guid="$(ensure_gpo "$name")" || {
+                msg_warn "Could not create $name; continuing."
+                continue
+            }
+        else
+            backup_gpo_safe "$guid" || true
+        fi
+
+        if ! capture_samba_gpo output load "$guid" --content="$file"; then
+            printf '%s\n' "$output" >&2
+            msg_warn "Could not load $name; continuing."
+            continue
+        fi
+
+        if ! set_gpo_flags "$guid" 3; then
+            msg_warn "Could not disable staged GPO $name; review it manually."
+            continue
+        fi
+
+        result PASS "Staged GPO" "$name / $guid" "ALL_DISABLED + unlinked"
+    done
+}
+
+json_policy_library_menu() {
+    initialize_gpo_library
+
+    while true; do
+        ui_menu_screen "JSON POLICY LIBRARY" "Built-in policies, editable custom JSON, validation and deployment"
+        ui_menu_item "1" "List JSON policies" "Show built-in and custom policy files"
+        ui_menu_item "2" "Apply JSON policy" "Merge/replace JSON into existing or new GPO" "$C_GREEN"
+        ui_menu_item "3" "Remove JSON settings" "Remove policy values described by a JSON file" "$C_YELLOW"
+        ui_menu_item "4" "Copy built-in to custom" "Create an editable copy without modifying managed templates"
+        ui_menu_item "5" "Create custom skeleton" "Create a new JSON policy source"
+        ui_menu_item "6" "Edit custom JSON" "Open custom policy in \$EDITOR/nano/vi"
+        ui_menu_item "7" "Validate JSON" "Syntax + minimal Samba policy schema validation"
+        ui_menu_item "8" "Storage paths" "Show library, SYSVOL and PolicyDefinitions paths"
+        ui_menu_item "9" "Read JSON/GPO manual" "Open generated GPO-GUIDE.md"
+        ui_menu_exit
+        ui_rule
+
+        local choice file
+        choice="$(ask 'Select operation' '1')"
+        case "$choice" in
+            1) show_json_policy_inventory all; ui_pause ;;
+            2) apply_json_policy_interactive all; ui_pause ;;
+            3) remove_json_policy_interactive; ui_pause ;;
+            4) copy_builtin_json_to_custom; ui_pause ;;
+            5) create_custom_json_skeleton; ui_pause ;;
+            6) edit_custom_json_file; ui_pause ;;
+            7)
+                file="$(select_json_policy_file all)" || { ui_pause; continue; }
+                validate_gpo_json_file "$file" || true
+                ui_pause
+                ;;
+            8) show_gpo_library_paths; ui_pause ;;
+            9) show_gpo_manual; ui_pause ;;
+            0) break ;;
+            *) msg_warn "Invalid menu option."; ui_pause ;;
+        esac
+    done
 }
 
 
@@ -3092,17 +3952,21 @@ create_platform_scoped_gpo() {
 }
 
 ubuntu_adsys_gpo_menu() {
+    initialize_gpo_library
+
     while true; do
-        ui_menu_screen "UBUNTU ADSYS POLICY CONTROL" "Ubuntu-specific templates and GPO scaffolding; kept separate from Windows policy catalog"
+        ui_menu_screen "UBUNTU ADSYS POLICY CONTROL" "Ubuntu administrative templates and Ubuntu-scoped GPO preparation"
         ui_menu_item "1" "Audit ADSys readiness" "Check Central Store, Ubuntu ADMX/ADML and local tooling"
-        ui_menu_item "2" "Install local templates" "Copy existing Ubuntu.admx + Ubuntu.adml into SYSVOL"
+        ui_menu_item "2" "Install local templates" "Copy Ubuntu.admx + Ubuntu.adml into detected SYSVOL Central Store"
         ui_menu_item "3" "Generate templates" "Use local adsysctl to generate lts-only/all templates"
         ui_menu_item "4" "Create Ubuntu GPO" "Create/link an empty UBU-prefixed policy for ADSys clients" "$C_GREEN"
-        ui_menu_item "5" "Show targeting model" "Explain machine/user Ubuntu policies and refresh behavior"
+        ui_menu_item "5" "Stage Ubuntu GPO set" "Create disabled/unlinked UBU baseline/login/desktop GPO objects" "$C_YELLOW"
+        ui_menu_item "6" "Show paths & workflow" "Display exact Central Store path and ADSys generation commands"
+        ui_menu_item "7" "JSON/GPO manual" "Open persistent GPO-GUIDE.md"
         ui_menu_exit
         ui_rule
 
-        local choice admx adml
+        local choice admx adml name guid
         choice="$(ask 'Select operation' '1')"
         case "$choice" in
             1) audit_platform_gpo_readiness; ui_pause ;;
@@ -3115,23 +3979,33 @@ ubuntu_adsys_gpo_menu() {
             3) generate_and_install_ubuntu_adsys_templates; ui_pause ;;
             4)
                 create_platform_scoped_gpo "UBU" "Ubuntu ADSys clients"
-                printf '\n%bNext step:%b edit Ubuntu-specific settings from a compatible Group Policy editor using the Ubuntu administrative templates.\n' \
-                    "$C_CYAN" "$C_RESET"
                 ui_pause
                 ;;
             5)
-                printf '\n'
-                ui_rule
-                printf '%bUbuntu ADSys policy model%b\n' "$C_BOLD" "$C_RESET"
-                ui_rule
-                printf '  Machine policies : Computer Configuration -> Policies -> Administrative Templates -> Ubuntu\n'
-                printf '  User policies    : User Configuration -> Policies -> Administrative Templates -> Ubuntu\n'
-                printf '  Machine refresh  : boot / periodic refresh / adsysctl update -m\n'
-                printf '  User refresh     : login / periodic refresh / adsysctl update\n'
-                printf '\n  Keep Ubuntu and Windows settings in separate GPOs/OUs where practical.\n'
-                printf '  ADMX/ADML define the editing UI; the Ubuntu client still needs ADSys to consume Ubuntu policies.\n'
+                printf '\nThe following GPOs will be created disabled and unlinked:\n'
+                printf '  UBU - Baseline\n  UBU - Login Screen\n  UBU - Desktop Users\n\n'
+                confirm "Stage these Ubuntu GPO objects?" N || { ui_pause; continue; }
+                for name in "UBU - Baseline" "UBU - Login Screen" "UBU - Desktop Users"; do
+                    guid="$(find_gpo_guid "$name" || true)"
+                    [[ -n "$guid" ]] || guid="$(ensure_gpo "$name")" || continue
+                    set_gpo_flags "$guid" 3 || true
+                    result PASS "Staged Ubuntu GPO" "$name / $guid" "ALL_DISABLED + unlinked"
+                done
                 ui_pause
                 ;;
+            6)
+                show_gpo_library_paths
+                printf '\n'
+                printf '  Generate matching templates on an Ubuntu ADSys client:\n'
+                printf '    mkdir -p ~/adsys-admx && cd ~/adsys-admx\n'
+                printf '    adsysctl policy admx lts-only\n'
+                printf '\n'
+                printf '  Then copy Ubuntu.admx and Ubuntu.adml to this DC and use menu option [2].\n'
+                printf '  Do not guess ADSys Registry value names from Windows policies; use the\n'
+                printf '  Ubuntu.admx generated by the ADSys version deployed to your clients.\n'
+                ui_pause
+                ;;
+            7) show_gpo_manual; ui_pause ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -3296,10 +4170,10 @@ security_gpo_catalog_menu() {
     samba-tool gpo load --help >/dev/null 2>&1 ||
         { msg_warn "Installed Samba does not support gpo load."; return 1; }
 
-    write_security_gpo_catalog_sources
+    initialize_gpo_library
 
     while true; do
-        ui_menu_screen "WINDOWS SECURITY GPO CATALOG" "Registry-based policies for Windows domain clients; do not use as an Ubuntu ADSys catalog"
+        ui_menu_screen "WINDOWS SECURITY GPO CATALOG" "Registry-based policies for Windows domain clients; separate from Ubuntu ADSys"
         ui_menu_item "1" "PowerShell Logging" "Script Block + Module Logging"
         ui_menu_item "2" "Disable LLMNR" "Reduce multicast name-resolution poisoning exposure"
         ui_menu_item "3" "SMB Guest Hardening" "Disable insecure guest authentication"
@@ -3307,12 +4181,15 @@ security_gpo_catalog_menu() {
         ui_menu_item "5" "Secure Screen Lock" "10-minute secure screensaver for users"
         ui_menu_item "6" "Disable AlwaysInstallElevated" "Disable elevated MSI policy for machine + user"
         ui_menu_item "7" "Authorized Use Notice" "Domain legal/authorized-use banner"
-        ui_menu_item "A" "Recommended starter pack" "Deploy 1,2,3,4,5,6"
+        ui_menu_item "8" "Combined starter JSON" "Load 1-6 into one GPO instead of separate GPOs"
+        ui_menu_item "A" "Deploy starter pack" "Create/link policies 1-6 immediately" "$C_GREEN"
+        ui_menu_item "S" "Stage starter pack" "Create/load 1-6 ALL_DISABLED and UNLINKED for testing" "$C_YELLOW"
+        ui_menu_item "J" "JSON policy library" "Browse/edit/validate/load built-in and custom JSON"
         ui_menu_item "D" "Domain password policy" "Review/configure Samba complexity + lockout settings"
         ui_menu_exit
         ui_rule
 
-        local choice target id
+        local choice target id guid output=""
         choice="$(ask 'Select policy' '0')"
         case "${choice^^}" in
             0) break ;;
@@ -3323,17 +4200,32 @@ security_gpo_catalog_menu() {
                             msg_warn "Starter-pack policy $id failed; remaining policies will still be attempted."
                         fi
                     done
-                    samba-tool ntacl sysvolcheck >/dev/null 2>&1 || msg_warn "SYSVOL ACL differences detected after GPO deployment."
+                    samba-tool ntacl sysvolcheck >/dev/null 2>&1 ||
+                        msg_warn "SYSVOL ACL differences detected after GPO deployment."
                 fi
                 ui_pause
                 ;;
-            D)
-                domain_password_policy_menu
+            S) stage_windows_starter_gpos; ui_pause ;;
+            J) json_policy_library_menu ;;
+            D) domain_password_policy_menu ;;
+            8)
+                guid="$(select_or_create_gpo_guid)" || { ui_pause; continue; }
+                backup_gpo_safe "$guid" || true
+                if confirm "Merge combined starter JSON into $guid?" N; then
+                    if ! capture_samba_gpo output load "$guid" --content="${GPO_WINDOWS_DIR}/sec-workstation-starter-combined.json"; then
+                        printf '%s\n' "$output" >&2
+                        msg_warn "Combined starter load failed."
+                    else
+                        result PASS "Combined starter" "$guid" "loaded"
+                    fi
+                fi
+                ui_pause
                 ;;
             1|2|3|4|5|6|7)
                 if target="$(select_directory_target_dn)"; then
                     deploy_security_gpo_template "$choice" "$target"
-                    samba-tool ntacl sysvolcheck >/dev/null 2>&1 || msg_warn "SYSVOL ACL differences detected."
+                    samba-tool ntacl sysvolcheck >/dev/null 2>&1 ||
+                        msg_warn "SYSVOL ACL differences detected."
                 fi
                 ui_pause
                 ;;
@@ -3619,31 +4511,39 @@ permissions_admin_menu() {
 
 gpo_admin_menu() {
     ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"
+    initialize_gpo_library
 
     while true; do
-        ui_menu_screen "GROUP POLICY CONTROL" "Indexed GPO lifecycle, curated security templates, scope, diagnostics and backup"
-        ui_menu_item "1" "List GPOs + GUIDs" "Indexed inventory; no manual GUID lookup required"
+        ui_menu_screen "GROUP POLICY CONTROL" "Lifecycle, platform catalogs, JSON library, state, scope, diagnostics and backup"
+        ui_menu_item "1" "List GPOs + GUIDs" "Indexed inventory including enabled/disabled state"
         ui_menu_item "2" "Inspect GPO" "Select an existing GPO by index"
         ui_menu_item "3" "Create GPO" "Create an empty policy and optionally link it" "$C_GREEN"
-        ui_menu_item "4" "Platform GPO catalog" "Windows, Ubuntu ADSys, Samba Linux and SSSD-aware policy flows" "$C_GREEN"
-        ui_menu_item "5" "Load JSON policy" "Select GPO then merge registry policy payload"
-        ui_menu_item "6" "List containers" "Select GPO then show linked containers"
-        ui_menu_item "7" "Link / update" "Select GPO and domain/OU target" "$C_GREEN"
-        ui_menu_item "8" "Remove link" "Select GPO and domain/OU target" "$C_YELLOW"
-        ui_menu_item "9" "Backup GPO" "Select and export one GPO"
-        ui_menu_item "10" "GPO readiness" "Kerberos, operator membership and SYSVOL/GPO ACL diagnostics"
-        ui_menu_item "11" "Delete GPO" "Backup/domain-backup then permanently delete" "$C_RED"
-        ui_menu_item "12" "Legacy baseline pair" "Create/update original assistant user+machine baselines"
+        ui_menu_item "4" "Platform GPO catalog" "Windows, Ubuntu ADSys, Samba Linux and SSSD-aware flows" "$C_GREEN"
+        ui_menu_item "5" "JSON policy library" "Built-ins, custom JSON, edit/validate/load/remove"
+        ui_menu_item "6" "GPO status" "Enable GPO or disable user/computer/all settings" "$C_YELLOW"
+        ui_menu_item "7" "List containers" "Select GPO then show linked containers"
+        ui_menu_item "8" "Link / update" "Select GPO and domain/OU target" "$C_GREEN"
+        ui_menu_item "9" "Remove link" "Select GPO and domain/OU target" "$C_YELLOW"
+        ui_menu_item "10" "Backup GPO" "Select and export one GPO"
+        ui_menu_item "11" "GPO readiness" "Kerberos, operator membership and SYSVOL/GPO ACL diagnostics"
+        ui_menu_item "12" "Delete GPO" "Backup/domain-backup then permanently delete" "$C_RED"
+        ui_menu_item "13" "Legacy baseline pair" "Create/update original assistant user+machine baselines"
+        ui_menu_item "14" "GPO paths & manual" "Show policy library/SYSVOL paths and open generated guide"
         ui_menu_exit
         ui_rule
 
-        local choice guid name file dn output=""
+        local choice guid name dn output=""
         choice="$(ask 'Select operation' '1')"
         case "$choice" in
             1) show_gpo_inventory_indexed; ui_pause ;;
             2)
                 guid="$(select_gpo_guid)" || { ui_pause; continue; }
-                if capture_samba_gpo output show "$guid"; then printf '%s\n' "$output"; else printf '%s\n' "$output" >&2; fi
+                if capture_samba_gpo output show "$guid"; then
+                    printf '%s\n' "$output"
+                    printf '\n  Assistant status: %s\n' "$(gpo_flags_label "$(get_gpo_flags "$guid")")"
+                else
+                    printf '%s\n' "$output" >&2
+                fi
                 ui_pause
                 ;;
             3)
@@ -3651,7 +4551,10 @@ gpo_admin_menu() {
                 [[ -n "$name" ]] || { msg_warn "GPO name is required."; ui_pause; continue; }
                 if guid="$(create_gpo_safe "$name")"; then
                     printf '\nCreated GUID: %s\n' "$guid"
-                    if confirm "Link this GPO now?" Y && dn="$(select_directory_target_dn)"; then
+                    if confirm "Stage it disabled before linking/configuring?" Y; then
+                        set_gpo_flags "$guid" 3 || true
+                    fi
+                    if confirm "Link this GPO now?" N && dn="$(select_directory_target_dn)"; then
                         if ! capture_samba_gpo output setlink "$dn" "$guid"; then
                             printf '%s\n' "$output" >&2
                             msg_warn "GPO was created but linking failed."
@@ -3663,27 +4566,20 @@ gpo_admin_menu() {
                 ui_pause
                 ;;
             4) platform_gpo_catalog_menu ;;
-            5)
-                guid="$(select_gpo_guid)" || { ui_pause; continue; }
-                file="$(ask 'JSON policy file')"
-                [[ -f "$file" ]] || { msg_warn "File not found."; ui_pause; continue; }
-                python3 -m json.tool "$file" >/dev/null || { msg_warn "Invalid JSON."; ui_pause; continue; }
-                backup_gpo_safe "$guid" || true
-                if ! capture_samba_gpo output load "$guid" --content="$file"; then printf '%s\n' "$output" >&2; fi
-                ui_pause
-                ;;
-            6)
+            5) json_policy_library_menu ;;
+            6) gpo_status_menu ;;
+            7)
                 guid="$(select_gpo_guid)" || { ui_pause; continue; }
                 if capture_samba_gpo output listcontainers "$guid"; then printf '%s\n' "$output"; else printf '%s\n' "$output" >&2; fi
                 ui_pause
                 ;;
-            7)
+            8)
                 guid="$(select_gpo_guid)" || { ui_pause; continue; }
                 dn="$(select_directory_target_dn)" || { ui_pause; continue; }
                 if ! capture_samba_gpo output setlink "$dn" "$guid"; then printf '%s\n' "$output" >&2; fi
                 ui_pause
                 ;;
-            8)
+            9)
                 guid="$(select_gpo_guid)" || { ui_pause; continue; }
                 dn="$(select_directory_target_dn)" || { ui_pause; continue; }
                 if confirm "Remove link $guid from $dn?" N; then
@@ -3691,9 +4587,13 @@ gpo_admin_menu() {
                 fi
                 ui_pause
                 ;;
-            9) guid="$(select_gpo_guid)" || { ui_pause; continue; }; backup_gpo_safe "$guid" || true; ui_pause ;;
-            10) gpo_readiness_diagnostics "Manual GPO readiness check"; ui_pause ;;
-            11)
+            10)
+                guid="$(select_gpo_guid)" || { ui_pause; continue; }
+                backup_gpo_safe "$guid" || true
+                ui_pause
+                ;;
+            11) gpo_readiness_diagnostics "Manual GPO readiness check"; ui_pause ;;
+            12)
                 guid="$(select_gpo_guid)" || { ui_pause; continue; }
                 printf 'A domain backup is strongly recommended before deleting a GPO.\n'
                 confirm "Create domain backup first?" Y && create_domain_backup no
@@ -3703,7 +4603,13 @@ gpo_admin_menu() {
                 fi
                 ui_pause
                 ;;
-            12) set_progress_plan 1; manage_gpos; ui_pause ;;
+            13) set_progress_plan 1; manage_gpos; ui_pause ;;
+            14)
+                show_gpo_library_paths
+                printf '\n'
+                if confirm "Open the GPO guide now?" Y; then show_gpo_manual; fi
+                ui_pause
+                ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -3718,7 +4624,7 @@ ad-users|Users|Create, inspect, edit, enable/disable, reset passwords and manage
 ad-groups|Groups|Create, inspect and manage domain groups and their members.
 ad-computers|Computers|List/inspect domain computer accounts and show best-effort network presence.
 ad-permissions|Access & delegation|Manage memberships and advanced directory-service ACL operations.
-ad-gpo|Group Policy|Platform-aware GPO control for Windows, Ubuntu ADSys, Samba Linux and SSSD access-control diagnostics.
+ad-gpo|Group Policy|Platform-aware GPO lifecycle, built-in/custom JSON library, status, scope, Ubuntu ADSys and Samba Linux.
 ad-security|Security & resilience|Boot ordering, UFW, Fail2ban, sysctl and delegated-admin hardening.
 ad-audit|Audit|Run a read-only inventory and security evidence review.
 ad-validate|Validation|Run functional Samba AD/DC DNS, Kerberos, LDAP, SMB, DB and SYSVOL checks.
