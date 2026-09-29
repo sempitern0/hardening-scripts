@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 4.4.0-gpo-library
+# Version 4.5.0-migration-nav
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -40,7 +40,7 @@ IFS=$'\n\t'
 umask 077
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="4.4.0-gpo-library"
+SCRIPT_VERSION="4.5.0-migration-nav"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -53,6 +53,8 @@ GPO_BUILTIN_DIR="${GPO_DIR}/builtin"
 GPO_WINDOWS_DIR="${GPO_BUILTIN_DIR}/windows"
 GPO_CUSTOM_DIR="${GPO_DIR}/custom"
 GPO_DOC_FILE="${GPO_DIR}/GPO-GUIDE.md"
+MIGRATION_DIR="${STATE_DIR}/migration"
+MIGRATION_PLAN_FILE="${MIGRATION_DIR}/migration.env"
 POST_INSTALL_FILE="${STATE_DIR}/POST-INSTALL.txt"
 
 RUN_ROOT=""
@@ -114,6 +116,7 @@ RESOLV_SNAPSHOT=""
 RESOLVED_WAS_ACTIVE=0
 RESOLVED_WAS_ENABLED=0
 BOOTSTRAP_RESUME=0
+MENU_MAIN_REQUESTED=0
 
 KRB5_CACHE=""
 export KRB5CCNAME=""
@@ -233,7 +236,12 @@ ui_menu_item() {
 }
 
 ui_menu_exit() {
-    ui_menu_item "0" "Back / Exit" "Return to previous console" "$C_RED"
+    ui_menu_item "0" "Back" "Return to previous console" "$C_RED"
+    ui_menu_item "H" "Main menu" "Jump directly to the AD/DC Operations Console" "$C_MAGENTA"
+}
+
+ui_menu_root_exit() {
+    ui_menu_item "0" "Exit / Back" "Leave this control plane" "$C_RED"
 }
 
 ui_pause() {
@@ -383,6 +391,7 @@ Usage:
   sudo bash $0 --permissions
   sudo bash $0 --gpo
   sudo bash $0 --security
+  sudo bash $0 --migration
   sudo bash $0 --install-cli
   sudo bash $0 --cli-info
   sudo bash $0 --no-color
@@ -390,7 +399,7 @@ Usage:
 
 Convenience commands installed by --install-cli:
   adctl, ad-users, ad-groups, ad-computers, ad-permissions,
-  ad-gpo, ad-security, ad-audit, ad-validate, ad-status, ad-backup, ad-tools
+  ad-gpo, ad-security, ad-migrate, ad-audit, ad-validate, ad-status, ad-backup, ad-tools
 
 Safety:
   - Existing sam.ldb is never reprovisioned.
@@ -410,6 +419,7 @@ detect_invocation_alias() {
         ad-permissions) MODE="permissions" ;;
         ad-gpo) MODE="gpo" ;;
         ad-security) MODE="security" ;;
+        ad-migrate) MODE="migration" ;;
         ad-audit) MODE="audit" ;;
         ad-validate) MODE="validate" ;;
         ad-backup) MODE="backup" ;;
@@ -434,6 +444,7 @@ parse_args() {
             --permissions) MODE="permissions" ;;
             --gpo) MODE="gpo" ;;
             --security) MODE="security" ;;
+            --migration|--migrate) MODE="migration" ;;
             --install-cli) MODE="install-cli" ;;
             --cli-info|--tools) MODE="cli-info" ;;
             --no-color) FORCE_NO_COLOR=1 ;;
@@ -478,7 +489,7 @@ ensure_privileges() {
 
 need_tty() {
     case "$MODE" in
-        bootstrap|manage|interactive|backup|admin|users|groups|computers|permissions|gpo|security|install-cli)
+        bootstrap|manage|interactive|backup|admin|users|groups|computers|permissions|gpo|security|migration|install-cli)
             [[ -r /dev/tty ]] || die "Mode '$MODE' requires a controlling TTY."
             INPUT_FD="/dev/tty"
             ;;
@@ -494,8 +505,8 @@ init_runtime() {
     BACKUP_DIR="${RUN_ROOT}/backup"
     DOMAIN_BACKUP_DIR="${RUN_ROOT}/domain-backup"
 
-    mkdir -p "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR"
-    chmod 700 "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_BUILTIN_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR"
+    mkdir -p "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR" "$MIGRATION_DIR"
+    chmod 700 "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_BUILTIN_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR" "$MIGRATION_DIR"
     touch "$LOG_FILE" "$REPORT_FILE"
     chmod 600 "$LOG_FILE" "$REPORT_FILE"
 
@@ -2408,6 +2419,7 @@ select_user_group_membership() {
 manage_user_memberships() {
     local user="$1" choice group
     while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
         ui_menu_screen "USER GROUP MEMBERSHIPS" "Manage direct group memberships for $user"
         ui_menu_item "1" "Show memberships" "List the user's current direct groups"
         ui_menu_item "2" "Add to group" "Select an existing group or create a new one" "$C_GREEN"
@@ -2444,6 +2456,7 @@ manage_user_memberships() {
                 fi
                 ui_pause
                 ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -2656,6 +2669,7 @@ reset_user_password_interactive() {
 edit_user_interactive_menu() {
     local user="$1" choice target
     while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
         ui_menu_screen "EDIT USER" "Structured account operations for $user"
         ui_menu_item "1" "Naming / logon" "Given name, surname, initials, display name, mail and UPN"
         ui_menu_item "2" "Business / contact" "Description, department, title, company, office, phones and profile paths"
@@ -2714,6 +2728,7 @@ edit_user_interactive_menu() {
                 ;;
             11) configure_user_rfc2307_interactive "$user"; ui_pause ;;
             12) samba-tool user edit "$user"; ui_pause ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -3650,6 +3665,7 @@ gpo_status_menu() {
     flags="$(get_gpo_flags "$guid")"
 
     while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
         ui_menu_screen "GPO STATUS" "Enable/disable the whole GPO or one policy class; links are managed separately"
         printf '  GUID           : %s\n' "$guid"
         printf '  Current flags  : %s\n' "$flags"
@@ -3667,6 +3683,7 @@ gpo_status_menu() {
             2) newflags=1 ;;
             3) newflags=2 ;;
             4) newflags=3 ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid state."; ui_pause; continue ;;
         esac
@@ -3729,6 +3746,7 @@ json_policy_library_menu() {
     initialize_gpo_library
 
     while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
         ui_menu_screen "JSON POLICY LIBRARY" "Built-in policies, editable custom JSON, validation and deployment"
         ui_menu_item "1" "List JSON policies" "Show built-in and custom policy files"
         ui_menu_item "2" "Apply JSON policy" "Merge/replace JSON into existing or new GPO" "$C_GREEN"
@@ -3758,6 +3776,7 @@ json_policy_library_menu() {
                 ;;
             8) show_gpo_library_paths; ui_pause ;;
             9) show_gpo_manual; ui_pause ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -3955,6 +3974,7 @@ ubuntu_adsys_gpo_menu() {
     initialize_gpo_library
 
     while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
         ui_menu_screen "UBUNTU ADSYS POLICY CONTROL" "Ubuntu administrative templates and Ubuntu-scoped GPO preparation"
         ui_menu_item "1" "Audit ADSys readiness" "Check Central Store, Ubuntu ADMX/ADML and local tooling"
         ui_menu_item "2" "Install local templates" "Copy Ubuntu.admx + Ubuntu.adml into detected SYSVOL Central Store"
@@ -4006,6 +4026,7 @@ ubuntu_adsys_gpo_menu() {
                 ui_pause
                 ;;
             7) show_gpo_manual; ui_pause ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -4014,6 +4035,7 @@ ubuntu_adsys_gpo_menu() {
 
 samba_linux_gpo_menu() {
     while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
         ui_menu_screen "SAMBA LINUX POLICY CONTROL" "Samba VGP/CSE policies for Linux clients using Samba/winbind and samba-gpupdate"
         ui_menu_item "1" "List local CSEs" "Show Samba Client Side Extensions registered on this host"
         ui_menu_item "2" "Effective GPOs" "List GPOs Samba resolves for a user/computer account"
@@ -4077,6 +4099,7 @@ samba_linux_gpo_menu() {
                 printf '\n  Client requirement: Samba/winbind policy support and samba-gpupdate/CSEs.\n'
                 ui_pause
                 ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -4140,6 +4163,7 @@ mixed_platform_gpo_guidance() {
 
 platform_gpo_catalog_menu() {
     while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
         ui_menu_screen "PLATFORM-AWARE GPO CONTROL" "Choose the policy consumer before creating or applying a Group Policy"
         ui_menu_item "1" "Windows clients" "Windows Registry/CSE security-policy catalog" "$C_GREEN"
         ui_menu_item "2" "Ubuntu ADSys clients" "Ubuntu.admx/ADML readiness and Ubuntu-scoped GPOs"
@@ -4159,6 +4183,7 @@ platform_gpo_catalog_menu() {
             4) sssd_gpo_compatibility_audit; ui_pause ;;
             5) mixed_platform_gpo_guidance; ui_pause ;;
             6) audit_platform_gpo_readiness; ui_pause ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid platform selection."; ui_pause ;;
         esac
@@ -4173,6 +4198,7 @@ security_gpo_catalog_menu() {
     initialize_gpo_library
 
     while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
         ui_menu_screen "WINDOWS SECURITY GPO CATALOG" "Registry-based policies for Windows domain clients; separate from Ubuntu ADSys"
         ui_menu_item "1" "PowerShell Logging" "Script Block + Module Logging"
         ui_menu_item "2" "Disable LLMNR" "Reduce multicast name-resolution poisoning exposure"
@@ -4192,6 +4218,7 @@ security_gpo_catalog_menu() {
         local choice target id guid output=""
         choice="$(ask 'Select policy' '0')"
         case "${choice^^}" in
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             A)
                 if target="$(select_directory_target_dn)"; then
@@ -4236,6 +4263,7 @@ security_gpo_catalog_menu() {
 
 domain_password_policy_menu() {
     while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
         ui_menu_screen "DOMAIN PASSWORD & LOCKOUT POLICY" "Samba domain-wide password policy; separate from registry-based GPO templates"
         ui_menu_item "1" "Show current policy" "Display complexity, history, ages and lockout configuration"
         ui_menu_item "2" "Starter baseline" "Complexity on, history 24, length 12, lockout 5/30/30; review organizational policy" "$C_YELLOW"
@@ -4288,6 +4316,7 @@ domain_password_policy_menu() {
                 fi
                 ui_pause
                 ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -4296,6 +4325,7 @@ domain_password_policy_menu() {
 
 user_admin_menu() {
     while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
         ui_menu_screen "USER DIRECTORY" "Structured account lifecycle, profile, password and group operations"
         ui_menu_item "1" "List users" "Inventory all domain user accounts"
         ui_menu_item "2" "Inspect user" "Show directory attributes for one account"
@@ -4351,6 +4381,7 @@ user_admin_menu() {
                 confirm_high_risk "PERMANENTLY delete AD user '$user'" && samba-tool user delete "$user"
                 ui_pause
                 ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -4359,6 +4390,7 @@ user_admin_menu() {
 
 group_admin_menu() {
     while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
         ui_menu_screen "GROUP DIRECTORY" "Indexed group selection, membership management and delegation"
         ui_menu_item "1" "List groups" "Indexed inventory of domain groups"
         ui_menu_item "2" "Inspect group" "Select a group then show its directory object"
@@ -4412,6 +4444,7 @@ group_admin_menu() {
                 confirm_high_risk "PERMANENTLY delete group '$group'" && samba-tool group delete "$group"
                 ui_pause
                 ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -4420,6 +4453,7 @@ group_admin_menu() {
 
 computer_admin_menu() {
     while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
         ui_menu_screen "DOMAIN COMPUTERS" "Joined computer accounts and best-effort network presence"
         ui_menu_item "1" "List accounts" "Inventory computer objects joined to the domain"
         ui_menu_item "2" "Network presence" "Resolve DNS and probe SMB/445 availability"
@@ -4446,6 +4480,7 @@ computer_admin_menu() {
                 confirm_high_risk "Delete computer account '$computer'" && samba-tool computer delete "$computer"
                 ui_pause
                 ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -4454,6 +4489,7 @@ computer_admin_menu() {
 
 permissions_admin_menu() {
     while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
         ui_menu_screen "ACCESS & DELEGATION" "Indexed memberships plus advanced directory-service ACL operations"
         ui_menu_item "1" "User groups" "Show direct group memberships for a user"
         ui_menu_item "2" "Group members" "Select group then enumerate principals"
@@ -4503,6 +4539,7 @@ permissions_admin_menu() {
                     || msg_warn "dsacl delete is unsupported."
                 ui_pause
                 ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -4514,6 +4551,7 @@ gpo_admin_menu() {
     initialize_gpo_library
 
     while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
         ui_menu_screen "GROUP POLICY CONTROL" "Lifecycle, platform catalogs, JSON library, state, scope, diagnostics and backup"
         ui_menu_item "1" "List GPOs + GUIDs" "Indexed inventory including enabled/disabled state"
         ui_menu_item "2" "Inspect GPO" "Select an existing GPO by index"
@@ -4610,8 +4648,307 @@ gpo_admin_menu() {
                 if confirm "Open the GPO guide now?" Y; then show_gpo_manual; fi
                 ui_pause
                 ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
+        esac
+    done
+}
+
+
+migration_save_plan() {
+    local type="$1" new_domain="${2:-}" new_netbios="${3:-}" note="${4:-}"
+    mkdir -p "$MIGRATION_DIR"
+    cat >"$MIGRATION_PLAN_FILE" <<EOF
+MIGRATION_TYPE=$(printf '%q' "$type")
+SOURCE_DOMAIN=$(printf '%q' "$DOMAIN")
+SOURCE_REALM=$(printf '%q' "$REALM")
+SOURCE_NETBIOS=$(printf '%q' "$NETBIOS_DOMAIN")
+TARGET_DOMAIN=$(printf '%q' "$new_domain")
+TARGET_NETBIOS=$(printf '%q' "$new_netbios")
+NOTE=$(printf '%q' "$note")
+UPDATED_AT=$(printf '%q' "$(date -Is)")
+EOF
+    chmod 600 "$MIGRATION_PLAN_FILE"
+    result PASS "Migration plan" "$MIGRATION_PLAN_FILE" "saved"
+}
+
+migration_load_plan() {
+    [[ -r "$MIGRATION_PLAN_FILE" ]] || return 1
+    # shellcheck disable=SC1090
+    source "$MIGRATION_PLAN_FILE"
+}
+
+migration_show_plan() {
+    if ! migration_load_plan; then
+        result INFO "Migration plan" "not configured" "run assessment first"
+        return 0
+    fi
+
+    section "DOMAIN MIGRATION PLAN"
+    printf '  %-18s %s\n' "Type" "${MIGRATION_TYPE:-unknown}"
+    printf '  %-18s %s\n' "Source domain" "${SOURCE_DOMAIN:-$DOMAIN}"
+    printf '  %-18s %s\n' "Target domain" "${TARGET_DOMAIN:-not applicable}"
+    printf '  %-18s %s\n' "Target NetBIOS" "${TARGET_NETBIOS:-not applicable}"
+    printf '  %-18s %s\n' "Notes" "${NOTE:-}"
+    printf '  %-18s %s\n' "Updated" "${UPDATED_AT:-unknown}"
+    printf '\n'
+
+    case "${MIGRATION_TYPE:-}" in
+        branding-only)
+            printf '  AD membership normally remains unchanged for public web/mail branding changes.\n'
+            ;;
+        dc-replacement)
+            printf '  Member computers remain joined to %s; migrate DC/DNS/FSMO services instead.\n' "$DOMAIN"
+            ;;
+        domain-migration|new-forest)
+            printf '  Member computers require migration/rejoin to establish a new secure channel.\n'
+            ;;
+        renamed-backup-lab)
+            printf '  Backup-rename is treated as an advanced restore/migration workflow, not a live rename.\n'
+            ;;
+    esac
+    ui_rule
+}
+
+migration_assessment() {
+    ui_menu_screen "MIGRATION ASSESSMENT" "Classify the requested change before touching production identity"
+    printf '  Current AD DNS domain : %s\n' "$DOMAIN"
+    printf '  Current realm         : %s\n' "$REALM"
+    printf '  Current NetBIOS       : %s\n\n' "$NETBIOS_DOMAIN"
+    ui_menu_item "1" "Branding / mail / web only" "Keep AD identity; change public names/services"
+    ui_menu_item "2" "Replace Domain Controller" "Keep domain; add/replace DC infrastructure"
+    ui_menu_item "3" "Migrate to new AD domain" "Coexistence/trust + identity/client migration" "$C_YELLOW"
+    ui_menu_item "4" "New forest migration" "Build separate forest and migrate in controlled phases" "$C_YELLOW"
+    ui_menu_item "5" "Renamed backup / lab" "Advanced Samba backup-rename workflow" "$C_RED"
+    ui_menu_exit
+    ui_rule
+
+    local choice target netbios note
+    choice="$(ask 'Select requested change' '1')"
+    case "$choice" in
+        1)
+            note="$(ask 'Public/company naming note' 'AD domain remains unchanged')"
+            migration_save_plan "branding-only" "" "" "$note"
+            ;;
+        2)
+            migration_save_plan "dc-replacement" "$DOMAIN" "$NETBIOS_DOMAIN" "Domain identity remains unchanged"
+            ;;
+        3|4|5)
+            target="$(ask 'Target AD DNS domain (example newcorp.example)')"
+            [[ "$target" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]] || { msg_warn "Invalid target DNS domain."; return 1; }
+            netbios="$(ask 'Target NetBIOS domain' "$(netbios_from_domain "$target")")"
+            case "$choice" in
+                3) migration_save_plan "domain-migration" "${target,,}" "${netbios^^}" "Coexistence and client rejoin required" ;;
+                4) migration_save_plan "new-forest" "${target,,}" "${netbios^^}" "Separate forest migration" ;;
+                5) migration_save_plan "renamed-backup-lab" "${target,,}" "${netbios^^}" "Advanced/lab workflow only" ;;
+            esac
+            ;;
+        H|h) MENU_MAIN_REQUESTED=1; return 0 ;;
+        0) return 0 ;;
+        *) msg_warn "Invalid assessment option."; return 1 ;;
+    esac
+    migration_show_plan
+}
+
+migration_inventory_export() {
+    local dir="${RUN_ROOT}/migration-inventory"
+    mkdir -p "$dir"
+    chmod 700 "$dir"
+    msg_info "Exporting source-domain migration inventory..."
+
+    samba-tool domain info "$DC_IP" >"${dir}/domain-info.txt" 2>&1 || true
+    samba-tool user list | sort >"${dir}/users.txt" 2>&1 || true
+    samba-tool group list | sort >"${dir}/groups.txt" 2>&1 || true
+    samba-tool computer list | sort >"${dir}/computers.txt" 2>&1 || true
+    samba-tool ou list --full-dn >"${dir}/ous.txt" 2>&1 || true
+    samba_gpo listall >"${dir}/gpos.txt" 2>&1 || true
+    samba-tool domain trust list >"${dir}/trusts.txt" 2>&1 || true
+    samba-tool fsmo show >"${dir}/fsmo.txt" 2>&1 || true
+    {
+        printf 'Source domain: %s\n' "$DOMAIN"
+        printf 'Controller   : %s (%s)\n' "$DC_FQDN" "$DC_IP"
+        printf 'Generated    : %s\n' "$(date -Is)"
+        printf 'Users        : %s\n' "$(wc -l <"${dir}/users.txt" 2>/dev/null || printf 0)"
+        printf 'Groups       : %s\n' "$(wc -l <"${dir}/groups.txt" 2>/dev/null || printf 0)"
+        printf 'Computers    : %s\n' "$(wc -l <"${dir}/computers.txt" 2>/dev/null || printf 0)"
+    } >"${dir}/SUMMARY.txt"
+    result PASS "Migration inventory" "$dir" "users/groups/computers/OUs/GPO/FSMO/trusts"
+}
+
+migration_computer_readiness() {
+    local computer host ip count=0 resolved=0 smb=0
+    section "COMPUTER MIGRATION READINESS"
+    printf '  %-30s %-16s %-10s %-10s\n' "COMPUTER" "ADDRESS" "DNS" "SMB/445"
+    ui_rule
+    while IFS= read -r computer; do
+        [[ -n "$computer" ]] || continue
+        host="${computer%$}"
+        ip="$(getent ahostsv4 "${host}.${DOMAIN}" 2>/dev/null | awk 'NR==1{print $1}' || true)"
+        count=$((count+1))
+        if [[ -n "$ip" ]]; then
+            resolved=$((resolved+1))
+            if timeout 2 bash -c "exec 3<>/dev/tcp/${ip}/445" 2>/dev/null; then
+                smb=$((smb+1))
+                printf '  %-30s %-16s %-10s %-10s\n' "$host" "$ip" "OK" "OPEN"
+            else
+                printf '  %-30s %-16s %-10s %-10s\n' "$host" "$ip" "OK" "CLOSED"
+            fi
+        else
+            printf '  %-30s %-16s %-10s %-10s\n' "$host" "-" "MISS" "-"
+        fi
+    done < <(samba-tool computer list 2>/dev/null | sort)
+    printf '\n  Total=%d  DNS-resolved=%d  SMB-reachable=%d\n' "$count" "$resolved" "$smb"
+    printf '  Reachability is a readiness signal only; it does not prove migration success.\n'
+    ui_rule
+}
+
+migration_trust_menu() {
+    while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
+        ui_menu_screen "DOMAIN TRUSTS" "Inspect and validate coexistence relationships before migration"
+        ui_menu_item "1" "List trusts" "Show configured domain/forest trusts"
+        ui_menu_item "2" "Show trust" "Display details for a target domain"
+        ui_menu_item "3" "Validate trust" "Validate an existing trust relationship"
+        ui_menu_item "4" "Trust create help" "Show runtime Samba options before production creation"
+        ui_menu_exit
+        ui_rule
+        local choice target
+        choice="$(ask 'Select operation' '1')"
+        case "$choice" in
+            1) samba-tool domain trust list; ui_pause ;;
+            2) target="$(ask 'Trusted domain DNS name')"; samba-tool domain trust show "$target"; ui_pause ;;
+            3) target="$(ask 'Trusted domain DNS name')"; samba-tool domain trust validate "$target"; ui_pause ;;
+            4) samba-tool domain trust create --help; ui_pause ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
+            0) break ;;
+            *) msg_warn "Invalid menu option."; ui_pause ;;
+        esac
+    done
+}
+
+migration_generate_windows_package() {
+    migration_load_plan || { msg_warn "Run Migration assessment first."; return 1; }
+    [[ -n "${TARGET_DOMAIN:-}" ]] || { msg_warn "Current plan has no target AD domain."; return 1; }
+    local dir="${MIGRATION_DIR}/packages/windows-${TIMESTAMP}"
+    mkdir -p "$dir"; chmod 700 "$dir"
+    cat >"${dir}/Move-To-NewDomain.ps1" <<EOF
+# Generated by ${SCRIPT_NAME} ${SCRIPT_VERSION}
+[CmdletBinding()]
+param(
+    [string]\$TargetDomain = '${TARGET_DOMAIN}',
+    [string]\$TargetOU = '',
+    [string]\$TargetDC = ''
+)
+\$ErrorActionPreference = 'Stop'
+\$current = Get-CimInstance Win32_ComputerSystem
+Write-Host "Computer       : \$env:COMPUTERNAME"
+Write-Host "Current domain : \$([string]\$current.Domain)"
+Write-Host "Target domain  : \$TargetDomain"
+\$oldCredential = Get-Credential -Message 'Credential allowed to unjoin the current domain'
+\$newCredential = Get-Credential -Message 'Credential delegated to join computers to the target domain'
+\$params = @{
+    DomainName = \$TargetDomain
+    UnjoinDomainCredential = \$oldCredential
+    Credential = \$newCredential
+    Restart = \$true
+    Force = \$true
+    PassThru = \$true
+}
+if (\$TargetOU) { \$params.OUPath = \$TargetOU }
+if (\$TargetDC) { \$params.Server = \$TargetDC }
+Add-Computer @params
+EOF
+    cat >"${dir}/README.txt" <<EOF
+WINDOWS DOMAIN MIGRATION PACKAGE
+Source: ${DOMAIN}
+Target: ${TARGET_DOMAIN}
+
+Run Move-To-NewDomain.ps1 from an elevated Windows PowerShell session after
+target-domain DNS and SRV discovery work. Credentials are prompted at runtime;
+no passwords are stored in this package.
+EOF
+    chmod 600 "${dir}/Move-To-NewDomain.ps1" "${dir}/README.txt"
+    result PASS "Windows migration package" "$dir" "credential-free Add-Computer workflow"
+}
+
+migration_generate_linux_package() {
+    migration_load_plan || { msg_warn "Run Migration assessment first."; return 1; }
+    [[ -n "${TARGET_DOMAIN:-}" ]] || { msg_warn "Current plan has no target AD domain."; return 1; }
+    local dir="${MIGRATION_DIR}/packages/linux-${TIMESTAMP}"
+    mkdir -p "$dir"; chmod 700 "$dir"
+    cat >"${dir}/migrate-linux-domain.sh" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+SOURCE_DOMAIN='${DOMAIN}'
+TARGET_DOMAIN='${TARGET_DOMAIN}'
+echo "Source: \$SOURCE_DOMAIN"
+echo "Target: \$TARGET_DOMAIN"
+command -v realm >/dev/null 2>&1 || {
+    echo "realmd is not installed; review Samba/winbind-specific migration separately." >&2
+    exit 2
+}
+realm list || true
+read -r -p "Type APPLY to continue with leave/join: " answer
+[[ "\$answer" == APPLY ]] || exit 0
+read -r -p "Old-domain account: " OLD_USER
+sudo realm leave "\$SOURCE_DOMAIN" -U "\$OLD_USER"
+echo "Ensure target AD DNS/SRV records resolve before join."
+read -r -p "Target-domain join account: " NEW_USER
+sudo realm join "\$TARGET_DOMAIN" -U "\$NEW_USER"
+realm list
+EOF
+    chmod 700 "${dir}/migrate-linux-domain.sh"
+    result PASS "Linux migration package" "$dir" "realmd/SSSD helper"
+}
+
+migration_renamed_backup_guidance() {
+    section "ADVANCED RENAMED-DOMAIN BACKUP"
+    printf '  Samba provides domain backup rename followed by domain backup restore.\n'
+    printf '  The assistant does not present it as a transparent in-place production rename.\n'
+    printf '  Existing clients still require migration/rejoin to the resulting domain identity.\n\n'
+    samba-tool domain backup rename --help || true
+}
+
+domain_migration_menu() {
+    while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
+        ui_menu_screen "DOMAIN MIGRATION CENTER" "Assessment, coexistence evidence, client readiness and migration packages"
+        ui_menu_item "1" "Migration assessment" "Classify branding, DC replacement, new domain/forest or backup-rename"
+        ui_menu_item "2" "Show migration plan" "Display the saved source/target migration intent"
+        ui_menu_item "3" "Export source inventory" "Users, groups, computers, OUs, GPOs, FSMO and trusts"
+        ui_menu_item "4" "Computer readiness" "DNS and SMB reachability for current domain computers"
+        ui_menu_item "5" "Domain trusts" "List/show/validate coexistence trusts"
+        ui_menu_item "6" "Windows migration package" "Generate credential-free Add-Computer PowerShell" "$C_GREEN"
+        ui_menu_item "7" "Linux migration package" "Generate realmd/SSSD leave/join helper" "$C_GREEN"
+        ui_menu_item "8" "GPO backup set" "Back up current GPOs before migration"
+        ui_menu_item "9" "Renamed backup guidance" "Show Samba backup-rename capability/limitations" "$C_YELLOW"
+        ui_menu_item "10" "Domain backup" "Create recoverable Samba backup before migration work"
+        ui_menu_exit
+        ui_rule
+        local choice guid
+        choice="$(ask 'Select migration module' '1')"
+        case "$choice" in
+            1) migration_assessment; ui_pause ;;
+            2) migration_show_plan; ui_pause ;;
+            3) migration_inventory_export; ui_pause ;;
+            4) migration_computer_readiness; ui_pause ;;
+            5) migration_trust_menu ;;
+            6) migration_generate_windows_package; ui_pause ;;
+            7) migration_generate_linux_package; ui_pause ;;
+            8)
+                while IFS=$'\t' read -r guid _; do
+                    [[ -n "$guid" ]] || continue
+                    backup_gpo_safe "$guid" || true
+                done < <(gpo_inventory_tsv)
+                result PASS "Migration GPO backup set" "${RUN_ROOT}/gpo-backups" "best-effort"
+                ui_pause
+                ;;
+            9) migration_renamed_backup_guidance; ui_pause ;;
+            10) set_progress_plan 1; create_domain_backup; ui_pause ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
+            0) break ;;
+            *) msg_warn "Invalid migration option."; ui_pause ;;
         esac
     done
 }
@@ -4626,6 +4963,7 @@ ad-computers|Computers|List/inspect domain computer accounts and show best-effor
 ad-permissions|Access & delegation|Manage memberships and advanced directory-service ACL operations.
 ad-gpo|Group Policy|Platform-aware GPO lifecycle, built-in/custom JSON library, status, scope, Ubuntu ADSys and Samba Linux.
 ad-security|Security & resilience|Boot ordering, UFW, Fail2ban, sysctl and delegated-admin hardening.
+ad-migrate|Domain migration|Assess domain changes, inventory scope and generate client migration packages.
 ad-audit|Audit|Run a read-only inventory and security evidence review.
 ad-validate|Validation|Run functional Samba AD/DC DNS, Kerberos, LDAP, SMB, DB and SYSVOL checks.
 ad-status|Status|Show a compact current-state and AD/DC health report.
@@ -4731,6 +5069,7 @@ install_cli_commands() {
 
 security_hardening_menu() {
     while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
         ui_menu_screen "SECURITY & BOOT RESILIENCE" "Host controls protecting availability, management access and the AD service plane"
         ui_menu_item "1" "Boot persistence audit" "Verify Samba startup and network readiness dependency"
         ui_menu_item "2" "Repair boot ordering" "Make Samba wait for the AD interface/IP" "$C_GREEN"
@@ -4753,6 +5092,7 @@ security_hardening_menu() {
             6) set_progress_plan 1; harden_delegated_admin; ui_pause ;;
             7) set_progress_plan 1; validate_ad; ui_pause ;;
             8) set_progress_plan 1; repair_local_resolver_only; ui_pause ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -4761,6 +5101,7 @@ security_hardening_menu() {
 
 domain_admin_console() {
     while true; do
+        MENU_MAIN_REQUESTED=0
         ui_menu_screen "AD/DC OPERATIONS CONSOLE" "Daily administration surface for a production Samba Active Directory controller"
         ui_menu_item "1" "Users" "Create, edit, enable, disable and reset domain identities"
         ui_menu_item "2" "Groups" "Manage domain groups and memberships"
@@ -4772,7 +5113,8 @@ domain_admin_console() {
         ui_menu_item "8" "Installed CLI commands" "Show shortcut status and what every terminal command does"
         ui_menu_item "9" "Validate controller" "Run complete AD/DC functional health checks"
         ui_menu_item "10" "Domain backup" "Create an online Samba domain backup"
-        ui_menu_exit
+        ui_menu_item "11" "Domain migration" "Assessment, trusts, inventory and client migration packages" "$C_YELLOW"
+        ui_menu_root_exit
         ui_rule
         local choice
         choice="$(ask 'Select module' '1')"
@@ -4787,6 +5129,7 @@ domain_admin_console() {
             8) show_cli_commands; ui_pause ;;
             9) set_progress_plan 1; validate_ad; ui_pause ;;
             10) set_progress_plan 1; create_domain_backup; ui_pause ;;
+            11) domain_migration_menu ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -4966,7 +5309,8 @@ manage_menu() {
         ui_menu_item "13" "Install CLI commands" "Deploy/refresh adctl and direct administrative shortcuts"
         ui_menu_item "14" "Installed CLI commands" "Show shortcut status and a description of every command"
         ui_menu_item "15" "Repair local resolver" "Fix /etc/resolv.conf stub/symlink and validate AD DC discovery"
-        ui_menu_exit
+        ui_menu_item "16" "Domain migration center" "Assess domain changes and prepare coexistence/client migration"
+        ui_menu_root_exit
         ui_rule
         local choice
         choice="$(ask 'Select module' '1')"
@@ -4986,6 +5330,7 @@ manage_menu() {
             13) install_cli_commands; ui_pause ;;
             14) show_cli_commands; ui_pause ;;
             15) set_progress_plan 1; repair_local_resolver_only; ui_pause ;;
+            16) domain_migration_menu ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -5090,14 +5435,22 @@ main() {
         permissions) prepare_existing_ad_context; permissions_admin_menu; save_config ;;
         gpo) prepare_existing_ad_context; gpo_admin_menu; save_config ;;
         security) prepare_existing_ad_context; security_hardening_menu; save_config ;;
+        migration) prepare_existing_ad_context; domain_migration_menu; save_config ;;
         install-cli) install_cli_commands ;;
         cli-info) show_cli_commands ;;
         interactive) interactive_mode ;;
         *) die "Unknown mode: $MODE" ;;
     esac
 
+    if (( MENU_MAIN_REQUESTED )); then
+        MENU_MAIN_REQUESTED=0
+        domain_admin_console
+        save_config
+    fi
+
     write_report
     summary
 }
 
 main "$@"
+

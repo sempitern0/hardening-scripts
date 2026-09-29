@@ -1,7 +1,7 @@
 ﻿#requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Windows Server AD Control Plane - v1.1.0-professional
+    Windows Server AD Control Plane - v1.2.0-migration-nav
 
 .DESCRIPTION
     Professional, audit-first assistant for Windows Server and Active Directory.
@@ -33,6 +33,7 @@
       Backup       Create configuration change-set
       ADAdmin      Active Directory operations console
       Provision    Guided NEW forest provisioning
+      Migration    Domain migration assessment and tooling
 
 .EXAMPLE
     .\windows-server-ad-v1.1.0-professional.ps1
@@ -52,7 +53,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Audit','Validate','Harden','Backup','ADAdmin','Provision')]
+    [ValidateSet('Interactive','Audit','Validate','Harden','Backup','ADAdmin','Provision','Migration')]
     [string]$Mode = 'Interactive',
 
     [string]$ExportPath = "$env:ProgramData\WindowsADControlPlane",
@@ -72,7 +73,7 @@ $ErrorActionPreference = 'Stop'
 # ===========================================================================
 
 $script:ProductName = 'Windows Server AD Control Plane'
-$script:Version = '1.1.0-professional'
+$script:Version = '1.2.0-migration-nav'
 $script:Started = Get-Date
 
 $script:Results = New-Object 'System.Collections.Generic.List[object]'
@@ -95,6 +96,7 @@ $script:RoleInfo = @()
 $script:PowerShellMajor = $PSVersionTable.PSVersion.Major
 $script:DomainInfo = $null
 $script:ForestInfo = $null
+$script:MainMenuRequested = $false
 
 $script:UiWidth = 96
 
@@ -256,6 +258,14 @@ function Write-MenuItem {
     Write-Console ('  [{0,2}]  ' -f $Key) Gray -NoNewline
     Write-Console ('{0,-31}' -f $Title) $color -NoNewline
     Write-Console $Description Gray
+}
+
+
+function Write-MenuNavigation {
+    param([string]$BackDescription = 'Return to previous console')
+
+    Write-MenuItem '0' 'Back' $BackDescription Danger
+    Write-MenuItem 'H' 'Main menu' 'Jump directly to the Windows Server Control Plane' Warn
 }
 
 function Read-MenuChoice {
@@ -1861,6 +1871,7 @@ function Manage-AdUserGroupsInteractive {
     $user = Get-ADUser -Identity $Identity -ErrorAction Stop
 
     while ($true) {
+        if ($script:MainMenuRequested) { return }
         $current = @(Get-ADPrincipalGroupMembership -Identity $user | Sort-Object Name)
 
         Write-MenuHeader 'USER GROUP MEMBERSHIP' ("Account: {0}" -f $user.SamAccountName)
@@ -1875,11 +1886,12 @@ function Manage-AdUserGroupsInteractive {
         Write-Console ''
         Write-MenuItem 'A' 'Add memberships' 'Choose existing groups or create a new one' Good
         Write-MenuItem 'R' 'Remove memberships' 'Choose one or more current memberships' Warn
-        Write-MenuItem '0' 'Back' 'Return to user directory' Danger
+        Write-MenuNavigation -BackDescription 'Return to user directory'
         Write-Rule
 
         $choice = (Read-Host 'Select operation').Trim().ToUpperInvariant()
         switch ($choice) {
+            'H' { $script:MainMenuRequested = $true; return }
             'A' {
                 $groups = @(Select-AdGroupsInteractive -AllowCreate)
                 foreach ($group in $groups) {
@@ -2652,6 +2664,7 @@ function Show-SecurityGpoCatalog {
     Write-Console ''
     Write-Console '  [A] Recommended starter pack: 1,2,3,4,7,8' Green
     Write-Console '  [M] Microsoft baseline guidance only (SCT / OSConfig; no automatic import)' Cyan
+    Write-Console '  [H] Main menu' Yellow
     Write-Console '  [0] Cancel' Gray
 
     return $catalog
@@ -2716,6 +2729,7 @@ function Invoke-SecurityGpoWizard {
 
     $raw = (Read-Host 'Template selection (comma-separated)').Trim().ToUpperInvariant()
     if ([string]::IsNullOrWhiteSpace($raw) -or $raw -eq '0') { return }
+    if ($raw -eq 'H') { $script:MainMenuRequested = $true; return }
 
     if ($raw -eq 'M') {
         Write-Console ''
@@ -3273,12 +3287,406 @@ function Invoke-NewForestProvisioning {
         -ErrorAction Stop
 }
 
+
+# ===========================================================================
+# Domain migration center
+# ===========================================================================
+
+function Get-MigrationRoot {
+    $path = Join-Path $ExportPath 'migration'
+    if (-not (Test-Path -LiteralPath $path)) {
+        New-Item -ItemType Directory -Path $path -Force | Out-Null
+    }
+    return $path
+}
+
+function Get-MigrationPlanPath {
+    return (Join-Path (Get-MigrationRoot) 'migration-plan.json')
+}
+
+function Show-MigrationPlan {
+    $path = Get-MigrationPlanPath
+    if (-not (Test-Path -LiteralPath $path)) {
+        Write-Console 'No migration plan has been saved yet.' Yellow
+        return
+    }
+
+    $plan = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    Write-Section 'Domain migration plan'
+    Write-Console ('  Type          : {0}' -f $plan.Type)
+    Write-Console ('  Source domain : {0}' -f $plan.SourceDomain)
+    Write-Console ('  Target domain : {0}' -f $plan.TargetDomain)
+    Write-Console ('  Target NetBIOS: {0}' -f $plan.TargetNetBIOS)
+    Write-Console ('  Notes         : {0}' -f $plan.Notes)
+    Write-Console ('  Updated       : {0}' -f $plan.UpdatedAt)
+
+    switch ($plan.Type) {
+        'BrandingOnly' {
+            Write-Console '  AD membership normally remains unchanged for web/mail/public-brand changes.' Gray
+        }
+        'DcReplacement' {
+            Write-Console '  Member computers stay in the same AD domain; migrate DC/DNS/FSMO services instead.' Gray
+        }
+        'DomainMigration' {
+            Write-Console '  Member computers need migration/rejoin to establish a secure channel with the target domain.' Yellow
+        }
+        'NewForest' {
+            Write-Console '  Treat the destination as a separate forest and migrate in controlled batches.' Yellow
+        }
+        'DomainRenameAssessment' {
+            Write-Console '  Domain rename is an advanced change and is not performed automatically by this assistant.' Red
+        }
+    }
+}
+
+function Invoke-MigrationAssessment {
+    Write-MenuHeader 'MIGRATION ASSESSMENT' 'Classify the business request before changing Active Directory identity'
+
+    $source = if ($script:DomainInfo) { [string]$script:DomainInfo.DNSRoot } else { [string]$script:ServerInfo.Domain }
+    Write-Console ('  Current domain : {0}' -f $source)
+    Write-Console ''
+    Write-MenuItem '1' 'Branding / mail / web only' 'Keep AD domain identity; change public names/services'
+    Write-MenuItem '2' 'Replace Domain Controller' 'Keep domain; add/replace DC infrastructure'
+    Write-MenuItem '3' 'Migrate to new AD domain' 'Coexistence/trust + identity/client migration' Warn
+    Write-MenuItem '4' 'New forest migration' 'Build a separate forest and migrate in phases' Warn
+    Write-MenuItem '5' 'AD domain rename assessment' 'Advanced assessment only; no automatic rendom execution' Danger
+    Write-MenuNavigation
+    Write-Rule
+
+    $choice = Read-MenuChoice -Default '1'
+    if ($choice -eq 'H') { $script:MainMenuRequested = $true; return }
+    if ($choice -eq '0') { return }
+
+    $type = ''
+    $target = ''
+    $netbios = ''
+    $notes = ''
+
+    switch ($choice) {
+        '1' {
+            $type = 'BrandingOnly'
+            $notes = Read-Host 'Public/company naming note'
+        }
+        '2' {
+            $type = 'DcReplacement'
+            $target = $source
+            if ($script:DomainInfo) { $netbios = [string]$script:DomainInfo.NetBIOSName }
+            $notes = 'Domain identity remains unchanged'
+        }
+        '3' {
+            $type = 'DomainMigration'
+            $target = (Read-Host 'Target AD DNS domain').Trim()
+            $netbios = (Read-Host 'Target NetBIOS domain').Trim().ToUpperInvariant()
+            $notes = 'Coexistence and client rejoin required'
+        }
+        '4' {
+            $type = 'NewForest'
+            $target = (Read-Host 'Target forest root DNS domain').Trim()
+            $netbios = (Read-Host 'Target NetBIOS domain').Trim().ToUpperInvariant()
+            $notes = 'Separate forest migration'
+        }
+        '5' {
+            $type = 'DomainRenameAssessment'
+            $target = (Read-Host 'Requested target AD DNS domain').Trim()
+            $netbios = (Read-Host 'Requested target NetBIOS domain').Trim().ToUpperInvariant()
+            $notes = 'Advanced domain rename assessment only'
+        }
+        default {
+            Write-Console 'Invalid assessment option.' Yellow
+            return
+        }
+    }
+
+    if ($target -and $target -notmatch '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$') {
+        Write-Console 'Invalid target DNS domain syntax.' Red
+        return
+    }
+
+    $plan = [pscustomobject]@{
+        Type          = $type
+        SourceDomain  = $source
+        TargetDomain  = $target
+        TargetNetBIOS = $netbios
+        Notes         = $notes
+        UpdatedAt     = Get-Date
+    }
+    $plan | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Get-MigrationPlanPath) -Encoding UTF8
+    Write-Console ('Migration plan saved: {0}' -f (Get-MigrationPlanPath)) Green
+    Show-MigrationPlan
+}
+
+function Export-DomainMigrationInventory {
+    Assert-DomainController
+
+    $root = Join-Path (Get-MigrationRoot) ('inventory-{0}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+
+    Get-ADDomain | ConvertTo-Json -Depth 8 |
+        Set-Content -LiteralPath (Join-Path $root 'domain.json') -Encoding UTF8
+    Get-ADForest | ConvertTo-Json -Depth 8 |
+        Set-Content -LiteralPath (Join-Path $root 'forest.json') -Encoding UTF8
+
+    Get-ADUser -Filter * -Properties Enabled,UserPrincipalName,Mail,LastLogonDate |
+        Select-Object SamAccountName,UserPrincipalName,Mail,Enabled,LastLogonDate,DistinguishedName |
+        Export-Csv -LiteralPath (Join-Path $root 'users.csv') -NoTypeInformation -Encoding UTF8
+
+    Get-ADGroup -Filter * |
+        Select-Object Name,SamAccountName,GroupScope,GroupCategory,DistinguishedName |
+        Export-Csv -LiteralPath (Join-Path $root 'groups.csv') -NoTypeInformation -Encoding UTF8
+
+    Get-ADComputer -Filter * -Properties Enabled,OperatingSystem,LastLogonDate,DNSHostName |
+        Select-Object Name,DNSHostName,Enabled,OperatingSystem,LastLogonDate,DistinguishedName |
+        Export-Csv -LiteralPath (Join-Path $root 'computers.csv') -NoTypeInformation -Encoding UTF8
+
+    Get-ADOrganizationalUnit -Filter * -Properties ProtectedFromAccidentalDeletion |
+        Select-Object Name,ProtectedFromAccidentalDeletion,DistinguishedName |
+        Export-Csv -LiteralPath (Join-Path $root 'ous.csv') -NoTypeInformation -Encoding UTF8
+
+    if (Test-Command 'Get-ADTrust') {
+        Get-ADTrust -Filter * |
+            Select-Object Name,Direction,TrustType,ForestTransitive,SelectiveAuthentication |
+            Export-Csv -LiteralPath (Join-Path $root 'trusts.csv') -NoTypeInformation -Encoding UTF8
+    }
+
+    if (Test-Command 'Get-GPO') {
+        Get-GPO -All |
+            Select-Object DisplayName,Id,GpoStatus,CreationTime,ModificationTime |
+            Export-Csv -LiteralPath (Join-Path $root 'gpos.csv') -NoTypeInformation -Encoding UTF8
+    }
+
+    if (Test-Command 'Get-DnsServerZone') {
+        Get-DnsServerZone |
+            Select-Object ZoneName,ZoneType,IsDsIntegrated,IsReverseLookupZone,DynamicUpdate |
+            Export-Csv -LiteralPath (Join-Path $root 'dns-zones.csv') -NoTypeInformation -Encoding UTF8
+    }
+
+    [pscustomobject]@{
+        Generated = Get-Date
+        Domain = $script:DomainInfo.DNSRoot
+        Forest = $script:ForestInfo.Name
+        Users = @(Get-ADUser -Filter *).Count
+        Groups = @(Get-ADGroup -Filter *).Count
+        Computers = @(Get-ADComputer -Filter *).Count
+        OUs = @(Get-ADOrganizationalUnit -Filter *).Count
+        Output = $root
+    } | ConvertTo-Json -Depth 5 |
+        Set-Content -LiteralPath (Join-Path $root 'summary.json') -Encoding UTF8
+
+    Write-Console ('Migration inventory: {0}' -f $root) Green
+}
+
+function Show-ComputerMigrationReadiness {
+    Assert-DomainController
+
+    $computers = @(Get-ADComputer -Filter * -Properties DNSHostName,Enabled,LastLogonDate |
+        Sort-Object Name)
+
+    Write-Section 'Computer migration readiness'
+    Write-Console ('  {0,-24} {1,-34} {2,-10} {3}' -f 'COMPUTER','DNS HOST','PING','LAST LOGON') Cyan
+
+    foreach ($computer in $computers) {
+        $target = if ($computer.DNSHostName) { $computer.DNSHostName } else { $computer.Name }
+        $alive = $false
+        try {
+            $alive = Test-Connection -ComputerName $target -Count 1 -Quiet -ErrorAction SilentlyContinue
+        }
+        catch {}
+
+        Write-Console ('  {0,-24} {1,-34} {2,-10} {3}' -f
+            $computer.Name,
+            $target,
+            $(if ($alive) { 'ONLINE' } else { 'NO REPLY' }),
+            $computer.LastLogonDate)
+    }
+
+    Write-Console ''
+    Write-Console 'Ping is a readiness hint only. Firewall policy can block ICMP on otherwise healthy clients.' Gray
+}
+
+function Show-DomainTrusts {
+    Assert-DomainController
+
+    if (-not (Test-Command 'Get-ADTrust')) {
+        Write-Console 'Get-ADTrust is unavailable.' Yellow
+        return
+    }
+
+    Get-ADTrust -Filter * |
+        Sort-Object Name |
+        Select-Object Name,Direction,TrustType,ForestTransitive,SelectiveAuthentication,Source,Target |
+        Format-Table -AutoSize
+}
+
+function Test-DomainTrustInteractive {
+    Assert-DomainController
+
+    $name = (Read-Host 'Trusted domain/forest DNS name').Trim()
+    if (-not $name) { return }
+
+    try {
+        $trust = Get-ADTrust -Identity $name -ErrorAction Stop
+        $trust | Format-List Name,Direction,TrustType,ForestTransitive,SelectiveAuthentication,Source,Target
+        Write-Console 'The trust object is readable. Validate authentication/resource access from both sides before migration.' Green
+    }
+    catch {
+        Write-Console ("Trust lookup failed: {0}" -f $_.Exception.Message) Red
+    }
+}
+
+function New-WindowsMigrationPackage {
+    Assert-DomainController
+
+    $planPath = Get-MigrationPlanPath
+    if (-not (Test-Path -LiteralPath $planPath)) {
+        Write-Console 'Run Migration assessment first.' Yellow
+        return
+    }
+
+    $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+    if (-not $plan.TargetDomain) {
+        Write-Console 'The saved migration plan does not define a target AD domain.' Yellow
+        return
+    }
+
+    $dir = Join-Path (Get-MigrationRoot) ('windows-package-{0}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+
+    $scriptPath = Join-Path $dir 'Move-ToNewDomain.ps1'
+    @"
+[CmdletBinding()]
+param(
+    [string]`$TargetDomain = '$($plan.TargetDomain)',
+    [string]`$TargetOU = '',
+    [string]`$TargetDC = ''
+)
+
+`$ErrorActionPreference = 'Stop'
+`$computer = Get-CimInstance Win32_ComputerSystem
+
+Write-Host "Computer       : `$env:COMPUTERNAME"
+Write-Host "Current domain : `$(`$computer.Domain)"
+Write-Host "Target domain  : `$TargetDomain"
+
+`$oldCredential = Get-Credential -Message 'Credential allowed to unjoin the current domain'
+`$newCredential = Get-Credential -Message 'Credential delegated to join computers to the target domain'
+
+`$params = @{
+    DomainName = `$TargetDomain
+    UnjoinDomainCredential = `$oldCredential
+    Credential = `$newCredential
+    Restart = `$true
+    Force = `$true
+    PassThru = `$true
+}
+if (`$TargetOU) { `$params.OUPath = `$TargetOU }
+if (`$TargetDC) { `$params.Server = `$TargetDC }
+
+Add-Computer @params
+"@ | Set-Content -LiteralPath $scriptPath -Encoding UTF8
+
+    $netdomPath = Join-Path $dir 'netdom-move-template.cmd'
+    @"
+@echo off
+REM No passwords are stored. Replace TARGET-OUDN if required.
+netdom move %COMPUTERNAME% /domain:$($plan.TargetDomain) /userd:* /passwordd:* /usero:* /passwordo:* /reboot:30
+"@ | Set-Content -LiteralPath $netdomPath -Encoding ASCII
+
+    @"
+WINDOWS DOMAIN MIGRATION PACKAGE
+================================
+Source domain : $($plan.SourceDomain)
+Target domain : $($plan.TargetDomain)
+
+Move-ToNewDomain.ps1 uses Add-Computer and prompts for credentials at runtime.
+No password is written into the generated files.
+
+Run only after target-domain DNS/SRV discovery works and after testing on a
+pilot OU/batch.
+"@ | Set-Content -LiteralPath (Join-Path $dir 'README.txt') -Encoding UTF8
+
+    Write-Console ("Windows migration package: {0}" -f $dir) Green
+}
+
+function Export-GpoMigrationSet {
+    Assert-DomainController
+    Import-GroupPolicyModule
+
+    $dir = Join-Path (Get-MigrationRoot) ('gpo-backup-{0}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+
+    Backup-GPO -All -Path $dir | Out-Null
+    Get-GPO -All |
+        Select-Object DisplayName,Id,GpoStatus,CreationTime,ModificationTime |
+        Export-Csv -LiteralPath (Join-Path $dir 'gpo-inventory.csv') -NoTypeInformation -Encoding UTF8
+
+    Write-Console ("GPO migration backup set: {0}" -f $dir) Green
+}
+
+function Show-DomainRenameAssessment {
+    Write-Section 'AD domain rename assessment'
+
+    Write-Console 'A domain DNS-name change is not equivalent to changing a DNS alias.' Yellow
+    Write-Console 'Clients, Kerberos/SPNs, applications, certificates, trusts and management systems require validation.'
+    Write-Console ''
+
+    if (Test-Command 'rendom.exe') {
+        Write-Console 'rendom.exe: AVAILABLE on this server' Green
+    }
+    else {
+        Write-Console 'rendom.exe: not detected' Yellow
+    }
+
+    Write-Console ''
+    Write-Console 'This control plane deliberately does not execute rendom automatically.' Gray
+    Write-Console 'For most business migrations, a parallel target domain/forest plus staged client migration is easier to test and roll back.' Gray
+}
+
+function Show-DomainMigrationMenu {
+    Assert-DomainController
+
+    while ($true) {
+        if ($script:MainMenuRequested) { return }
+
+        Write-MenuHeader 'DOMAIN MIGRATION CENTER' 'Assessment, inventory, coexistence evidence and credential-free client migration tooling'
+        Write-MenuItem '1' 'Migration assessment' 'Classify branding, DC replacement, new domain/forest or rename'
+        Write-MenuItem '2' 'Show migration plan' 'Display saved source/target intent'
+        Write-MenuItem '3' 'Export source inventory' 'Users, groups, computers, OUs, GPOs, DNS and trusts'
+        Write-MenuItem '4' 'Computer readiness' 'Current-domain computer DNS/ping readiness'
+        Write-MenuItem '5' 'List trusts' 'Inventory configured domain/forest trusts'
+        Write-MenuItem '6' 'Inspect trust' 'Read one trust and its direction/type'
+        Write-MenuItem '7' 'Windows migration package' 'Generate Add-Computer/netdom templates without stored secrets' Good
+        Write-MenuItem '8' 'GPO migration backup' 'Back up all GPOs plus inventory' Good
+        Write-MenuItem '9' 'Domain rename assessment' 'Inspect advanced rename capability without executing it' Warn
+        Write-MenuItem '10' 'System-state backup' 'Create recovery-grade DC backup before migration work'
+        Write-MenuNavigation
+        Write-Rule
+
+        switch (Read-MenuChoice -Prompt 'Select migration module' -Default '1') {
+            '1' { Invoke-MigrationAssessment; Pause-ControlPlane }
+            '2' { Show-MigrationPlan; Pause-ControlPlane }
+            '3' { Export-DomainMigrationInventory; Pause-ControlPlane }
+            '4' { Show-ComputerMigrationReadiness; Pause-ControlPlane }
+            '5' { Show-DomainTrusts; Pause-ControlPlane }
+            '6' { Test-DomainTrustInteractive; Pause-ControlPlane }
+            '7' { New-WindowsMigrationPackage; Pause-ControlPlane }
+            '8' { Export-GpoMigrationSet; Pause-ControlPlane }
+            '9' { Show-DomainRenameAssessment; Pause-ControlPlane }
+            '10' { Invoke-SystemStateBackup; Pause-ControlPlane }
+            'H' { $script:MainMenuRequested = $true; return }
+            '0' { return }
+            default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
+        }
+    }
+}
+
+
 # ===========================================================================
 # Interactive menus
 # ===========================================================================
 
 function Show-UserMenu {
     while ($true) {
+        if ($script:MainMenuRequested) { return }
         Write-MenuHeader 'USER DIRECTORY' 'Identity lifecycle, credentials, attributes and group membership'
         Write-MenuItem '1' 'List users' 'Inventory users, state and recent logon metadata'
         Write-MenuItem '2' 'Inspect user' 'Show detailed attributes for one identity'
@@ -3290,7 +3698,7 @@ function Show-UserMenu {
         Write-MenuItem '8' 'Disable account' 'Block authentication without deleting identity' Warn
         Write-MenuItem '9' 'Unlock account' 'Clear account lockout'
         Write-MenuItem '10' 'Delete user' 'Permanently remove directory object' Danger
-        Write-MenuItem '0' 'Back' 'Return to AD operations console' Danger
+        Write-MenuNavigation
         Write-Rule
 
         switch (Read-MenuChoice -Default '1') {
@@ -3304,6 +3712,7 @@ function Show-UserMenu {
             '8' { Set-AdUserEnabledState -Enabled $false; Pause-ControlPlane }
             '9' { Unlock-AdUserInteractive; Pause-ControlPlane }
             '10' { Remove-AdUserInteractive; Pause-ControlPlane }
+            'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
         }
@@ -3312,6 +3721,7 @@ function Show-UserMenu {
 
 function Show-GroupMenu {
     while ($true) {
+        if ($script:MainMenuRequested) { return }
         Write-MenuHeader 'GROUPS & ACCESS' 'Security groups, membership and privileged access review'
         Write-MenuItem '1' 'List groups' 'Inventory domain groups'
         Write-MenuItem '2' 'List members' 'Inspect direct membership of one group'
@@ -3320,7 +3730,7 @@ function Show-GroupMenu {
         Write-MenuItem '5' 'Remove member' 'Revoke group membership' Warn
         Write-MenuItem '6' 'Privileged groups' 'Review Domain/Enterprise/Schema/Admin operators'
         Write-MenuItem '7' 'Delete group' 'Delete non-core group object' Danger
-        Write-MenuItem '0' 'Back' 'Return to AD operations console' Danger
+        Write-MenuNavigation
         Write-Rule
 
         switch (Read-MenuChoice -Default '1') {
@@ -3331,6 +3741,7 @@ function Show-GroupMenu {
             '5' { Remove-AdGroupMemberInteractive; Pause-ControlPlane }
             '6' { Show-PrivilegedGroups; Pause-ControlPlane }
             '7' { Remove-AdGroupInteractive; Pause-ControlPlane }
+            'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
         }
@@ -3339,6 +3750,7 @@ function Show-GroupMenu {
 
 function Show-ComputerOuMenu {
     while ($true) {
+        if ($script:MainMenuRequested) { return }
         Write-MenuHeader 'COMPUTERS & ORGANIZATIONAL UNITS' 'Machine accounts, OU structure and directory placement'
         Write-MenuItem '1' 'List computers' 'Inventory machine accounts and last-logon metadata'
         Write-MenuItem '2' 'Inspect computer' 'Show detailed computer attributes'
@@ -3349,7 +3761,7 @@ function Show-ComputerOuMenu {
         Write-MenuItem '7' 'Create OU' 'Create protected OU' Good
         Write-MenuItem '8' 'Move AD object' 'Move user/group/computer between OUs' Warn
         Write-MenuItem '9' 'Delete OU' 'Unprotect and delete empty OU' Danger
-        Write-MenuItem '0' 'Back' 'Return to AD operations console' Danger
+        Write-MenuNavigation
         Write-Rule
 
         switch (Read-MenuChoice -Default '1') {
@@ -3362,6 +3774,7 @@ function Show-ComputerOuMenu {
             '7' { New-AdOrganizationalUnitInteractive; Pause-ControlPlane }
             '8' { Move-AdObjectInteractive; Pause-ControlPlane }
             '9' { Remove-AdOrganizationalUnitInteractive; Pause-ControlPlane }
+            'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
         }
@@ -3370,6 +3783,7 @@ function Show-ComputerOuMenu {
 
 function Show-GpoMenu {
     while ($true) {
+        if ($script:MainMenuRequested) { return }
         Write-MenuHeader 'GROUP POLICY CONTROL' 'Selector-driven GPO lifecycle, common security templates, scope and delegation'
         Write-MenuItem '1' 'List GPOs + GUIDs' 'Indexed inventory; no manual GUID lookup required'
         Write-MenuItem '2' 'Inspect GPO' 'Select existing GPO by index or manual name/GUID'
@@ -3382,7 +3796,7 @@ function Show-GpoMenu {
         Write-MenuItem '9' 'Backup GPO' 'Select and export one GPO'
         Write-MenuItem '10' 'HTML report' 'Select GPO and export human-readable report'
         Write-MenuItem '11' 'Delete GPO' 'Backup best-effort then permanently delete selected GPO' Danger
-        Write-MenuItem '0' 'Back' 'Return to AD operations console' Danger
+        Write-MenuNavigation
         Write-Rule
 
         switch (Read-MenuChoice -Default '1') {
@@ -3397,6 +3811,7 @@ function Show-GpoMenu {
             '9' { Backup-GpoInteractive; Pause-ControlPlane }
             '10' { Export-GpoReportInteractive; Pause-ControlPlane }
             '11' { Remove-GpoInteractive; Pause-ControlPlane }
+            'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
         }
@@ -3405,13 +3820,14 @@ function Show-GpoMenu {
 
 function Show-DnsMenu {
     while ($true) {
+        if ($script:MainMenuRequested) { return }
         Write-MenuHeader 'ACTIVE DIRECTORY DNS' 'Integrated zones and resource-record lifecycle'
         Write-MenuItem '1' 'List zones' 'Inventory DNS zones and integration state'
         Write-MenuItem '2' 'List records' 'Display records in one zone/node'
         Write-MenuItem '3' 'Create A record' 'Add IPv4 host record' Good
         Write-MenuItem '4' 'Delete record' 'Delete one unambiguous resource record' Danger
         Write-MenuItem '5' 'AD DNS health' 'Validate locator and Kerberos SRV records'
-        Write-MenuItem '0' 'Back' 'Return to AD operations console' Danger
+        Write-MenuNavigation
         Write-Rule
 
         switch (Read-MenuChoice -Default '1') {
@@ -3420,6 +3836,7 @@ function Show-DnsMenu {
             '3' { Add-DnsARecordInteractive; Pause-ControlPlane }
             '4' { Remove-DnsRecordInteractive; Pause-ControlPlane }
             '5' { $script:Results.Clear(); Test-DcDnsHealth; Pause-ControlPlane }
+            'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
         }
@@ -3428,6 +3845,7 @@ function Show-DnsMenu {
 
 function Show-DcHealthMenu {
     while ($true) {
+        if ($script:MainMenuRequested) { return }
         Write-MenuHeader 'DC HEALTH & REPLICATION' 'Service state, DCDiag, DNS, SYSVOL, replication and FSMO ownership'
         Write-MenuItem '1' 'Full validation' 'Run all Domain Controller health checks' Good
         Write-MenuItem '2' 'DCDiag' 'Run dcdiag /q and persist failures'
@@ -3435,7 +3853,7 @@ function Show-DcHealthMenu {
         Write-MenuItem '4' 'DNS health' 'Validate AD locator/Kerberos SRV records'
         Write-MenuItem '5' 'SYSVOL / NETLOGON' 'Verify required SMB shares'
         Write-MenuItem '6' 'FSMO roles' 'Display forest/domain FSMO holders'
-        Write-MenuItem '0' 'Back' 'Return to AD operations console' Danger
+        Write-MenuNavigation
         Write-Rule
 
         switch (Read-MenuChoice -Default '1') {
@@ -3445,6 +3863,7 @@ function Show-DcHealthMenu {
             '4' { $script:Results.Clear(); Test-DcDnsHealth; Pause-ControlPlane }
             '5' { $script:Results.Clear(); Test-SysvolNetlogonShares; Pause-ControlPlane }
             '6' { Show-FsmoRoles; Pause-ControlPlane }
+            'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
         }
@@ -3453,12 +3872,13 @@ function Show-DcHealthMenu {
 
 function Show-RecoveryMenu {
     while ($true) {
+        if ($script:MainMenuRequested) { return }
         Write-MenuHeader 'BACKUP & RECOVERY' 'Configuration evidence, GPO backup and Domain Controller system-state protection'
         Write-MenuItem '1' 'Configuration change-set' 'Capture firewall, registry, SMB, Defender, AD/GPO/DNS evidence'
         Write-MenuItem '2' 'DC system-state backup' 'Use wbadmin for AD DS/SYSVOL recovery-grade backup' Good
         Write-MenuItem '3' 'GPO backup' 'Back up one Group Policy Object'
         Write-MenuItem '4' 'Open run directory' 'Print current run/backup paths'
-        Write-MenuItem '0' 'Back' 'Return to previous console' Danger
+        Write-MenuNavigation
         Write-Rule
 
         switch (Read-MenuChoice -Default '1') {
@@ -3470,6 +3890,7 @@ function Show-RecoveryMenu {
                 Write-Console ("Backup path : {0}" -f $script:BackupPath)
                 Pause-ControlPlane
             }
+            'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
         }
@@ -3478,6 +3899,7 @@ function Show-RecoveryMenu {
 
 function Show-SecurityMenu {
     while ($true) {
+        if ($script:MainMenuRequested) { return }
         Write-MenuHeader 'HOST SECURITY & HARDENING' 'Firewall, Defender, SMB, RDP, PowerShell logging and name-resolution controls'
         Write-MenuItem '1' 'Full host audit' 'Read-only selected security controls'
         Write-MenuItem '2' 'Interactive hardening' 'Propose supported remediations one by one' Good
@@ -3487,7 +3909,7 @@ function Show-SecurityMenu {
         Write-MenuItem '6' 'SMB controls' 'Signing capability, guest logons, SMBv1 member-server handling'
         Write-MenuItem '7' 'LLMNR' 'Disable multicast name resolution' Warn
         Write-MenuItem '8' 'PowerShell logging' 'Script block + module logging'
-        Write-MenuItem '0' 'Back' 'Return to previous console' Danger
+        Write-MenuNavigation
         Write-Rule
 
         switch (Read-MenuChoice -Default '1') {
@@ -3499,6 +3921,7 @@ function Show-SecurityMenu {
             '6' { Remediate-Smb; Pause-ControlPlane }
             '7' { Remediate-Llmnr; Pause-ControlPlane }
             '8' { Remediate-PowerShellLogging; Pause-ControlPlane }
+            'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
         }
@@ -3509,6 +3932,7 @@ function Show-AdOperationsMenu {
     Assert-DomainController
 
     while ($true) {
+        if ($script:MainMenuRequested) { return }
         Write-MenuHeader 'ACTIVE DIRECTORY OPERATIONS' 'Daily directory administration without leaving PowerShell'
         Write-MenuItem '1' 'Users' 'Identity lifecycle, credentials and account state'
         Write-MenuItem '2' 'Groups & access' 'Memberships and privileged groups'
@@ -3518,7 +3942,8 @@ function Show-AdOperationsMenu {
         Write-MenuItem '6' 'DC health' 'DCDiag, replication, DNS, SYSVOL and FSMO'
         Write-MenuItem '7' 'Backup & recovery' 'Change-set, GPO and system-state backup'
         Write-MenuItem '8' 'Host security' 'Role-aware server hardening'
-        Write-MenuItem '0' 'Back / Exit' 'Return to main control plane' Danger
+        Write-MenuItem '9' 'Domain migration' 'Assessment, inventory, trusts and migration packages' Warn
+        Write-MenuNavigation
         Write-Rule
 
         switch (Read-MenuChoice -Prompt 'Select module' -Default '1') {
@@ -3530,6 +3955,8 @@ function Show-AdOperationsMenu {
             '6' { Show-DcHealthMenu }
             '7' { Show-RecoveryMenu }
             '8' { Show-SecurityMenu }
+            '9' { Show-DomainMigrationMenu }
+            'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
         }
@@ -3538,6 +3965,7 @@ function Show-AdOperationsMenu {
 
 function Show-MainMenu {
     while ($true) {
+        $script:MainMenuRequested = $false
         Write-MenuHeader 'WINDOWS SERVER CONTROL PLANE' 'Audit, harden, administer Active Directory and maintain recovery readiness'
 
         Write-MenuItem '1' 'Host security audit' 'Read-only server security inventory'
@@ -3556,6 +3984,7 @@ function Show-MainMenu {
 
         Write-MenuItem '6' 'Provision new AD forest' 'First-DC workflow; static IPv4 required' Warn
         Write-MenuItem '7' 'Current findings' 'Display latest audit/validation results'
+        Write-MenuItem '8' 'Domain migration center' 'Assessment, inventory and client-migration tooling' Warn
         Write-MenuItem '0' 'Exit' 'Close control plane' Danger
         Write-Rule
 
@@ -3592,6 +4021,10 @@ function Show-MainMenu {
                     Select-Object Category, Control, Status, Current |
                     Format-Table -AutoSize
                 Pause-ControlPlane
+            }
+            '8' {
+                if ($script:IsDomainController) { Show-DomainMigrationMenu }
+                else { Write-Console 'Domain migration center requires a Domain Controller.' Yellow; Pause-ControlPlane }
             }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
@@ -3729,6 +4162,10 @@ try {
             Invoke-NewForestProvisioning
         }
 
+        'Migration' {
+            Show-DomainMigrationMenu
+        }
+
         default {
             $script:Results.Clear()
             Invoke-HostAudit
@@ -3739,6 +4176,11 @@ try {
 
             Show-MainMenu
         }
+    }
+
+    if ($script:MainMenuRequested) {
+        $script:MainMenuRequested = $false
+        Show-MainMenu
     }
 
     Write-Report
