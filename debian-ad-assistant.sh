@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 4.0.0-clean
+# Version 4.1.0-professional-ui
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -40,7 +40,7 @@ IFS=$'\n\t'
 umask 077
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="4.0.0-clean"
+SCRIPT_VERSION="4.1.0-professional-ui"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -126,9 +126,118 @@ C_GREEN=$'\033[32m'
 C_YELLOW=$'\033[33m'
 C_RED=$'\033[31m'
 C_MAGENTA=$'\033[35m'
+C_BLUE=$'\033[34m'
+C_WHITE=$'\033[97m'
+C_BOLD=$'\033[1m'
 C_DIM=$'\033[2m'
 
+UI_RULE="────────────────────────────────────────────────────────────────────────────────────────"
+
 command_exists() { command -v "$1" >/dev/null 2>&1; }
+
+
+# ---------------------------------------------------------------------------
+# Professional console UI
+# ---------------------------------------------------------------------------
+
+ui_clear() {
+    [[ $TTY_MODE -eq 1 ]] && clear 2>/dev/null || true
+}
+
+ui_rule() {
+    printf '%b%s%b\n' "$C_DIM" "$UI_RULE" "$C_RESET"
+}
+
+ui_brand_compact() {
+    printf '%b%b DEBIAN AD CONTROL PLANE%b  %bv%s%b\n' \
+        "$C_BOLD" "$C_CYAN" "$C_RESET" "$C_DIM" "$SCRIPT_VERSION" "$C_RESET"
+}
+
+ui_service_badge() {
+    local unit="$1" state
+    state="$(safe_systemctl_state "$unit")"
+    case "$state" in
+        active) printf '%bONLINE%b' "$C_GREEN" "$C_RESET" ;;
+        activating) printf '%bSTARTING%b' "$C_YELLOW" "$C_RESET" ;;
+        failed) printf '%bFAILED%b' "$C_RED" "$C_RESET" ;;
+        *) printf '%b%s%b' "$C_YELLOW" "${state^^}" "$C_RESET" ;;
+    esac
+}
+
+ui_enabled_badge() {
+    local unit="$1" state
+    state="$(safe_systemctl_enabled "$unit")"
+    case "$state" in
+        enabled) printf '%bENABLED%b' "$C_GREEN" "$C_RESET" ;;
+        disabled) printf '%bDISABLED%b' "$C_RED" "$C_RESET" ;;
+        *) printf '%b%s%b' "$C_YELLOW" "${state^^}" "$C_RESET" ;;
+    esac
+}
+
+ui_firewall_badge() {
+    local fw="unavailable"
+    if command_exists ufw; then
+        fw="$(ufw status 2>/dev/null | awk 'NR==1{print tolower($2)}' || true)"
+    fi
+    case "$fw" in
+        active) printf '%bACTIVE%b' "$C_GREEN" "$C_RESET" ;;
+        inactive) printf '%bINACTIVE%b' "$C_YELLOW" "$C_RESET" ;;
+        *) printf '%bN/A%b' "$C_DIM" "$C_RESET" ;;
+    esac
+}
+
+ui_context_panel() {
+    local host domain dc ip iface admin session
+    host="$(hostname -s 2>/dev/null || hostname)"
+    domain="${DOMAIN:-unconfigured}"
+    dc="${DC_FQDN:-$host}"
+    ip="${DC_IP:-${AD_IP:-n/a}}"
+    iface="${AD_IFACE:-n/a}"
+    admin="${ADMIN_USER:-not-selected}"
+    session="local"
+    [[ $REMOTE_SESSION -eq 1 ]] && session="SSH ${SSH_CLIENT_IP:-unknown}"
+
+    printf '  %-13s %b%-31s%b %-13s %s\n' \
+        "Domain" "$C_WHITE" "$domain" "$C_RESET" "Role" "${SAMBA_ROLE:-unknown}"
+    printf '  %-13s %-31s %-13s %s\n' \
+        "Controller" "$dc" "Address" "$ip / $iface"
+    printf '  %-13s %-31s %-13s %s\n' \
+        "Admin" "$admin" "Session" "$session"
+    printf '  %-13s %s / %s    %-13s %s\n' \
+        "Samba" "$(ui_service_badge samba-ad-dc)" "$(ui_enabled_badge samba-ad-dc)" \
+        "Firewall" "$(ui_firewall_badge)"
+}
+
+ui_menu_screen() {
+    local title="$1" subtitle="${2:-}"
+    ui_clear
+    ui_brand_compact
+    ui_rule
+    ui_context_panel
+    ui_rule
+    printf '%b%b%s%b\n' "$C_BOLD" "$C_WHITE" "$title" "$C_RESET"
+    [[ -n "$subtitle" ]] && printf '%b%s%b\n' "$C_DIM" "$subtitle" "$C_RESET"
+    printf '\n'
+}
+
+ui_menu_item() {
+    local key="$1" title="$2" description="$3" colour="${4:-$C_CYAN}"
+    printf '  %b[%2s]%b  %b%-29s%b %b%s%b\n' \
+        "$C_DIM" "$key" "$C_RESET" \
+        "$colour" "$title" "$C_RESET" \
+        "$C_DIM" "$description" "$C_RESET"
+}
+
+ui_menu_exit() {
+    ui_menu_item "0" "Back / Exit" "Return to previous console" "$C_RED"
+}
+
+ui_pause() {
+    [[ $TTY_MODE -eq 1 ]] || return 0
+    printf '\n'
+    ui_rule
+    read -r -p "Press [ENTER] to continue..." _ <"$INPUT_FD" || true
+}
 
 msg_info()    { printf '%b[INFO]%b %s\n' "$C_CYAN" "$C_RESET" "$*" >&2; }
 msg_success() { printf '%b[OK]%b %s\n' "$C_GREEN" "$C_RESET" "$*" >&2; }
@@ -171,16 +280,19 @@ result() {
     local status="$1" name="$2" current="$3" expected="${4:-}"
     RESULTS+=("${status}|${name}|${current}|${expected}")
     case "$status" in
-        PASS) printf '%b[PASS]%b %-34s %s\n' "$C_GREEN" "$C_RESET" "$name" "$current" ;;
-        WARN) printf '%b[WARN]%b %-34s %s\n' "$C_YELLOW" "$C_RESET" "$name" "$current" ;;
-        FAIL|ERROR) printf '%b[FAIL]%b %-34s %s\n' "$C_RED" "$C_RESET" "$name" "$current" ;;
-        SKIP) printf '%b[SKIP]%b %-34s %s\n' "$C_YELLOW" "$C_RESET" "$name" "$current" ;;
-        *) printf '[INFO] %-34s %s\n' "$name" "$current" ;;
+        PASS) printf '  %b[ OK ]%b  %-31s %s\n' "$C_GREEN" "$C_RESET" "$name" "$current" ;;
+        WARN) printf '  %b[WARN]%b  %-31s %s\n' "$C_YELLOW" "$C_RESET" "$name" "$current" ;;
+        FAIL|ERROR) printf '  %b[FAIL]%b  %-31s %s\n' "$C_RED" "$C_RESET" "$name" "$current" ;;
+        SKIP) printf '  %b[SKIP]%b  %-31s %s\n' "$C_DIM" "$C_RESET" "$name" "$current" ;;
+        *) printf '  %b[INFO]%b  %-31s %s\n' "$C_CYAN" "$C_RESET" "$name" "$current" ;;
     esac
 }
 
 section() {
-    printf '\n%b--- %s ---%b\n' "$C_CYAN" "$1" "$C_RESET"
+    printf '\n'
+    ui_rule
+    printf '%b%b  %s%b\n' "$C_BOLD" "$C_WHITE" "$1" "$C_RESET"
+    ui_rule
 }
 
 set_progress_plan() {
@@ -208,23 +320,29 @@ confirm() {
     local prompt="$1" default="${2:-N}" answer
     while true; do
         if [[ "$default" == "Y" ]]; then
-            read -r -p "$prompt [Y/n]: " answer <"$INPUT_FD" || return 1
+            printf '%b?%b %s %b[Y/n]%b: ' "$C_CYAN" "$C_RESET" "$prompt" "$C_DIM" "$C_RESET" >&2
+            read -r answer <"$INPUT_FD" || return 1
             answer="${answer:-Y}"
         else
-            read -r -p "$prompt [y/N]: " answer <"$INPUT_FD" || return 1
+            printf '%b?%b %s %b[y/N]%b: ' "$C_CYAN" "$C_RESET" "$prompt" "$C_DIM" "$C_RESET" >&2
+            read -r answer <"$INPUT_FD" || return 1
             answer="${answer:-N}"
         fi
         case "${answer^^}" in
             Y|YES|S|SI|SÍ) return 0 ;;
             N|NO) return 1 ;;
         esac
+        msg_warn "Please answer yes or no."
     done
 }
 
 confirm_high_risk() {
     local action="$1" answer
-    printf '\n%bHIGH IMPACT%b: %s\n' "$C_RED" "$C_RESET" "$action"
-    printf 'Type APPLY to continue: '
+    printf '\n'
+    ui_rule
+    printf '%b%b  HIGH IMPACT OPERATION%b\n' "$C_BOLD" "$C_RED" "$C_RESET"
+    printf '  %s\n' "$action"
+    printf '  Type %bAPPLY%b to authorize: ' "$C_RED" "$C_RESET" >&2
     read -r answer <"$INPUT_FD" || return 1
     [[ "$answer" == "APPLY" ]]
 }
@@ -232,10 +350,12 @@ confirm_high_risk() {
 ask() {
     local prompt="$1" default="${2:-}" answer
     if [[ -n "$default" ]]; then
-        read -r -p "$prompt [$default]: " answer <"$INPUT_FD" || return 1
+        printf '%b›%b %s %b[%s]%b: ' "$C_CYAN" "$C_RESET" "$prompt" "$C_DIM" "$default" "$C_RESET" >&2
+        read -r answer <"$INPUT_FD" || return 1
         printf '%s' "${answer:-$default}"
     else
-        read -r -p "$prompt: " answer <"$INPUT_FD" || return 1
+        printf '%b›%b %s: ' "$C_CYAN" "$C_RESET" "$prompt" >&2
+        read -r answer <"$INPUT_FD" || return 1
         printf '%s' "$answer"
     fi
 }
@@ -321,7 +441,7 @@ detect_terminal() {
         TTY_MODE=1
     else
         TTY_MODE=0
-        C_RESET=""; C_CYAN=""; C_GREEN=""; C_YELLOW=""; C_RED=""; C_MAGENTA=""; C_DIM=""
+        C_RESET=""; C_CYAN=""; C_GREEN=""; C_YELLOW=""; C_RED=""; C_MAGENTA=""; C_BLUE=""; C_WHITE=""; C_BOLD=""; C_DIM=""
     fi
 
     if [[ -n "${SSH_CONNECTION:-}" || -n "${SSH_CLIENT:-}" ]]; then
@@ -408,10 +528,27 @@ trap on_error ERR
 trap cleanup EXIT INT TERM
 
 banner() {
-    printf '\n%b==============================================================================%b\n' "$C_CYAN" "$C_RESET"
-    printf '%b  %s v%s%b\n' "$C_CYAN" "$SCRIPT_NAME" "$SCRIPT_VERSION" "$C_RESET"
-    printf '%b  mode=%s  remote=%s%b\n' "$C_CYAN" "$MODE" "$([[ $REMOTE_SESSION -eq 1 ]] && echo yes || echo no)" "$C_RESET"
-    printf '%b==============================================================================%b\n\n' "$C_CYAN" "$C_RESET"
+    ui_clear
+    printf '%b%b' "$C_CYAN" "$C_BOLD"
+    cat <<'EOF'
+       █████╗ ██████╗        ██████╗  ██████╗
+      ██╔══██╗██╔══██╗       ██╔══██╗██╔════╝
+      ███████║██║  ██║ █████╗██║  ██║██║
+      ██╔══██║██║  ██║ ╚════╝██║  ██║██║
+      ██║  ██║██████╔╝       ██████╔╝╚██████╗
+      ╚═╝  ╚═╝╚═════╝        ╚═════╝  ╚═════╝
+EOF
+    printf '%b' "$C_RESET"
+    printf '%b%b                 DEBIAN ACTIVE DIRECTORY CONTROL PLANE%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET"
+    printf '%b                 Secure provisioning · operations · recovery%b\n' "$C_DIM" "$C_RESET"
+    ui_rule
+    printf '  Version       %b%s%b\n' "$C_CYAN" "$SCRIPT_VERSION" "$C_RESET"
+    printf '  Execution     mode=%b%s%b | session=%b%s%b\n' \
+        "$C_CYAN" "$MODE" "$C_RESET" \
+        "$C_CYAN" "$([[ $REMOTE_SESSION -eq 1 ]] && echo "remote/SSH" || echo "local")" "$C_RESET"
+    printf '  Host          %s\n' "$(hostname -f 2>/dev/null || hostname)"
+    ui_rule
+    printf '\n'
 }
 
 is_valid_ipv4() {
@@ -1691,132 +1828,170 @@ list_domain_computers_status() {
 
 user_admin_menu() {
     while true; do
-        printf '\n%bAD Users%b\n' "$C_CYAN" "$C_RESET"
-        printf '  [1] List users\n  [2] Show user\n  [3] Create user\n  [4] Edit user\n'
-        printf '  [5] Reset password\n  [6] Enable user\n  [7] Disable user\n'
-        printf '  [8] Unlock user\n  [9] Show group memberships\n  [10] Delete user\n  [0] Back\n'
+        ui_menu_screen "USER DIRECTORY" "Account lifecycle, credentials and direct memberships"
+        ui_menu_item "1" "List users" "Inventory all domain user accounts"
+        ui_menu_item "2" "Inspect user" "Show directory attributes for one account"
+        ui_menu_item "3" "Create user" "Create a new domain identity" "$C_GREEN"
+        ui_menu_item "4" "Edit user" "Open Samba's object editor"
+        ui_menu_item "5" "Reset password" "Set a new domain password"
+        ui_menu_item "6" "Enable user" "Re-enable a disabled identity" "$C_GREEN"
+        ui_menu_item "7" "Disable user" "Block interactive authentication" "$C_YELLOW"
+        ui_menu_item "8" "Unlock user" "Clear supported lockout state"
+        ui_menu_item "9" "Group memberships" "List direct groups for an account"
+        ui_menu_item "10" "Delete user" "Permanently remove an identity" "$C_RED"
+        ui_menu_exit
+        ui_rule
         local choice user
-        choice="$(ask 'Choice' '1')"
+        choice="$(ask 'Select operation' '1')"
         case "$choice" in
-            1) samba-tool user list | sort ;;
-            2) user="$(ask 'User')"; samba-tool user show "$user" ;;
+            1) samba-tool user list | sort; ui_pause ;;
+            2) user="$(ask 'User')"; samba-tool user show "$user"; ui_pause ;;
             3)
                 user="$(ask 'New user')"
-                is_valid_ad_username "$user" || { msg_warn "Invalid/reserved account."; continue; }
+                is_valid_ad_username "$user" || { msg_warn "Invalid/reserved account."; ui_pause; continue; }
                 samba-tool user create "$user" <"$INPUT_FD"
+                ui_pause
                 ;;
-            4) user="$(ask 'User')"; samba-tool user edit "$user" ;;
-            5) user="$(ask 'User')"; samba-tool user setpassword "$user" <"$INPUT_FD" ;;
-            6) user="$(ask 'User')"; samba-tool user enable "$user" ;;
+            4) user="$(ask 'User')"; samba-tool user edit "$user"; ui_pause ;;
+            5) user="$(ask 'User')"; samba-tool user setpassword "$user" <"$INPUT_FD"; ui_pause ;;
+            6) user="$(ask 'User')"; samba-tool user enable "$user"; ui_pause ;;
             7)
                 user="$(ask 'User')"
-                case "${user,,}" in administrator|krbtgt) msg_warn "Protected built-in account."; continue ;; esac
+                case "${user,,}" in administrator|krbtgt) msg_warn "Protected built-in account."; ui_pause; continue ;; esac
                 confirm_high_risk "Disable AD user '$user'" && samba-tool user disable "$user"
+                ui_pause
                 ;;
             8)
                 user="$(ask 'User')"
                 samba-tool user unlock --help >/dev/null 2>&1 \
                     && samba-tool user unlock "$user" \
                     || msg_warn "user unlock is unsupported by installed Samba."
+                ui_pause
                 ;;
             9)
                 user="$(ask 'User')"
                 samba-tool user getgroups --help >/dev/null 2>&1 \
                     && samba-tool user getgroups "$user" \
                     || msg_warn "user getgroups is unsupported."
+                ui_pause
                 ;;
             10)
                 user="$(ask 'User')"
-                case "${user,,}" in administrator|guest|krbtgt) msg_warn "Refusing protected built-in account deletion."; continue ;; esac
+                case "${user,,}" in administrator|guest|krbtgt) msg_warn "Refusing protected built-in account deletion."; ui_pause; continue ;; esac
                 confirm_high_risk "PERMANENTLY delete AD user '$user'" && samba-tool user delete "$user"
+                ui_pause
                 ;;
             0) break ;;
-            *) printf 'Invalid choice.\n' ;;
+            *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
     done
 }
 
 group_admin_menu() {
     while true; do
-        printf '\n%bAD Groups%b\n' "$C_CYAN" "$C_RESET"
-        printf '  [1] List groups\n  [2] Show group\n  [3] Create group\n  [4] Edit group\n'
-        printf '  [5] List members\n  [6] Add member\n  [7] Remove member\n  [8] Delete group\n  [0] Back\n'
+        ui_menu_screen "GROUP DIRECTORY" "Role groups, membership management and delegation"
+        ui_menu_item "1" "List groups" "Inventory domain security/distribution groups"
+        ui_menu_item "2" "Inspect group" "Show one group's directory attributes"
+        ui_menu_item "3" "Create group" "Create a new domain group" "$C_GREEN"
+        ui_menu_item "4" "Edit group" "Open Samba's group object editor"
+        ui_menu_item "5" "List members" "Display current membership"
+        ui_menu_item "6" "Add member" "Grant group membership" "$C_GREEN"
+        ui_menu_item "7" "Remove member" "Revoke group membership" "$C_YELLOW"
+        ui_menu_item "8" "Delete group" "Permanently remove a non-protected group" "$C_RED"
+        ui_menu_exit
+        ui_rule
         local choice group member
-        choice="$(ask 'Choice' '1')"
+        choice="$(ask 'Select operation' '1')"
         case "$choice" in
-            1) samba-tool group list | sort ;;
-            2) group="$(ask 'Group')"; samba-tool group show "$group" ;;
-            3) group="$(ask 'New group')"; samba-tool group add "$group" ;;
-            4) group="$(ask 'Group')"; samba-tool group edit "$group" ;;
-            5) group="$(ask 'Group')"; samba-tool group listmembers "$group" ;;
-            6) group="$(ask 'Group')"; member="$(ask 'Account')"; samba-tool group addmembers "$group" "$member" ;;
+            1) samba-tool group list | sort; ui_pause ;;
+            2) group="$(ask 'Group')"; samba-tool group show "$group"; ui_pause ;;
+            3) group="$(ask 'New group')"; samba-tool group add "$group"; ui_pause ;;
+            4) group="$(ask 'Group')"; samba-tool group edit "$group"; ui_pause ;;
+            5) group="$(ask 'Group')"; samba-tool group listmembers "$group"; ui_pause ;;
+            6) group="$(ask 'Group')"; member="$(ask 'Account')"; samba-tool group addmembers "$group" "$member"; ui_pause ;;
             7)
                 group="$(ask 'Group')"; member="$(ask 'Account')"
                 confirm "Remove '$member' from '$group'?" N && samba-tool group removemembers "$group" "$member"
+                ui_pause
                 ;;
             8)
                 group="$(ask 'Group')"
                 case "${group,,}" in
                     "domain admins"|"domain users"|"domain controllers"|"enterprise admins"|"schema admins")
-                        msg_warn "Protected domain group."; continue ;;
+                        msg_warn "Protected domain group."; ui_pause; continue ;;
                 esac
                 confirm_high_risk "PERMANENTLY delete group '$group'" && samba-tool group delete "$group"
+                ui_pause
                 ;;
             0) break ;;
-            *) printf 'Invalid choice.\n' ;;
+            *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
     done
 }
 
 computer_admin_menu() {
     while true; do
-        printf '\n%bDomain Computers%b\n' "$C_CYAN" "$C_RESET"
-        printf '  [1] List computer accounts\n  [2] Computers + network hint\n'
-        printf '  [3] Show computer\n  [4] Edit computer\n  [5] Delete stale computer account\n  [0] Back\n'
+        ui_menu_screen "DOMAIN COMPUTERS" "Joined computer accounts and best-effort network presence"
+        ui_menu_item "1" "List accounts" "Inventory computer objects joined to the domain"
+        ui_menu_item "2" "Network presence" "Resolve DNS and probe SMB/445 availability"
+        ui_menu_item "3" "Inspect computer" "Show one computer object's attributes"
+        ui_menu_item "4" "Edit computer" "Open object editor when supported"
+        ui_menu_item "5" "Delete stale account" "Remove an obsolete computer object" "$C_RED"
+        ui_menu_exit
+        ui_rule
         local choice computer
-        choice="$(ask 'Choice' '1')"
+        choice="$(ask 'Select operation' '1')"
         case "$choice" in
-            1) samba-tool computer list | sort ;;
-            2) list_domain_computers_status ;;
-            3) computer="$(ask 'Computer account')"; samba-tool computer show "$computer" ;;
+            1) samba-tool computer list | sort; ui_pause ;;
+            2) list_domain_computers_status; ui_pause ;;
+            3) computer="$(ask 'Computer account')"; samba-tool computer show "$computer"; ui_pause ;;
             4)
                 computer="$(ask 'Computer account')"
                 samba-tool computer edit --help >/dev/null 2>&1 \
                     && samba-tool computer edit "$computer" \
                     || msg_warn "computer edit is unsupported."
+                ui_pause
                 ;;
             5)
                 computer="$(ask 'Computer account')"
                 confirm_high_risk "Delete computer account '$computer'" && samba-tool computer delete "$computer"
+                ui_pause
                 ;;
             0) break ;;
-            *) printf 'Invalid choice.\n' ;;
+            *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
     done
 }
 
 permissions_admin_menu() {
     while true; do
-        printf '\n%bDomain Permissions / Memberships%b\n' "$C_CYAN" "$C_RESET"
-        printf '  [1] Show user groups\n  [2] Show group members\n'
-        printf '  [3] Add account to group\n  [4] Remove account from group\n'
-        printf '  [5] View DS ACL\n  [6] Add DS ACL ACE (raw SDDL)\n'
-        printf '  [7] Delete DS ACL ACE (if supported)\n  [0] Back\n'
+        ui_menu_screen "ACCESS & DELEGATION" "Group memberships and advanced directory-service ACL operations"
+        ui_menu_item "1" "User groups" "Show direct group memberships for a user"
+        ui_menu_item "2" "Group members" "Enumerate principals assigned to a group"
+        ui_menu_item "3" "Grant membership" "Add an account to a group" "$C_GREEN"
+        ui_menu_item "4" "Revoke membership" "Remove an account from a group" "$C_YELLOW"
+        ui_menu_item "5" "Inspect DS ACL" "Read access-control entries on a directory object"
+        ui_menu_item "6" "Add DS ACL ACE" "Advanced: apply a raw SDDL ACE" "$C_YELLOW"
+        ui_menu_item "7" "Delete DS ACL ACE" "Advanced: remove raw SDDL ACE when supported" "$C_RED"
+        ui_menu_exit
+        ui_rule
         local choice user group member dn sddl
-        choice="$(ask 'Choice' '1')"
+        choice="$(ask 'Select operation' '1')"
         case "$choice" in
-            1) user="$(ask 'User')"; samba-tool user getgroups "$user" ;;
-            2) group="$(ask 'Group')"; samba-tool group listmembers "$group" ;;
-            3) group="$(ask 'Group')"; member="$(ask 'Account')"; samba-tool group addmembers "$group" "$member" ;;
+            1) user="$(ask 'User')"; samba-tool user getgroups "$user"; ui_pause ;;
+            2) group="$(ask 'Group')"; samba-tool group listmembers "$group"; ui_pause ;;
+            3) group="$(ask 'Group')"; member="$(ask 'Account')"; samba-tool group addmembers "$group" "$member"; ui_pause ;;
             4)
                 group="$(ask 'Group')"; member="$(ask 'Account')"
                 confirm "Remove '$member' from '$group'?" N && samba-tool group removemembers "$group" "$member"
+                ui_pause
                 ;;
-            5) dn="$(ask 'Object DN')"; samba-tool dsacl get --objectdn="$dn" ;;
+            5) dn="$(ask 'Object DN')"; samba-tool dsacl get --objectdn="$dn"; ui_pause ;;
             6)
                 dn="$(ask 'Object DN')"; sddl="$(ask 'ACE SDDL')"
                 confirm_high_risk "Add raw DS ACL ACE to '$dn'" &&
                     samba-tool dsacl set --objectdn="$dn" --sddl="$sddl"
+                ui_pause
                 ;;
             7)
                 dn="$(ask 'Object DN')"; sddl="$(ask 'ACE SDDL')"
@@ -1824,9 +1999,10 @@ permissions_admin_menu() {
                     && { confirm_high_risk "Delete DS ACL ACE from '$dn'" &&
                          samba-tool dsacl delete --objectdn="$dn" --sddl="$sddl"; } \
                     || msg_warn "dsacl delete is unsupported."
+                ui_pause
                 ;;
             0) break ;;
-            *) printf 'Invalid choice.\n' ;;
+            *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
     done
 }
@@ -1834,35 +2010,45 @@ permissions_admin_menu() {
 gpo_admin_menu() {
     ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"
     while true; do
-        printf '\n%bGroup Policy Administration%b\n' "$C_CYAN" "$C_RESET"
-        printf '  [1] List GPOs\n  [2] Show GPO\n  [3] Create GPO\n'
-        printf '  [4] Load/update JSON registry policy\n  [5] List GPO containers\n'
-        printf '  [6] Link/update GPO\n  [7] Remove GPO link\n'
-        printf '  [8] Backup GPO (if supported)\n  [9] Delete GPO\n'
-        printf '  [10] Apply assistant baseline GPOs\n  [0] Back\n'
+        ui_menu_screen "GROUP POLICY CONTROL" "Create, inspect, link, update, back up and remove domain GPOs"
+        ui_menu_item "1" "List GPOs" "Inventory every Group Policy Object"
+        ui_menu_item "2" "Inspect GPO" "Display metadata for a GUID"
+        ui_menu_item "3" "Create GPO" "Create a new empty policy object" "$C_GREEN"
+        ui_menu_item "4" "Load JSON policy" "Merge registry policy payload into a GPO"
+        ui_menu_item "5" "List containers" "Show containers currently linked to a GPO"
+        ui_menu_item "6" "Link / update" "Attach a GPO to a domain/OU container" "$C_GREEN"
+        ui_menu_item "7" "Remove link" "Detach a GPO from a container" "$C_YELLOW"
+        ui_menu_item "8" "Backup GPO" "Export one GPO when supported"
+        ui_menu_item "9" "Delete GPO" "Permanently remove a policy object" "$C_RED"
+        ui_menu_item "10" "Baseline policies" "Create/update the assistant-managed secure baselines"
+        ui_menu_exit
+        ui_rule
         local choice guid name file dn dir
-        choice="$(ask 'Choice' '1')"
+        choice="$(ask 'Select operation' '1')"
         case "$choice" in
-            1) samba-tool gpo listall --use-kerberos=required ;;
-            2) guid="$(ask 'GPO GUID')"; samba-tool gpo show "$guid" --use-kerberos=required ;;
-            3) name="$(ask 'GPO display name')"; samba-tool gpo create "$name" --use-kerberos=required ;;
+            1) samba-tool gpo listall --use-kerberos=required; ui_pause ;;
+            2) guid="$(ask 'GPO GUID')"; samba-tool gpo show "$guid" --use-kerberos=required; ui_pause ;;
+            3) name="$(ask 'GPO display name')"; samba-tool gpo create "$name" --use-kerberos=required; ui_pause ;;
             4)
                 guid="$(ask 'GPO GUID')"; file="$(ask 'JSON policy file')"
-                [[ -f "$file" ]] || { msg_warn "File not found."; continue; }
-                python3 -m json.tool "$file" >/dev/null || { msg_warn "Invalid JSON."; continue; }
+                [[ -f "$file" ]] || { msg_warn "File not found."; ui_pause; continue; }
+                python3 -m json.tool "$file" >/dev/null || { msg_warn "Invalid JSON."; ui_pause; continue; }
                 samba-tool gpo load --help >/dev/null 2>&1 \
                     && samba-tool gpo load "$guid" --content="$file" --use-kerberos=required \
                     || msg_warn "gpo load is unsupported."
+                ui_pause
                 ;;
-            5) guid="$(ask 'GPO GUID')"; samba-tool gpo listcontainers "$guid" --use-kerberos=required ;;
+            5) guid="$(ask 'GPO GUID')"; samba-tool gpo listcontainers "$guid" --use-kerberos=required; ui_pause ;;
             6)
                 dn="$(ask 'Container DN')"; guid="$(ask 'GPO GUID')"
                 samba-tool gpo setlink "$dn" "$guid" --use-kerberos=required
+                ui_pause
                 ;;
             7)
                 dn="$(ask 'Container DN')"; guid="$(ask 'GPO GUID')"
                 confirm "Remove link $guid from $dn?" N &&
                     samba-tool gpo dellink "$dn" "$guid" --use-kerberos=required
+                ui_pause
                 ;;
             8)
                 guid="$(ask 'GPO GUID')"
@@ -1873,6 +2059,7 @@ gpo_admin_menu() {
                 else
                     msg_warn "gpo backup is unsupported."
                 fi
+                ui_pause
                 ;;
             9)
                 guid="$(ask 'GPO GUID')"
@@ -1880,10 +2067,11 @@ gpo_admin_menu() {
                 confirm "Create domain backup first?" Y && create_domain_backup no
                 confirm_high_risk "PERMANENTLY delete GPO $guid" &&
                     samba-tool gpo del "$guid" --use-kerberos=required
+                ui_pause
                 ;;
-            10) set_progress_plan 1; manage_gpos ;;
+            10) set_progress_plan 1; manage_gpos; ui_pause ;;
             0) break ;;
-            *) printf 'Invalid choice.\n' ;;
+            *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
     done
 }
@@ -1909,40 +2097,48 @@ install_cli_commands() {
 
 security_hardening_menu() {
     while true; do
-        printf '\n%bAD/DC Host Security%b\n' "$C_CYAN" "$C_RESET"
-        printf '  [1] Audit Samba boot persistence\n'
-        printf '  [2] Configure/repair Samba network boot ordering\n'
-        printf '  [3] Configure Fail2ban (SSH)\n'
-        printf '  [4] Apply conservative network sysctl hardening\n'
-        printf '  [5] Configure/review UFW\n'
-        printf '  [6] Harden delegated administrator / built-in Administrator\n'
-        printf '  [7] Validate AD/DC\n  [0] Back\n'
+        ui_menu_screen "SECURITY & BOOT RESILIENCE" "Host controls protecting availability, management access and the AD service plane"
+        ui_menu_item "1" "Boot persistence audit" "Verify Samba startup and network readiness dependency"
+        ui_menu_item "2" "Repair boot ordering" "Make Samba wait for the AD interface/IP" "$C_GREEN"
+        ui_menu_item "3" "Fail2ban / SSH" "Configure brute-force mitigation for SSH"
+        ui_menu_item "4" "Kernel network hardening" "Apply conservative sysctl protections"
+        ui_menu_item "5" "Firewall policy" "Restrict AD and SSH exposure to trusted networks"
+        ui_menu_item "6" "Delegated administrator" "Verify admin, promote it, optionally disable built-in Administrator"
+        ui_menu_item "7" "Full AD/DC validation" "Run DNS, Kerberos, LDAP, SMB, database and SYSVOL checks"
+        ui_menu_exit
+        ui_rule
         local choice
-        choice="$(ask 'Choice' '1')"
+        choice="$(ask 'Select operation' '1')"
         case "$choice" in
-            1) audit_samba_boot_persistence ;;
-            2) configure_samba_boot_ordering ;;
-            3) set_progress_plan 1; configure_fail2ban ;;
-            4) set_progress_plan 1; configure_network_hardening ;;
-            5) set_progress_plan 1; configure_ufw ;;
-            6) set_progress_plan 1; harden_delegated_admin ;;
-            7) set_progress_plan 1; validate_ad ;;
+            1) audit_samba_boot_persistence; ui_pause ;;
+            2) configure_samba_boot_ordering; ui_pause ;;
+            3) set_progress_plan 1; configure_fail2ban; ui_pause ;;
+            4) set_progress_plan 1; configure_network_hardening; ui_pause ;;
+            5) set_progress_plan 1; configure_ufw; ui_pause ;;
+            6) set_progress_plan 1; harden_delegated_admin; ui_pause ;;
+            7) set_progress_plan 1; validate_ad; ui_pause ;;
             0) break ;;
-            *) printf 'Invalid choice.\n' ;;
+            *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
     done
 }
 
 domain_admin_console() {
     while true; do
-        printf '\n%bAD/DC Operations Console%b\n' "$C_CYAN" "$C_RESET"
-        printf '  [1] Users\n  [2] Groups\n  [3] Computers\n'
-        printf '  [4] Permissions / memberships / DS ACL\n'
-        printf '  [5] Group Policy Objects\n  [6] Security / boot persistence\n'
-        printf '  [7] Install/refresh terminal commands\n'
-        printf '  [8] Validate AD/DC\n  [9] Domain backup\n  [0] Back\n'
+        ui_menu_screen "AD/DC OPERATIONS CONSOLE" "Daily administration surface for a production Samba Active Directory controller"
+        ui_menu_item "1" "Users" "Create, edit, enable, disable and reset domain identities"
+        ui_menu_item "2" "Groups" "Manage domain groups and memberships"
+        ui_menu_item "3" "Computers" "Inventory joined devices and inspect network presence"
+        ui_menu_item "4" "Access & delegation" "Memberships and advanced DS ACL operations"
+        ui_menu_item "5" "Group Policy" "Lifecycle and linking of GPOs"
+        ui_menu_item "6" "Security & resilience" "Firewall, Fail2ban, boot ordering and admin hardening"
+        ui_menu_item "7" "Install CLI commands" "Deploy adctl/ad-users/ad-gpo/... shortcuts"
+        ui_menu_item "8" "Validate controller" "Run complete AD/DC functional health checks"
+        ui_menu_item "9" "Domain backup" "Create an online Samba domain backup"
+        ui_menu_exit
+        ui_rule
         local choice
-        choice="$(ask 'Choice' '1')"
+        choice="$(ask 'Select module' '1')"
         case "$choice" in
             1) user_admin_menu ;;
             2) group_admin_menu ;;
@@ -1950,11 +2146,11 @@ domain_admin_console() {
             4) permissions_admin_menu ;;
             5) gpo_admin_menu ;;
             6) security_hardening_menu ;;
-            7) install_cli_commands ;;
-            8) set_progress_plan 1; validate_ad ;;
-            9) set_progress_plan 1; create_domain_backup ;;
+            7) install_cli_commands; ui_pause ;;
+            8) set_progress_plan 1; validate_ad; ui_pause ;;
+            9) set_progress_plan 1; create_domain_backup; ui_pause ;;
             0) break ;;
-            *) printf 'Invalid choice.\n' ;;
+            *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
     done
 }
@@ -2017,15 +2213,34 @@ write_report() {
 }
 
 summary() {
-    section "FINAL SUMMARY"
     local pass warn fail applied
     pass="$(printf '%s\n' "${RESULTS[@]}" | grep -c '^PASS|' || true)"
     warn="$(printf '%s\n' "${RESULTS[@]}" | grep -c '^WARN|' || true)"
     fail="$(printf '%s\n' "${RESULTS[@]}" | grep -Ec '^(FAIL|ERROR)\|' || true)"
     applied="$(printf '%s\n' "${CHANGES[@]}" | grep -c '^APPLIED|' || true)"
-    printf 'PASS=%s  WARN=%s  FAIL=%s  Applied=%s\n' "$pass" "$warn" "$fail" "$applied"
-    printf 'Log     : %s\nReport  : %s\nBackups : %s\nRun data: %s\n' "$LOG_FILE" "$REPORT_FILE" "$BACKUP_DIR" "$RUN_ROOT"
-    [[ -f "$POST_INSTALL_FILE" ]] && printf 'Checklist: %s\n' "$POST_INSTALL_FILE"
+
+    section "EXECUTION SUMMARY"
+    printf '  %-18s %b%4s PASS%b   %b%4s WARN%b   %b%4s FAIL%b   %4s changes\n' \
+        "Result counters" \
+        "$C_GREEN" "$pass" "$C_RESET" \
+        "$C_YELLOW" "$warn" "$C_RESET" \
+        "$C_RED" "$fail" "$C_RESET" \
+        "$applied"
+    printf '\n'
+    printf '  %-18s %s\n' "Log" "$LOG_FILE"
+    printf '  %-18s %s\n' "Report" "$REPORT_FILE"
+    printf '  %-18s %s\n' "Backups" "$BACKUP_DIR"
+    printf '  %-18s %s\n' "Run data" "$RUN_ROOT"
+    [[ -f "$POST_INSTALL_FILE" ]] && printf '  %-18s %s\n' "Checklist" "$POST_INSTALL_FILE"
+    printf '\n'
+    if (( fail > 0 )); then
+        printf '  %b%bSTATUS: ATTENTION REQUIRED%b\n' "$C_BOLD" "$C_RED" "$C_RESET"
+    elif (( warn > 0 )); then
+        printf '  %b%bSTATUS: OPERATION COMPLETE WITH WARNINGS%b\n' "$C_BOLD" "$C_YELLOW" "$C_RESET"
+    else
+        printf '  %b%bSTATUS: OPERATION COMPLETE%b\n' "$C_BOLD" "$C_GREEN" "$C_RESET"
+    fi
+    ui_rule
 }
 
 bootstrap_mode() {
@@ -2097,33 +2312,40 @@ bootstrap_mode() {
 
 manage_menu() {
     while true; do
-        printf '\n%bManage existing AD/DC%b\n' "$C_CYAN" "$C_RESET"
-        printf '  [1] Audit current state\n  [2] Validate AD/DC health\n'
-        printf '  [3] Repair Samba DNS + resolver/Kerberos\n  [4] Configure Chrony\n'
-        printf '  [5] Configure UFW\n  [6] Ensure directory/admin baseline\n'
-        printf '  [7] Create/update baseline GPOs\n  [8] Domain backup\n'
-        printf '  [9] Advanced SYSVOL ACL repair\n  [10] Post-install checklist\n'
-        printf '  [11] AD/DC operations console\n'
-        printf '  [12] Configure/repair Samba boot ordering\n'
-        printf '  [13] Install/refresh terminal commands\n  [0] Exit\n'
+        ui_menu_screen "DOMAIN CONTROLLER MANAGEMENT" "Maintenance, recovery, security and operational administration"
+        ui_menu_item "1" "Audit current state" "Inventory OS, topology, services and security evidence"
+        ui_menu_item "2" "Validate AD/DC health" "Functional DNS/Kerberos/LDAP/SMB/database checks"
+        ui_menu_item "3" "Repair DNS / Kerberos" "Transactional Samba DNS, resolver and Kerberos recovery"
+        ui_menu_item "4" "Time synchronization" "Configure Chrony and domain NTP policy"
+        ui_menu_item "5" "Firewall policy" "Configure UFW with trusted AD/management scopes"
+        ui_menu_item "6" "Directory/admin baseline" "Ensure OUs, groups and delegated administrator"
+        ui_menu_item "7" "Baseline GPOs" "Create/update assistant-managed secure policies"
+        ui_menu_item "8" "Domain backup" "Create an online recoverable Samba domain backup"
+        ui_menu_item "9" "SYSVOL ACL repair" "Advanced reset after backup and explicit authorization" "$C_YELLOW"
+        ui_menu_item "10" "Post-install checklist" "Regenerate production-readiness checklist"
+        ui_menu_item "11" "Operations console" "Users, groups, computers, permissions and GPOs" "$C_GREEN"
+        ui_menu_item "12" "Boot ordering" "Repair Samba startup dependency on network readiness"
+        ui_menu_item "13" "Install CLI commands" "Deploy adctl and direct administrative shortcuts"
+        ui_menu_exit
+        ui_rule
         local choice
-        choice="$(ask 'Choice' '1')"
+        choice="$(ask 'Select module' '1')"
         case "$choice" in
-            1) set_progress_plan 2; audit_existing; audit_security_baseline ;;
-            2) set_progress_plan 1; validate_ad ;;
-            3) repair_dns_stack ;;
-            4) set_progress_plan 1; configure_time ;;
-            5) set_progress_plan 1; configure_ufw ;;
-            6) set_progress_plan 1; ensure_directory_baseline ;;
-            7) set_progress_plan 1; manage_gpos ;;
-            8) set_progress_plan 1; create_domain_backup ;;
-            9) set_progress_plan 2; advanced_sysvol_repair ;;
-            10) set_progress_plan 1; write_post_install_checklist ;;
+            1) set_progress_plan 2; audit_existing; audit_security_baseline; ui_pause ;;
+            2) set_progress_plan 1; validate_ad; ui_pause ;;
+            3) repair_dns_stack; ui_pause ;;
+            4) set_progress_plan 1; configure_time; ui_pause ;;
+            5) set_progress_plan 1; configure_ufw; ui_pause ;;
+            6) set_progress_plan 1; ensure_directory_baseline; ui_pause ;;
+            7) set_progress_plan 1; manage_gpos; ui_pause ;;
+            8) set_progress_plan 1; create_domain_backup; ui_pause ;;
+            9) set_progress_plan 2; advanced_sysvol_repair; ui_pause ;;
+            10) set_progress_plan 1; write_post_install_checklist; ui_pause ;;
             11) domain_admin_console ;;
-            12) configure_samba_boot_ordering ;;
-            13) install_cli_commands ;;
+            12) configure_samba_boot_ordering; ui_pause ;;
+            13) install_cli_commands; ui_pause ;;
             0) break ;;
-            *) printf 'Invalid choice.\n' ;;
+            *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
     done
 }
