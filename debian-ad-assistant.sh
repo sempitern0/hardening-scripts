@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 4.2.1-cli-discovery
+# Version 4.2.2-gpo-user-fix
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -40,7 +40,7 @@ IFS=$'\n\t'
 umask 077
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="4.2.1-cli-discovery"
+SCRIPT_VERSION="4.2.2-gpo-user-fix"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -1423,6 +1423,14 @@ harden_delegated_admin() {
         samba-tool group addmembers "Domain Admins" "$ADMIN_USER" >/dev/null
     samba-tool group listmembers AdministradoresTI 2>/dev/null | grep -Fxqi "$ADMIN_USER" ||
         samba-tool group addmembers AdministradoresTI "$ADMIN_USER" >/dev/null
+    if samba-tool group show "Group Policy Creator Owners" >/dev/null 2>&1; then
+        if ! samba-tool group listmembers "Group Policy Creator Owners" 2>/dev/null | grep -Fxqi "$ADMIN_USER"; then
+            if confirm "Add '$ADMIN_USER' to 'Group Policy Creator Owners' for explicit GPO administration rights?" Y; then
+                samba-tool group addmembers "Group Policy Creator Owners" "$ADMIN_USER" >/dev/null
+                change APPLIED "Added $ADMIN_USER to Group Policy Creator Owners"
+            fi
+        fi
+    fi
 
     KRB5CCNAME="$KRB5CCNAME" kdestroy >/dev/null 2>&1 || true
     printf '\nVerify delegated administrator credentials before disabling built-in Administrator.\n'
@@ -1532,28 +1540,250 @@ EOF
     python3 -m json.tool "${GPO_DIR}/machine-baseline.json" >/dev/null
 }
 
+
+# ---------------------------------------------------------------------------
+# Robust Samba GPO execution and guided LDAP attribute updates
+# ---------------------------------------------------------------------------
+
+samba_gpo() {
+    # GPO operations use LDAP + SYSVOL/SMB and therefore need an authenticated
+    # domain security context. Prefer the assistant's isolated Kerberos cache.
+    if samba-tool --help 2>&1 | grep -Fq -- '--use-krb5-ccache'; then
+        KRB5CCNAME="$KRB5CCNAME" samba-tool --use-krb5-ccache="$KRB5CCNAME" gpo "$@"
+    else
+        KRB5CCNAME="$KRB5CCNAME" samba-tool --use-kerberos=required gpo "$@"
+    fi
+}
+
+capture_samba_gpo() {
+    local __result_var="$1"
+    shift
+    local output rc
+
+    # Commands evaluated by an if condition are intentionally exempt from
+    # errexit/ERR cascading. We return one controlled error to the caller.
+    if output="$(samba_gpo "$@" 2>&1)"; then
+        rc=0
+    else
+        rc=$?
+    fi
+
+    printf -v "$__result_var" '%s' "$output"
+    [[ $rc -eq 0 ]] || return "$rc"
+}
+
+gpo_readiness_diagnostics() {
+    local reason="${1:-GPO operation failed}"
+    local diag_dir="${RUN_ROOT}/gpo-diagnostics"
+    mkdir -p "$diag_dir"
+
+    printf '\n%bGPO DIAGNOSTICS%b\n' "$C_YELLOW" "$C_RESET" >&2
+    printf '  %s\n' "$reason" >&2
+    printf '  Kerberos principal : %s\n' "$(KRB5CCNAME="$KRB5CCNAME" klist 2>/dev/null | awk -F': ' '/Default principal:/{print $2;exit}' || printf 'none')" >&2
+
+    if [[ -n "${ADMIN_USER:-}" ]]; then
+        if samba-tool group listmembers 'Domain Admins' 2>/dev/null | grep -Fxqi "$ADMIN_USER"; then
+            printf '  Domain Admins       : member\n' >&2
+        else
+            printf '  Domain Admins       : NOT a direct member\n' >&2
+        fi
+        if samba-tool group listmembers 'Group Policy Creator Owners' 2>/dev/null | grep -Fxqi "$ADMIN_USER"; then
+            printf '  GPO Creator Owners  : member\n' >&2
+        else
+            printf '  GPO Creator Owners  : not a direct member\n' >&2
+        fi
+    fi
+
+    if samba-tool ntacl sysvolcheck >"${diag_dir}/sysvolcheck.txt" 2>&1; then
+        printf '  SYSVOL ACL check    : PASS\n' >&2
+    else
+        printf '  SYSVOL ACL check    : WARN/FAIL (see %s)\n' "${diag_dir}/sysvolcheck.txt" >&2
+    fi
+
+    local acl_output=""
+    if samba-tool gpo aclcheck --help >/dev/null 2>&1; then
+        if capture_samba_gpo acl_output aclcheck; then
+            printf '%s\n' "$acl_output" >"${diag_dir}/gpo-aclcheck.txt"
+            printf '  GPO LDAP/SYSVOL ACL : PASS\n' >&2
+        else
+            printf '%s\n' "$acl_output" >"${diag_dir}/gpo-aclcheck.txt"
+            printf '  GPO LDAP/SYSVOL ACL : WARN/FAIL (see %s)\n' "${diag_dir}/gpo-aclcheck.txt" >&2
+        fi
+    fi
+
+    printf '  Diagnostics         : %s\n' "$diag_dir" >&2
+    printf '\nThe assistant will NOT run sysvolreset automatically. Use the advanced SYSVOL repair only after reviewing these diagnostics and taking a domain backup.\n' >&2
+}
+
+create_gpo_safe() {
+    local name="$1" output="" guid="" rc=0
+    ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"
+
+    if capture_samba_gpo output create "$name"; then
+        printf '%s\n' "$output" >>"$LOG_FILE"
+        printf '%s\n' "$output" >&2
+    else
+        rc=$?
+        printf '%s\n' "$output" >>"$LOG_FILE"
+        printf '\n%b[ERROR]%b Samba could not create GPO %q (rc=%s).\n' "$C_RED" "$C_RESET" "$name" "$rc" >&2
+        [[ -n "$output" ]] && printf '%s\n' "$output" >&2
+        gpo_readiness_diagnostics "Creation of GPO '$name' failed."
+        return 1
+    fi
+
+    guid="$(grep -oE '\{[0-9A-Fa-f-]{36}\}' <<<"$output" | head -n1 || true)"
+    if [[ -z "$guid" ]]; then
+        guid="$(find_gpo_guid "$name")"
+    fi
+    [[ -n "$guid" ]] || {
+        msg_warn "GPO '$name' appears to have been created, but its GUID could not be determined."
+        return 1
+    }
+    printf '%s' "$guid"
+}
+
+user_dn_from_samba() {
+    local user="$1"
+    samba-tool user show "$user" 2>/dev/null | awk -F': ' '/^dn: /{print $2;exit}'
+}
+
+ldbmodify_with_assistant_ticket() {
+    local ldif_file="$1"
+    local url="ldap://${DC_FQDN}"
+    if ldbmodify --help 2>&1 | grep -Fq -- '--use-krb5-ccache'; then
+        KRB5CCNAME="$KRB5CCNAME" ldbmodify --use-krb5-ccache="$KRB5CCNAME" -H "$url" "$ldif_file"
+    else
+        KRB5CCNAME="$KRB5CCNAME" ldbmodify --use-kerberos=required -H "$url" "$ldif_file"
+    fi
+}
+
+ldif_b64_line() {
+    local attr="$1" value="$2"
+    printf '%s:: %s\n' "$attr" "$(printf '%s' "$value" | base64 -w0)"
+}
+
+set_user_ldap_attribute() {
+    local user="$1" attr="$2" value="$3"
+    local dn file
+    dn="$(user_dn_from_samba "$user")"
+    [[ -n "$dn" ]] || { msg_warn "Unable to determine DN for user '$user'."; return 1; }
+    file="${RUN_ROOT}/user-${user}-${attr}.ldif"
+
+    {
+        printf 'dn: %s\n' "$dn"
+        printf 'changetype: modify\n'
+        if [[ "$value" == '__DELETE__' ]]; then
+            printf 'delete: %s\n-\n' "$attr"
+        else
+            printf 'replace: %s\n' "$attr"
+            ldif_b64_line "$attr" "$value"
+            printf -- '-\n'
+        fi
+    } >"$file"
+    chmod 600 "$file"
+
+    ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"
+    ldbmodify_with_assistant_ticket "$file" >/dev/null
+}
+
+force_user_password_change_next_logon() {
+    local user="$1"
+    local dn file
+    dn="$(user_dn_from_samba "$user")"
+    [[ -n "$dn" ]] || return 1
+    file="${RUN_ROOT}/user-${user}-pwdlastset.ldif"
+    cat >"$file" <<EOF
+dn: $dn
+changetype: modify
+replace: pwdLastSet
+pwdLastSet: 0
+-
+EOF
+    chmod 600 "$file"
+    ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"
+    ldbmodify_with_assistant_ticket "$file" >/dev/null
+    change APPLIED "Forced password change at next logon for user=$user"
+}
+
+configure_user_business_attributes() {
+    local user="$1" value
+    printf '\nCurrent organizational/contact attributes:\n'
+    samba-tool user show "$user" --attributes=description,department,title,company,physicalDeliveryOfficeName,telephoneNumber,mobile,profilePath,scriptPath,homeDirectory,homeDrive 2>/dev/null || true
+    printf '\nFor each field: blank = keep current value, - = clear value.\n'
+
+    local -a spec=(
+        'description|Description'
+        'department|Department'
+        'title|Job title'
+        'company|Company'
+        'physicalDeliveryOfficeName|Office'
+        'telephoneNumber|Telephone'
+        'mobile|Mobile'
+        'profilePath|Windows profile path'
+        'scriptPath|Logon script path'
+        'homeDirectory|Home directory'
+        'homeDrive|Home drive (e.g. H:)'
+    )
+    local item attr label
+    for item in "${spec[@]}"; do
+        attr="${item%%|*}"
+        label="${item#*|}"
+        value="$(ask "$label" '')"
+        [[ -z "$value" ]] && continue
+        if [[ "$value" == '-' ]]; then
+            set_user_ldap_attribute "$user" "$attr" '__DELETE__' || return 1
+            change APPLIED "Cleared $attr for user=$user"
+        else
+            [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || { msg_warn "Newlines are not allowed in $label."; continue; }
+            set_user_ldap_attribute "$user" "$attr" "$value" || return 1
+            change APPLIED "Updated $attr for user=$user"
+        fi
+    done
+}
+
+configure_user_rfc2307_interactive() {
+    local user="$1" uid gid home shell gecos
+    samba-tool user addunixattrs --help >/dev/null 2>&1 || {
+        msg_warn "Installed Samba does not support user addunixattrs."
+        return 1
+    }
+    uid="$(ask 'RFC2307 UID number')"
+    [[ "$uid" =~ ^[0-9]+$ ]] || { msg_warn 'UID must be numeric.'; return 1; }
+    gid="$(ask 'RFC2307 GID number (blank=Domain Users gidNumber)' '')"
+    home="$(ask 'Unix home directory' "/home/${NETBIOS_DOMAIN}/${user}")"
+    shell="$(ask 'Login shell' '/bin/sh')"
+    gecos="$(ask 'GECOS/comment' "$user")"
+
+    local -a args=(user addunixattrs "$user" "$uid" "--unix-home=$home" "--login-shell=$shell" "--gecos=$gecos")
+    [[ -n "$gid" ]] && args+=("--gid-number=$gid")
+    samba-tool "${args[@]}"
+    change APPLIED "Configured RFC2307 attributes for user=$user uid=$uid"
+}
+
 find_gpo_guid() {
-    local name="$1"
-    samba-tool gpo listall --use-kerberos=required 2>/dev/null |
-        awk -v target="$name" '
-            /^GPO[[:space:]]*:/ {guid=$3}
-            /display name[[:space:]]*:/ {
-                line=$0
-                sub(/^.*display name[[:space:]]*:[[:space:]]*/,"",line)
-                if (line==target) {print guid; exit}
-            }' |
-        grep -oE '\{[0-9A-Fa-f-]{36}\}' | head -n1 || true
+    local name="$1" output=""
+    if ! capture_samba_gpo output listall; then
+        printf '%s\n' "$output" >>"$LOG_FILE"
+        return 1
+    fi
+    awk -v target="$name" '
+        /^[[:space:]]*GPO[[:space:]]*:/ {
+            guid=$0; sub(/^[^:]*:[[:space:]]*/, "", guid); next
+        }
+        /^[[:space:]]*display name[[:space:]]*:/ {
+            line=$0; sub(/^[^:]*:[[:space:]]*/, "", line)
+            if (line==target) {print guid; exit}
+        }' <<<"$output" | grep -oE '\{[0-9A-Fa-f-]{36}\}' | head -n1 || true
 }
 
 ensure_gpo() {
-    local name="$1" guid output
-    guid="$(find_gpo_guid "$name")"
+    local name="$1" guid=""
+    guid="$(find_gpo_guid "$name" || true)"
     [[ -n "$guid" ]] && { printf '%s' "$guid"; return 0; }
 
-    output="$(samba-tool gpo create "$name" --use-kerberos=required 2>&1)"
-    printf '%s\n' "$output" >>"$LOG_FILE"
-    guid="$(grep -oE '\{[0-9A-Fa-f-]{36}\}' <<<"$output" | head -n1 || true)"
-    [[ -n "$guid" ]] || return 1
+    if ! guid="$(create_gpo_safe "$name")"; then
+        return 1
+    fi
     printf '%s' "$guid"
 }
 
@@ -1565,18 +1795,32 @@ manage_gpos() {
     ensure_kerberos_ticket "$ADMIN_USER"
     write_gpo_sources
 
-    local user_guid machine_guid base_dn
-    user_guid="$(ensure_gpo 'DC - User Baseline')"
-    machine_guid="$(ensure_gpo 'DC - Computer Baseline')"
+    local user_guid="" machine_guid="" base_dn output=""
+    if ! user_guid="$(ensure_gpo 'DC - User Baseline')"; then
+        result FAIL "User baseline GPO" "creation failed" "review GPO diagnostics"
+        return 1
+    fi
+    if ! machine_guid="$(ensure_gpo 'DC - Computer Baseline')"; then
+        result FAIL "Machine baseline GPO" "creation failed" "review GPO diagnostics"
+        return 1
+    fi
     base_dn="$(domain_dn "$DOMAIN")"
 
     backup_gpo_safe "$user_guid" || true
     backup_gpo_safe "$machine_guid" || true
 
-    samba-tool gpo load "$user_guid" --content="${GPO_DIR}/user-baseline.json" --use-kerberos=required >/dev/null
-    samba-tool gpo load "$machine_guid" --content="${GPO_DIR}/machine-baseline.json" --use-kerberos=required >/dev/null
-    samba-tool gpo setlink "$base_dn" "$user_guid" --use-kerberos=required >/dev/null
-    samba-tool gpo setlink "$base_dn" "$machine_guid" --use-kerberos=required >/dev/null
+    if ! capture_samba_gpo output load "$user_guid" --content="${GPO_DIR}/user-baseline.json"; then
+        printf '%s\n' "$output" >&2; return 1
+    fi
+    if ! capture_samba_gpo output load "$machine_guid" --content="${GPO_DIR}/machine-baseline.json"; then
+        printf '%s\n' "$output" >&2; return 1
+    fi
+    if ! capture_samba_gpo output setlink "$base_dn" "$user_guid"; then
+        printf '%s\n' "$output" >&2; return 1
+    fi
+    if ! capture_samba_gpo output setlink "$base_dn" "$machine_guid"; then
+        printf '%s\n' "$output" >&2; return 1
+    fi
 
     samba-tool ntacl sysvolcheck >/dev/null 2>&1 \
         && result PASS "SYSVOL ACL" "consistent" "consistent" \
@@ -2039,40 +2283,74 @@ select_directory_target_dn() {
 
 configure_user_profile_interactive() {
     local user="$1"
-    local given surname display mail upn
-    given="$(ask 'Given name (blank=keep/skip)' '')"
-    surname="$(ask 'Surname (blank=keep/skip)' '')"
-    display="$(ask 'Display name (blank=keep/skip)' '')"
-    mail="$(ask 'Mail address (blank=keep/skip)' '')"
-    upn="$(ask 'UPN (blank=keep/skip)' '')"
+    local given surname initials display mail upn
+
+    printf '\nNaming / logon attributes. Blank = keep current/skip.\n'
+    samba-tool user show "$user" --attributes=givenName,sn,initials,displayName,mail,userPrincipalName 2>/dev/null || true
+
+    given="$(ask 'Given name' '')"
+    surname="$(ask 'Surname' '')"
+    initials="$(ask 'Initials' '')"
+    display="$(ask 'Display name' '')"
+    mail="$(ask 'Mail address' '')"
+    upn="$(ask 'UPN' '')"
 
     local -a args=(user rename "$user")
     [[ -n "$given" ]] && args+=("--given-name=$given")
     [[ -n "$surname" ]] && args+=("--surname=$surname")
+    [[ -n "$initials" ]] && args+=("--initials=$initials")
     [[ -n "$display" ]] && args+=("--display-name=$display")
     [[ -n "$mail" ]] && args+=("--mail-address=$mail")
     [[ -n "$upn" ]] && args+=("--upn=$upn")
 
     if ((${#args[@]} > 3)); then
         samba-tool "${args[@]}"
-        change APPLIED "Updated profile attributes for user=$user"
-    else
-        result SKIP "User profile" "no profile fields supplied" "unchanged"
+        change APPLIED "Updated naming/profile attributes for user=$user"
+    fi
+
+    if confirm "Configure organizational/contact/profile-path attributes?" Y; then
+        configure_user_business_attributes "$user"
     fi
 }
 
 create_user_interactive() {
-    local user must_change enabled target group
-    user="$(ask 'New user account')"
-    is_valid_ad_username "$user" || { msg_warn "Invalid/reserved account."; return 1; }
+    local user must_change enabled target group configure_rfc="no"
+    local given surname initials display mail upn
 
-    if samba-tool user show "$user" >/dev/null 2>&1; then
-        msg_warn "User '$user' already exists."
-        return 1
-    fi
+    ui_menu_screen "CREATE DOMAIN USER" "Guided account creation with identity, password, OU, profile and memberships"
+    user="$(ask 'sAMAccountName')"
+    is_valid_ad_username "$user" || { msg_warn "Invalid/reserved account."; return 1; }
+    samba-tool user show "$user" >/dev/null 2>&1 && { msg_warn "User '$user' already exists."; return 1; }
+
+    given="$(ask 'Given name' '')"
+    surname="$(ask 'Surname' '')"
+    initials="$(ask 'Initials' '')"
+    display="$(ask 'Display name' "${given}${given:+ }${surname}")"
+    mail="$(ask 'Mail address' '')"
+    upn="$(ask 'UPN' "${user}@${DOMAIN}")"
 
     must_change="yes"
     confirm "Require password change at first domain logon?" Y || must_change="no"
+    enabled="yes"
+    confirm "Create account enabled?" Y || enabled="no"
+
+    target=""
+    if confirm "Choose target OU/container before finishing account setup?" Y; then
+        target="$(select_directory_target_dn || true)"
+    fi
+
+    confirm "Configure RFC2307 Unix attributes after creation?" N && configure_rfc="yes"
+
+    printf '\n%bUSER CREATION PLAN%b\n' "$C_CYAN" "$C_RESET"
+    printf '  Account        : %s\n' "$user"
+    printf '  Display name   : %s\n' "${display:-<not set>}"
+    printf '  UPN            : %s\n' "${upn:-<default/not set>}"
+    printf '  Mail           : %s\n' "${mail:-<not set>}"
+    printf '  Target         : %s\n' "${target:-default Users container}"
+    printf '  Enabled        : %s\n' "$enabled"
+    printf '  Change password: %s\n' "$must_change"
+    printf '  RFC2307        : %s\n' "$configure_rfc"
+    confirm "Create this domain account?" Y || return 0
 
     local -a args=(user add "$user")
     if [[ "$must_change" == "yes" ]] && samba_tool_option_supported user add "--must-change-at-next-login"; then
@@ -2083,25 +2361,37 @@ create_user_interactive() {
     samba-tool "${args[@]}" <"$INPUT_FD"
     change APPLIED "Created AD user=$user"
 
+    local -a rename_args=(user rename "$user")
+    [[ -n "$given" ]] && rename_args+=("--given-name=$given")
+    [[ -n "$surname" ]] && rename_args+=("--surname=$surname")
+    [[ -n "$initials" ]] && rename_args+=("--initials=$initials")
+    [[ -n "$display" ]] && rename_args+=("--display-name=$display")
+    [[ -n "$mail" ]] && rename_args+=("--mail-address=$mail")
+    [[ -n "$upn" ]] && rename_args+=("--upn=$upn")
+    ((${#rename_args[@]} > 3)) && samba-tool "${rename_args[@]}"
+
+    if confirm "Configure department/title/company/office/telephone/profile paths now?" Y; then
+        configure_user_business_attributes "$user"
+    fi
+
+    if [[ -n "$target" ]]; then
+        samba-tool user move "$user" "$target"
+        change APPLIED "Moved user=$user to $target"
+    fi
+
     if [[ "$must_change" == "yes" ]] && ! samba_tool_option_supported user add "--must-change-at-next-login"; then
-        msg_warn "This Samba build does not advertise --must-change-at-next-login on user add."
-        msg_warn "Use Reset password from the user menu to apply it if supported by setpassword."
-    fi
-
-    if confirm "Configure profile/name attributes now?" Y; then
-        configure_user_profile_interactive "$user"
-    fi
-
-    if confirm "Move user to a specific OU/container?" N; then
-        if target="$(select_directory_target_dn)"; then
-            samba-tool user move "$user" "$target"
-            change APPLIED "Moved user=$user to $target"
+        if force_user_password_change_next_logon "$user"; then
+            result PASS "First-logon password change" "$user / pwdLastSet=0" "required"
+        else
+            msg_warn "Unable to enforce first-logon password change automatically."
         fi
     fi
 
-    enabled="yes"
-    confirm "Leave account enabled?" Y || enabled="no"
     [[ "$enabled" == "yes" ]] || samba-tool user disable "$user"
+
+    if [[ "$configure_rfc" == "yes" ]]; then
+        configure_user_rfc2307_interactive "$user" || true
+    fi
 
     if confirm "Add '$user' to domain groups now?" Y; then
         while true; do
@@ -2113,10 +2403,14 @@ create_user_interactive() {
             confirm "Add '$user' to another group?" N || break
         done
     fi
+
+    printf '\n%bCreated user summary%b\n' "$C_GREEN" "$C_RESET"
+    samba-tool user show "$user" --attributes=sAMAccountName,userPrincipalName,displayName,givenName,sn,mail,description,department,title,company,physicalDeliveryOfficeName,telephoneNumber,mobile,pwdLastSet,userAccountControl,distinguishedName 2>/dev/null || true
 }
 
 reset_user_password_interactive() {
     local user="$1" must_change="no"
+    samba-tool user show "$user" >/dev/null 2>&1 || { msg_warn "User '$user' not found."; return 1; }
     confirm "Require password change at next logon?" Y && must_change="yes"
 
     printf '\nSamba will request the new password for %s.\n' "$user"
@@ -2124,8 +2418,12 @@ reset_user_password_interactive() {
         samba-tool user setpassword "$user" --must-change-at-next-login <"$INPUT_FD"
     else
         samba-tool user setpassword "$user" <"$INPUT_FD"
-        [[ "$must_change" == "yes" ]] &&
-            msg_warn "This Samba build does not advertise --must-change-at-next-login for setpassword."
+        if [[ "$must_change" == "yes" ]]; then
+            force_user_password_change_next_logon "$user" || {
+                msg_warn "Password was changed, but first-logon password-change enforcement failed."
+                return 1
+            }
+        fi
     fi
 }
 
@@ -2133,42 +2431,63 @@ edit_user_interactive_menu() {
     local user="$1" choice target
     while true; do
         ui_menu_screen "EDIT USER" "Structured account operations for $user"
-        ui_menu_item "1" "Profile / naming" "Given name, surname, display name, mail and UPN"
-        ui_menu_item "2" "Move to OU" "Select a directory target by index"
-        ui_menu_item "3" "Group memberships" "Add/remove memberships with indexed selectors"
-        ui_menu_item "4" "Reset password" "Optionally require change at next logon"
-        ui_menu_item "5" "Enable account" "Allow authentication" "$C_GREEN"
-        ui_menu_item "6" "Disable account" "Block authentication" "$C_YELLOW"
-        ui_menu_item "7" "Unlock account" "Clear supported lockout state"
-        ui_menu_item "8" "Advanced object editor" "Open Samba's raw AD object editor" "$C_YELLOW"
+        ui_menu_item "1" "Naming / logon" "Given name, surname, initials, display name, mail and UPN"
+        ui_menu_item "2" "Business / contact" "Description, department, title, company, office, phones and profile paths"
+        ui_menu_item "3" "Move to OU" "Select a directory target by index"
+        ui_menu_item "4" "Group memberships" "Add/remove memberships with indexed selectors"
+        ui_menu_item "5" "Reset password" "Optionally require change at next logon"
+        ui_menu_item "6" "Force password change" "Set pwdLastSet=0 without resetting password" "$C_YELLOW"
+        ui_menu_item "7" "Enable account" "Allow authentication" "$C_GREEN"
+        ui_menu_item "8" "Disable account" "Block authentication" "$C_YELLOW"
+        ui_menu_item "9" "Unlock account" "Clear supported lockout state"
+        ui_menu_item "10" "Delegation sensitive" "Set/unset UF_NOT_DELEGATED for privileged identities"
+        ui_menu_item "11" "RFC2307 attributes" "UID/GID, Unix home, shell and GECOS"
+        ui_menu_item "12" "Advanced object editor" "Open Samba raw AD object editor" "$C_YELLOW"
         ui_menu_exit
         ui_rule
 
         choice="$(ask 'Select operation' '1')"
         case "$choice" in
             1) configure_user_profile_interactive "$user"; ui_pause ;;
-            2)
+            2) configure_user_business_attributes "$user"; ui_pause ;;
+            3)
                 if target="$(select_directory_target_dn)"; then
                     samba-tool user move "$user" "$target"
                     change APPLIED "Moved user=$user to $target"
                 fi
                 ui_pause
                 ;;
-            3) manage_user_memberships "$user" ;;
-            4) reset_user_password_interactive "$user"; ui_pause ;;
-            5) samba-tool user enable "$user"; ui_pause ;;
-            6)
+            4) manage_user_memberships "$user" ;;
+            5) reset_user_password_interactive "$user"; ui_pause ;;
+            6) force_user_password_change_next_logon "$user"; ui_pause ;;
+            7) samba-tool user enable "$user"; ui_pause ;;
+            8)
                 case "${user,,}" in administrator|krbtgt) msg_warn "Protected built-in account."; ui_pause; continue ;; esac
                 confirm_high_risk "Disable AD user '$user'" && samba-tool user disable "$user"
                 ui_pause
                 ;;
-            7)
+            9)
                 samba-tool user unlock --help >/dev/null 2>&1 \
                     && samba-tool user unlock "$user" \
                     || msg_warn "user unlock is unsupported by installed Samba."
                 ui_pause
                 ;;
-            8) samba-tool user edit "$user"; ui_pause ;;
+            10)
+                if samba-tool user sensitive --help >/dev/null 2>&1; then
+                    samba-tool user sensitive "$user" show || true
+                    local sensitive_choice
+                    sensitive_choice="$(ask 'Set account as sensitive/not delegatable? [on/off]' 'on')"
+                    case "$sensitive_choice" in
+                        on|off) samba-tool user sensitive "$user" "$sensitive_choice" ;;
+                        *) msg_warn "Expected on or off." ;;
+                    esac
+                else
+                    msg_warn "user sensitive is unsupported by installed Samba."
+                fi
+                ui_pause
+                ;;
+            11) configure_user_rfc2307_interactive "$user"; ui_pause ;;
+            12) samba-tool user edit "$user"; ui_pause ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -2176,21 +2495,25 @@ edit_user_interactive_menu() {
 }
 
 gpo_inventory_tsv() {
-    samba-tool gpo listall --use-kerberos=required 2>/dev/null |
-        awk '
-            /^[[:space:]]*GPO[[:space:]]*:/ {
-                guid=$0
-                sub(/^[^:]*:[[:space:]]*/, "", guid)
-                next
+    local output=""
+    if ! capture_samba_gpo output listall; then
+        printf '%s\n' "$output" >>"$LOG_FILE"
+        return 1
+    fi
+    awk '
+        /^[[:space:]]*GPO[[:space:]]*:/ {
+            guid=$0
+            sub(/^[^:]*:[[:space:]]*/, "", guid)
+            next
+        }
+        /^[[:space:]]*display name[[:space:]]*:/ {
+            name=$0
+            sub(/^[^:]*:[[:space:]]*/, "", name)
+            if (guid != "") {
+                printf "%s\t%s\n", guid, name
+                guid=""
             }
-            /^[[:space:]]*display name[[:space:]]*:/ {
-                name=$0
-                sub(/^[^:]*:[[:space:]]*/, "", name)
-                if (guid != "") {
-                    printf "%s\t%s\n", guid, name
-                    guid=""
-                }
-            }'
+        }' <<<"$output"
 }
 
 show_gpo_inventory_indexed() {
@@ -2248,19 +2571,17 @@ select_gpo_guid() {
 }
 
 backup_gpo_safe() {
-    local guid="$1"
-    if samba-tool gpo backup --help >/dev/null 2>&1; then
-        local dir="${RUN_ROOT}/gpo-backup"
-        mkdir -p "$dir"
-        samba-tool gpo backup "$guid" --tmpdir="$dir" --use-kerberos=required >/dev/null 2>&1 || {
-            msg_warn "GPO backup failed for $guid; continuing only if operator authorizes later operation."
-            return 1
-        }
-        result PASS "GPO backup" "$guid -> $dir" "completed"
-    else
-        result WARN "GPO backup" "unsupported by installed Samba" "manual/domain backup recommended"
-        return 1
+    local guid="$1" dir output=""
+    samba-tool gpo backup --help >/dev/null 2>&1 || return 0
+    dir="${RUN_ROOT}/gpo-backup"
+    mkdir -p "$dir"
+    if capture_samba_gpo output backup "$guid" --tmpdir="$dir"; then
+        result PASS "GPO backup" "$guid -> $dir" "created"
+        return 0
     fi
+    printf '%s\n' "$output" >>"$LOG_FILE"
+    msg_warn "GPO backup failed for $guid; continuing only because caller allowed best-effort backup."
+    return 1
 }
 
 write_security_gpo_catalog_sources() {
@@ -2323,7 +2644,7 @@ EOF
 
 deploy_security_gpo_template() {
     local id="$1" target_dn="$2"
-    local name file guid impact="MEDIUM"
+    local name file guid="" output=""
 
     case "$id" in
         1) name="SEC - PowerShell Logging"; file="${GPO_DIR}/sec-powershell-logging.json" ;;
@@ -2332,20 +2653,30 @@ deploy_security_gpo_template() {
         4) name="SEC - RDP Network Level Authentication"; file="${GPO_DIR}/sec-rdp-nla.json" ;;
         5) name="SEC - Secure Screen Lock"; file="${GPO_DIR}/sec-screen-lock.json" ;;
         6) name="SEC - Disable AlwaysInstallElevated"; file="${GPO_DIR}/sec-disable-alwaysinstallelevated.json" ;;
-        7) name="SEC - Authorized Use Notice"; file="${GPO_DIR}/sec-legal-notice.json"; impact="LOW" ;;
+        7) name="SEC - Authorized Use Notice"; file="${GPO_DIR}/sec-legal-notice.json" ;;
         *) msg_warn "Unknown security GPO template: $id"; return 1 ;;
     esac
 
-    guid="$(find_gpo_guid "$name")"
+    guid="$(find_gpo_guid "$name" || true)"
     if [[ -n "$guid" ]]; then
         backup_gpo_safe "$guid" || true
     else
-        guid="$(ensure_gpo "$name")"
+        if ! guid="$(ensure_gpo "$name")"; then
+            msg_warn "Unable to create/find GPO '$name'. No policy or link was applied."
+            return 1
+        fi
     fi
-    [[ -n "$guid" ]] || { msg_warn "Unable to create/find GPO '$name'."; return 1; }
 
-    samba-tool gpo load "$guid" --content="$file" --use-kerberos=required >/dev/null
-    samba-tool gpo setlink "$target_dn" "$guid" --use-kerberos=required >/dev/null
+    if ! capture_samba_gpo output load "$guid" --content="$file"; then
+        printf '%s\n' "$output" >&2
+        msg_warn "Failed to load policy content into '$name'."
+        return 1
+    fi
+    if ! capture_samba_gpo output setlink "$target_dn" "$guid"; then
+        printf '%s\n' "$output" >&2
+        msg_warn "Policy was updated but could not be linked to $target_dn."
+        return 1
+    fi
 
     change APPLIED "Security GPO '$name' guid=$guid target=$target_dn"
     result PASS "$name" "$guid linked to $target_dn" "deployed"
@@ -2379,7 +2710,9 @@ security_gpo_catalog_menu() {
             A)
                 if target="$(select_directory_target_dn)"; then
                     for id in 1 2 3 4 5 6; do
-                        deploy_security_gpo_template "$id" "$target"
+                        if ! deploy_security_gpo_template "$id" "$target"; then
+                            msg_warn "Starter-pack policy $id failed; remaining policies will still be attempted."
+                        fi
                     done
                     samba-tool ntacl sysvolcheck >/dev/null 2>&1 || msg_warn "SYSVOL ACL differences detected after GPO deployment."
                 fi
@@ -2679,7 +3012,7 @@ gpo_admin_menu() {
     ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"
 
     while true; do
-        ui_menu_screen "GROUP POLICY CONTROL" "Indexed GPO lifecycle, curated security templates, scope and backup"
+        ui_menu_screen "GROUP POLICY CONTROL" "Indexed GPO lifecycle, curated security templates, scope, diagnostics and backup"
         ui_menu_item "1" "List GPOs + GUIDs" "Indexed inventory; no manual GUID lookup required"
         ui_menu_item "2" "Inspect GPO" "Select an existing GPO by index"
         ui_menu_item "3" "Create GPO" "Create an empty policy and optionally link it" "$C_GREEN"
@@ -2689,31 +3022,34 @@ gpo_admin_menu() {
         ui_menu_item "7" "Link / update" "Select GPO and domain/OU target" "$C_GREEN"
         ui_menu_item "8" "Remove link" "Select GPO and domain/OU target" "$C_YELLOW"
         ui_menu_item "9" "Backup GPO" "Select and export one GPO"
-        ui_menu_item "10" "Delete GPO" "Backup/domain-backup then permanently delete" "$C_RED"
-        ui_menu_item "11" "Legacy baseline pair" "Create/update original assistant user+machine baselines"
+        ui_menu_item "10" "GPO readiness" "Kerberos, operator membership and SYSVOL/GPO ACL diagnostics"
+        ui_menu_item "11" "Delete GPO" "Backup/domain-backup then permanently delete" "$C_RED"
+        ui_menu_item "12" "Legacy baseline pair" "Create/update original assistant user+machine baselines"
         ui_menu_exit
         ui_rule
 
-        local choice guid name file dn output
+        local choice guid name file dn output=""
         choice="$(ask 'Select operation' '1')"
         case "$choice" in
             1) show_gpo_inventory_indexed; ui_pause ;;
             2)
                 guid="$(select_gpo_guid)" || { ui_pause; continue; }
-                samba-tool gpo show "$guid" --use-kerberos=required
+                if capture_samba_gpo output show "$guid"; then printf '%s\n' "$output"; else printf '%s\n' "$output" >&2; fi
                 ui_pause
                 ;;
             3)
                 name="$(ask 'GPO display name')"
                 [[ -n "$name" ]] || { msg_warn "GPO name is required."; ui_pause; continue; }
-                output="$(samba-tool gpo create "$name" --use-kerberos=required 2>&1)"
-                printf '%s\n' "$output"
-                guid="$(grep -oE '\{[0-9A-Fa-f-]{36}\}' <<<"$output" | head -n1 || true)"
-                [[ -n "$guid" ]] && printf '\nCreated GUID: %s\n' "$guid"
-                if [[ -n "$guid" ]] && confirm "Link this GPO now?" Y; then
-                    if dn="$(select_directory_target_dn)"; then
-                        samba-tool gpo setlink "$dn" "$guid" --use-kerberos=required
+                if guid="$(create_gpo_safe "$name")"; then
+                    printf '\nCreated GUID: %s\n' "$guid"
+                    if confirm "Link this GPO now?" Y && dn="$(select_directory_target_dn)"; then
+                        if ! capture_samba_gpo output setlink "$dn" "$guid"; then
+                            printf '%s\n' "$output" >&2
+                            msg_warn "GPO was created but linking failed."
+                        fi
                     fi
+                else
+                    msg_warn "GPO creation failed cleanly; see diagnostics above."
                 fi
                 ui_pause
                 ;;
@@ -2724,42 +3060,41 @@ gpo_admin_menu() {
                 [[ -f "$file" ]] || { msg_warn "File not found."; ui_pause; continue; }
                 python3 -m json.tool "$file" >/dev/null || { msg_warn "Invalid JSON."; ui_pause; continue; }
                 backup_gpo_safe "$guid" || true
-                samba-tool gpo load "$guid" --content="$file" --use-kerberos=required
+                if ! capture_samba_gpo output load "$guid" --content="$file"; then printf '%s\n' "$output" >&2; fi
                 ui_pause
                 ;;
             6)
                 guid="$(select_gpo_guid)" || { ui_pause; continue; }
-                samba-tool gpo listcontainers "$guid" --use-kerberos=required
+                if capture_samba_gpo output listcontainers "$guid"; then printf '%s\n' "$output"; else printf '%s\n' "$output" >&2; fi
                 ui_pause
                 ;;
             7)
                 guid="$(select_gpo_guid)" || { ui_pause; continue; }
                 dn="$(select_directory_target_dn)" || { ui_pause; continue; }
-                samba-tool gpo setlink "$dn" "$guid" --use-kerberos=required
+                if ! capture_samba_gpo output setlink "$dn" "$guid"; then printf '%s\n' "$output" >&2; fi
                 ui_pause
                 ;;
             8)
                 guid="$(select_gpo_guid)" || { ui_pause; continue; }
                 dn="$(select_directory_target_dn)" || { ui_pause; continue; }
-                confirm "Remove link $guid from $dn?" N &&
-                    samba-tool gpo dellink "$dn" "$guid" --use-kerberos=required
+                if confirm "Remove link $guid from $dn?" N; then
+                    if ! capture_samba_gpo output dellink "$dn" "$guid"; then printf '%s\n' "$output" >&2; fi
+                fi
                 ui_pause
                 ;;
-            9)
-                guid="$(select_gpo_guid)" || { ui_pause; continue; }
-                backup_gpo_safe "$guid" || true
-                ui_pause
-                ;;
-            10)
+            9) guid="$(select_gpo_guid)" || { ui_pause; continue; }; backup_gpo_safe "$guid" || true; ui_pause ;;
+            10) gpo_readiness_diagnostics "Manual GPO readiness check"; ui_pause ;;
+            11)
                 guid="$(select_gpo_guid)" || { ui_pause; continue; }
                 printf 'A domain backup is strongly recommended before deleting a GPO.\n'
                 confirm "Create domain backup first?" Y && create_domain_backup no
                 backup_gpo_safe "$guid" || true
-                confirm_high_risk "PERMANENTLY delete GPO $guid" &&
-                    samba-tool gpo del "$guid" --use-kerberos=required
+                if confirm_high_risk "PERMANENTLY delete GPO $guid"; then
+                    if ! capture_samba_gpo output del "$guid"; then printf '%s\n' "$output" >&2; fi
+                fi
                 ui_pause
                 ;;
-            11) set_progress_plan 1; manage_gpos; ui_pause ;;
+            12) set_progress_plan 1; manage_gpos; ui_pause ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
