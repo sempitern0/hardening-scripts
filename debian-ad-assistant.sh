@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 4.6.2-chrony-discovery-fix
+# Version 4.6.3-chrony-sync-state-fix
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -43,7 +43,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="4.6.2-chrony-discovery-fix"
+SCRIPT_VERSION="4.6.3-chrony-sync-state-fix"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -1652,6 +1652,15 @@ show_chrony_diagnostics() {
         "$client" -n tracking 2>&1 || true
         printf '\n%bchronyc sources:%b\n' "$C_BOLD" "$C_RESET"
         "$client" -n sources -v 2>&1 || true
+        printf '\n  Source legend: ^* selected, ^+ candidate, ^? unreachable/insufficient data.\n'
+        printf '\n%bchronyc activity:%b\n' "$C_BOLD" "$C_RESET"
+        "$client" -n activity 2>&1 || true
+        printf '\n%b10-second synchronization probe:%b\n' "$C_BOLD" "$C_RESET"
+        if "$client" -n waitsync 2 0 0 5 >/dev/null 2>&1; then
+            printf '  %bSYNCHRONIZED%b\n' "$C_GREEN" "$C_RESET"
+        else
+            printf '  %bNOT SYNCHRONIZED within 10 seconds%b\n' "$C_YELLOW" "$C_RESET"
+        fi
     fi
 
     printf '\n'
@@ -1696,6 +1705,104 @@ chrony_supports_ntp_signd() {
     tmp="${RUN_ROOT}/chrony-ntpsignd-test.conf"
     printf 'ntpsigndsocket %s\n' "$dir" >"$tmp"
     "$daemon" -p -f "$tmp" >/dev/null 2>&1
+}
+
+
+chrony_tracking_leap_status() {
+    local client=""
+    client="$(chronyc_binary 2>/dev/null || true)"
+    [[ -n "$client" ]] || return 1
+    "$client" -n tracking 2>/dev/null |
+        awk -F': ' '/^Leap status[[:space:]]*:/{print $2;exit}'
+}
+
+chrony_selected_source_count() {
+    local client=""
+    client="$(chronyc_binary 2>/dev/null || true)"
+    [[ -n "$client" ]] || { printf '0'; return 1; }
+    "$client" -n sources 2>/dev/null |
+        awk '/^[#\^]\*/ {n++} END {print n+0}'
+}
+
+chrony_reachable_source_count() {
+    local client=""
+    client="$(chronyc_binary 2>/dev/null || true)"
+    [[ -n "$client" ]] || { printf '0'; return 1; }
+    "$client" -n sources 2>/dev/null |
+        awk '
+            /^[#\^\?\+\-\*x~=]/ {
+                if ($5 ~ /^[0-7]+$/ && $5 != "0") n++
+            }
+            END { print n+0 }
+        '
+}
+
+chrony_capture_sync_evidence() {
+    local suffix="${1:-current}"
+    local client=""
+    client="$(chronyc_binary 2>/dev/null || true)"
+    [[ -n "$client" ]] || return 1
+    "$client" -n tracking >"${RUN_ROOT}/chrony-tracking-${suffix}.txt" 2>&1 || true
+    "$client" -n sources -v >"${RUN_ROOT}/chrony-sources-${suffix}.txt" 2>&1 || true
+    "$client" -n activity >"${RUN_ROOT}/chrony-activity-${suffix}.txt" 2>&1 || true
+    "$client" -n sourcestats >"${RUN_ROOT}/chrony-sourcestats-${suffix}.txt" 2>&1 || true
+}
+
+chrony_wait_for_sync() {
+    local tries="${1:-12}"
+    local interval="${2:-5}"
+    local client=""
+    client="$(chronyc_binary 2>/dev/null || true)"
+    [[ -n "$client" ]] || return 1
+    "$client" -n waitsync "$tries" 0 0 "$interval" >/dev/null 2>&1
+}
+
+chrony_report_sync_state() {
+    local context="${1:-audit}"
+    local wait_tries="${2:-0}"
+    local wait_interval="${3:-5}"
+    local leap="" selected=0 reachable=0
+
+    if (( wait_tries > 0 )); then
+        if chrony_wait_for_sync "$wait_tries" "$wait_interval"; then
+            leap="$(chrony_tracking_leap_status 2>/dev/null || true)"
+            chrony_capture_sync_evidence "$context"
+            result PASS "Chrony synchronization" "${leap:-Normal}" "Normal"
+            return 0
+        fi
+    fi
+
+    leap="$(chrony_tracking_leap_status 2>/dev/null || true)"
+    selected="$(chrony_selected_source_count 2>/dev/null || printf '0')"
+    reachable="$(chrony_reachable_source_count 2>/dev/null || printf '0')"
+    chrony_capture_sync_evidence "$context"
+
+    if [[ "${leap,,}" == "normal" ]]; then
+        result PASS "Chrony synchronization" "$leap" "Normal"
+        return 0
+    fi
+
+    if (( selected > 0 )); then
+        result INFO "Chrony synchronization" \
+            "${leap:-unknown}; source selected, still converging" \
+            "Normal"
+        return 2
+    fi
+
+    if (( reachable > 0 )); then
+        result INFO "Chrony synchronization" \
+            "${leap:-unknown}; source(s) reachable, none selected yet" \
+            "Normal after sufficient samples"
+        return 2
+    fi
+
+    result WARN "Chrony synchronization" \
+        "${leap:-unknown}; no reachable/selected NTP source detected" \
+        "Normal"
+    printf '  Evidence: %s\n' "${RUN_ROOT}/chrony-sources-${context}.txt"
+    printf '            %s\n' "${RUN_ROOT}/chrony-tracking-${context}.txt"
+    printf '            %s\n' "${RUN_ROOT}/chrony-activity-${context}.txt"
+    return 1
 }
 
 audit_signed_domain_time() {
@@ -1743,15 +1850,7 @@ audit_signed_domain_time() {
         result WARN "Chrony signed-time config" "ntpsigndsocket not configured" "$dir"
     fi
 
-    local chronyc_bin=""
-    chronyc_bin="$(chronyc_binary 2>/dev/null || true)"
-    if [[ -n "$chronyc_bin" ]]; then
-        local tracking
-        tracking="$("$chronyc_bin" -n tracking 2>/dev/null | awk -F': ' '/Leap status/{print $2;exit}' || true)"
-        [[ "${tracking,,}" == "normal" ]] \
-            && result PASS "Chrony synchronization" "$tracking" "Normal" \
-            || result WARN "Chrony synchronization" "${tracking:-unknown}" "Normal"
-    fi
+    chrony_report_sync_state "audit" 0 0 || true
 }
 
 configure_signed_domain_time() {
@@ -1811,6 +1910,9 @@ EOF
 
     change APPLIED "Configured Chrony signed MS-SNTP via $dir"
     result PASS "Signed domain time" "$dir / group=$group" "chrony + Samba ntp_signd"
+
+    printf '\nWaiting up to 30 seconds for Chrony after signed-time restart...\n'
+    chrony_report_sync_state "post-signed-time" 6 5 || true
 }
 
 apply_samba_safe_security_baseline() {
@@ -2664,9 +2766,6 @@ configure_time() {
     fi
     backup_file "$fragment"
 
-    # Keep the assistant fragment small. Debian/Ubuntu already ship sensible
-    # rtcsync/makestep defaults. Duplicating those directives is unnecessary.
-    # The source and AD client scope are the settings owned by this assistant.
     cat >"$fragment" <<EOF
 # Managed by ${SCRIPT_NAME} ${SCRIPT_VERSION}
 # Upstream synchronization source.
@@ -2688,7 +2787,6 @@ EOF
         chrony_restore_file_snapshot "$fragment" "$snapshot" "$existed"
         msg_warn "The previous Chrony fragment has been restored."
 
-        # Validate the restored configuration as additional evidence.
         if chrony_validate_config "time-rollback" yes; then
             result PASS "Chrony rollback" "previous configuration restored and valid" "valid"
         else
@@ -2708,21 +2806,8 @@ EOF
     result PASS "Chrony syntax" "$config" "valid"
     result PASS "Chrony service" "$unit active" "active"
 
-    local chronyc_bin=""
-    chronyc_bin="$(chronyc_binary 2>/dev/null || true)"
-    if [[ -n "$chronyc_bin" ]]; then
-        "$chronyc_bin" -n tracking >"${RUN_ROOT}/chrony-tracking.txt" 2>&1 || true
-        "$chronyc_bin" -n sources -v >"${RUN_ROOT}/chrony-sources.txt" 2>&1 || true
-
-        local leap=""
-        leap="$(awk -F': ' '/Leap status/{print $2;exit}' "${RUN_ROOT}/chrony-tracking.txt" 2>/dev/null || true)"
-        if [[ "${leap,,}" == "normal" ]]; then
-            result PASS "Chrony synchronization" "$leap" "Normal"
-        else
-            result WARN "Chrony synchronization" "${leap:-not synchronized yet}" \
-                "may need several polling cycles after restart"
-        fi
-    fi
+    printf '\nWaiting up to 60 seconds for Chrony to select and synchronize a source...\n'
+    chrony_report_sync_state "post-config" 12 5 || true
 
     change APPLIED "Configured Chrony source=$NTP_POOL clients=$AD_CLIENT_CIDR service=$unit"
 }
@@ -6395,6 +6480,7 @@ CURRENT IDENTITY
   [ ] klist -e and review ticket encryption
   [ ] /usr/sbin/chronyd -p -f /etc/chrony/chrony.conf
   [ ] systemctl status chrony.service
+  [ ] chronyc waitsync 12 0 0 5
   [ ] chronyc tracking / chronyc sources -v / signed domain time
 
 [SECURITY]
