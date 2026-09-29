@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 4.6.3-chrony-sync-state-fix
+# Version 4.6.4-kerberos-audit-fix
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -43,7 +43,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="4.6.3-chrony-sync-state-fix"
+SCRIPT_VERSION="4.6.4-kerberos-audit-fix"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -122,6 +122,9 @@ BOOTSTRAP_RESUME=0
 MENU_MAIN_REQUESTED=0
 
 KRB5_CACHE=""
+# Preserve the caller's cache hint for read-only diagnostics. The assistant still
+# uses a private per-run ccache for all privileged AD operations.
+INHERITED_KRB5CCNAME="${KRB5CCNAME:-}"
 export KRB5CCNAME=""
 
 RESULTS=()
@@ -2042,22 +2045,161 @@ PY
     printf '%s' "$report"
 }
 
+
+assistant_kerberos_ticket_valid() {
+    local expected="${1:-}"
+    command_exists klist || return 1
+    KRB5CCNAME="$KRB5CCNAME" klist -s >/dev/null 2>&1 || return 1
+
+    [[ -z "$expected" ]] && return 0
+
+    local current=""
+    current="$(
+        KRB5CCNAME="$KRB5CCNAME" klist 2>/dev/null |
+        awk -F': ' '/Default principal:/{print $2;exit}' || true
+    )"
+    [[ "${current^^}" == "${expected^^}" ]]
+}
+
+caller_kerberos_ticket_evidence() {
+    local outfile="$1"
+    local caller="${SUDO_USER:-}"
+    local -a env_args=()
+
+    [[ -n "$caller" && "$caller" != "root" ]] || return 1
+    command_exists sudo || return 1
+    command_exists klist || return 1
+
+    if [[ -n "${INHERITED_KRB5CCNAME:-}" ]]; then
+        env_args=("KRB5CCNAME=${INHERITED_KRB5CCNAME}")
+    fi
+
+    if sudo -u "$caller" env "${env_args[@]}" klist -s >/dev/null 2>&1; then
+        sudo -u "$caller" env "${env_args[@]}" klist -e >"$outfile" 2>&1 || true
+        return 0
+    fi
+
+    # If the caller did not export KRB5CCNAME, try the conventional FILE cache.
+    local uid=""
+    uid="$(id -u "$caller" 2>/dev/null || true)"
+    if [[ -n "$uid" && -r "/tmp/krb5cc_${uid}" ]]; then
+        if sudo -u "$caller" env KRB5CCNAME="FILE:/tmp/krb5cc_${uid}" \
+            klist -s >/dev/null 2>&1; then
+            sudo -u "$caller" env KRB5CCNAME="FILE:/tmp/krb5cc_${uid}" \
+                klist -e >"$outfile" 2>&1 || true
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+audit_kerberos_ticket_evidence() {
+    local principal="${ADMIN_USER:-Administrator}@${REALM}"
+    local assistant_out="${RUN_ROOT}/kerberos-ticket-enctypes.txt"
+    local caller_out="${RUN_ROOT}/kerberos-caller-ticket-enctypes.txt"
+
+    # Security audit must never request a password. If a private assistant
+    # ticket already exists, use it. Otherwise report the missing evidence and
+    # continue.
+    if assistant_kerberos_ticket_valid "$principal"; then
+        if command_exists kvno; then
+            KRB5CCNAME="$KRB5CCNAME" kvno "ldap/${DC_FQDN}" >/dev/null 2>&1 || true
+            KRB5CCNAME="$KRB5CCNAME" kvno "cifs/${DC_FQDN}" >/dev/null 2>&1 || true
+        fi
+
+        KRB5CCNAME="$KRB5CCNAME" klist -e >"$assistant_out" 2>&1 || true
+
+        if grep -Eiq 'arcfour|rc4' "$assistant_out"; then
+            result WARN "Current Kerberos ticket enctypes" \
+                "RC4/arcfour observed in isolated assistant cache" \
+                "AES preferred"
+        else
+            result PASS "Current Kerberos ticket enctypes" \
+                "no RC4 observed in isolated assistant cache" \
+                "AES"
+        fi
+        printf '  %-31s %s\n' "Ticket enctype evidence" "$assistant_out"
+        return 0
+    fi
+
+    if caller_kerberos_ticket_evidence "$caller_out"; then
+        local caller_principal=""
+        caller_principal="$(
+            awk -F': ' '/Default principal:/{print $2;exit}' "$caller_out" 2>/dev/null || true
+        )"
+
+        result INFO "Kerberos ticket evidence" \
+            "caller cache detected (${caller_principal:-unknown principal}); not imported into privileged assistant cache" \
+            "isolated-cache policy"
+
+        if grep -Eiq 'arcfour|rc4' "$caller_out"; then
+            result WARN "Caller ticket enctypes" \
+                "RC4/arcfour observed; evidence only" \
+                "AES preferred"
+        else
+            result INFO "Caller ticket enctypes" \
+                "no RC4 observed in caller cache" \
+                "evidence only"
+        fi
+
+        printf '  %-31s %s\n' "Caller ticket evidence" "$caller_out"
+        return 0
+    fi
+
+    result INFO "Kerberos ticket evidence" \
+        "no valid ticket in isolated assistant cache; service-ticket check skipped" \
+        "not required for read-only crypto inventory"
+    return 0
+}
+
+format_samba_kdc_enctype_setting() {
+    local key="$1" value=""
+    value="$(samba_effective_value "$key" 2>/dev/null || true)"
+
+    if [[ "$value" == "0" || -z "$value" ]]; then
+        case "$key" in
+            "kdc supported enctypes")
+                printf '0 (automatic: software-supported enctypes)'
+                ;;
+            "kdc default domain supported enctypes")
+                printf '0 (automatic/default; DFL-dependent)'
+                ;;
+            *)
+                printf '%s' "${value:-default}"
+                ;;
+        esac
+    else
+        printf '%s' "$value"
+    fi
+}
+
 audit_kerberos_crypto_readiness() {
     section "KERBEROS CRYPTO READINESS"
     local report="" rc4_only=0 transitional=0 implicit=0 aes=0
 
     if samba_parameter_supported "kdc supported enctypes"; then
-        result INFO "KDC supported enctypes" "$(samba_effective_value 'kdc supported enctypes')" "review before AES-only"
+        result INFO "KDC supported enctypes" \
+            "$(format_samba_kdc_enctype_setting 'kdc supported enctypes')" \
+            "review before AES-only"
     fi
+
     if samba_parameter_supported "kdc default domain supported enctypes"; then
-        result INFO "KDC default domain enctypes" "$(samba_effective_value 'kdc default domain supported enctypes')" "AES preferred"
+        result INFO "KDC default domain enctypes" \
+            "$(format_samba_kdc_enctype_setting 'kdc default domain supported enctypes')" \
+            "AES preferred"
     fi
+
     if samba_parameter_supported "kerberos encryption types"; then
-        result INFO "Samba Kerberos client enctypes" "$(samba_effective_value 'kerberos encryption types')" "strong for AES-only profile"
+        result INFO "Samba Kerberos client enctypes" \
+            "$(samba_effective_value 'kerberos encryption types')" \
+            "strong for AES-only profile"
     fi
 
     samba-tool domain level show >"${RUN_ROOT}/domain-functional-level.txt" 2>&1 || true
-    result INFO "Domain functional level" "$(tr '\n' '; ' <"${RUN_ROOT}/domain-functional-level.txt" | cut -c1-180)" "2008+ required for normal AES use"
+    result INFO "Domain functional level" \
+        "$(tr '\n' '; ' <"${RUN_ROOT}/domain-functional-level.txt" | cut -c1-180)" \
+        "2008+ required for normal AES use"
 
     if report="$(build_kerberos_crypto_readiness_report)"; then
         rc4_only="$(awk -F'\t' '$4=="RC4_ONLY"{n++}END{print n+0}' "$report")"
@@ -2073,28 +2215,19 @@ audit_kerberos_crypto_readiness() {
             && result PASS "Explicit RC4+AES principals" "0" "0 preferred" \
             || result WARN "Explicit RC4+AES principals" "$transitional" "review/remove RC4 where possible"
 
-        result INFO "Implicit/default enctypes" "$implicit" "validate actual client/service interoperability"
+        result INFO "Implicit/default enctypes" "$implicit" \
+            "resolved by KDC defaults; validate service interoperability"
         result INFO "Explicit AES-ready principals" "$aes" "informational"
         printf '  %-31s %s\n' "Readiness report" "$report"
     else
         result WARN "Kerberos principal scan" "failed" "review manually"
     fi
 
-    ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"
-    if command_exists kvno; then
-        KRB5CCNAME="$KRB5CCNAME" kvno "ldap/${DC_FQDN}" >/dev/null 2>&1 || true
-        KRB5CCNAME="$KRB5CCNAME" kvno "cifs/${DC_FQDN}" >/dev/null 2>&1 || true
-    fi
+    # Optional evidence only. This audit is intentionally non-interactive and
+    # must never ask for an AD password or abort because a ccache is empty.
+    audit_kerberos_ticket_evidence || true
 
-    if command_exists klist; then
-        KRB5CCNAME="$KRB5CCNAME" klist -e >"${RUN_ROOT}/kerberos-ticket-enctypes.txt" 2>&1 || true
-        if grep -Eiq 'arcfour|rc4' "${RUN_ROOT}/kerberos-ticket-enctypes.txt"; then
-            result WARN "Current Kerberos ticket enctypes" "RC4/arcfour observed" "AES preferred"
-        else
-            result PASS "Current Kerberos ticket enctypes" "no RC4 observed in assistant cache" "AES"
-        fi
-        printf '  %-31s %s\n' "Ticket enctype evidence" "${RUN_ROOT}/kerberos-ticket-enctypes.txt"
-    fi
+    return 0
 }
 
 apply_kerberos_aes_only_profile() {
@@ -2188,10 +2321,11 @@ restore_kerberos_compatibility_defaults() {
 }
 
 audit_samba_kerberos_security() {
-    audit_samba_transport_security
-    audit_kerberos_client_config
-    audit_kerberos_crypto_readiness
-    audit_signed_domain_time
+    audit_samba_transport_security || true
+    audit_kerberos_client_config || true
+    audit_kerberos_crypto_readiness || true
+    audit_signed_domain_time || true
+    return 0
 }
 
 samba_kerberos_security_menu() {
@@ -2202,7 +2336,7 @@ samba_kerberos_security_menu() {
         ui_menu_item "2" "Safe Samba baseline" "LDAP strong auth, signing, SMB2+, NTLMv2-only and legacy crypto blocks" "$C_GREEN"
         ui_menu_item "3" "Kerberos config audit" "Realm, generated config provenance, weak crypto and ticket cache"
         ui_menu_item "4" "Repair krb5.conf" "Restore Samba-generated Kerberos client configuration"
-        ui_menu_item "5" "Kerberos crypto readiness" "Inventory principals/SPNs and current ticket encryption"
+        ui_menu_item "5" "Kerberos crypto readiness" "Non-interactive principal/SPN inventory; ticket evidence is optional"
         ui_menu_item "6" "Enforce AES-only KDC" "Advanced: block RC4 after readiness scan + domain backup" "$C_RED"
         ui_menu_item "7" "Restore KDC defaults" "Remove explicit AES-only overrides and use Samba defaults" "$C_YELLOW"
         ui_menu_item "8" "Signed domain time" "Audit Chrony + Samba ntp_signd integration"
@@ -2217,19 +2351,19 @@ samba_kerberos_security_menu() {
         case "$choice" in
             1) audit_samba_kerberos_security; ui_pause ;;
             2) apply_samba_safe_security_baseline; ui_pause ;;
-            3) audit_kerberos_client_config; ui_pause ;;
+            3) audit_kerberos_client_config || true; ui_pause ;;
             4) repair_kerberos_client_config; ui_pause ;;
-            5) audit_kerberos_crypto_readiness; ui_pause ;;
+            5) audit_kerberos_crypto_readiness || true; ui_pause ;;
             6) apply_kerberos_aes_only_profile; ui_pause ;;
             7) restore_kerberos_compatibility_defaults; ui_pause ;;
-            8) audit_signed_domain_time; ui_pause ;;
+            8) audit_signed_domain_time || true; ui_pause ;;
             9)
                 if ! configure_signed_domain_time; then
                     msg_warn "Signed-domain-time configuration was not applied."
                 fi
                 ui_pause
                 ;;
-            10) audit_samba_transport_security; ui_pause ;;
+            10) audit_samba_transport_security || true; ui_pause ;;
             11) show_chrony_diagnostics; ui_pause ;;
             H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;

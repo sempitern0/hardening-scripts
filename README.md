@@ -14,55 +14,70 @@ Dos asistentes administrativos orientados a profesionales para desplegar, audita
 
 El objetivo no es convertir Active Directory en un «one-click installer». El objetivo es disponer de un **control plane operativo y repetible** que detecte el estado actual, explique qué va a cambiar, cree evidencia y backups cuando corresponde, solicite confirmación en operaciones sensibles y valide el resultado.
 
-> [!IMPORTANT]
+> **Importante:**
 > Estos scripts administran componentes críticos de identidad, DNS, Kerberos, Group Policy, firewall y servicios de dominio. Pruébalos primero en laboratorio, conserva acceso de recuperación y mantén backups externos y restaurables.
 
 ---
 
 ## Tabla de contenidos
 
-- [¿A quién va dirigido?](#a-quién-va-dirigido)
-- [Qué incluye el repositorio](#qué-incluye-el-repositorio)
-- [Filosofía del proyecto](#filosofía-del-proyecto)
-- [Modelo de seguridad](#modelo-de-seguridad)
-- [Navegación de los menús](#navegación-de-los-menús)
-- [Elección rápida del asistente](#elección-rápida-del-asistente)
-- [Debian / Ubuntu · Samba Active Directory Control Plane](#debian--ubuntu--samba-active-directory-control-plane)
-  - [Requisitos y targets](#requisitos-y-targets-linux)
-  - [Descarga y ejecución](#descarga-y-ejecución-linux)
-  - [Modos del script](#modos-del-script-linux)
-  - [CLI instalables](#cli-instalables-linux)
-  - [Bootstrap de un DC nuevo](#bootstrap-de-un-dc-nuevo)
-  - [Administración diaria](#administración-diaria-linux)
-  - [DNS y resolver local](#dns-y-resolver-local-linux)
-  - [Kerberos, Samba y hardening](#kerberos-samba-y-hardening-linux)
-  - [Group Policy](#group-policy-linux)
-  - [Ubuntu ADSys y GPO](#ubuntu-adsys-y-gpo)
-  - [Migración de dominio](#migración-de-dominio-linux)
-  - [Directorios, logs y estado](#directorios-logs-y-estado-linux)
-  - [Configuración manual post-instalación](#configuración-manual-post-instalación-linux)
-- [Windows Server Active Directory Control Plane](#windows-server-active-directory-control-plane)
-  - [Requisitos y targets](#requisitos-y-targets-windows)
-  - [Descarga y ejecución](#descarga-y-ejecución-windows)
-  - [Modos PowerShell](#modos-powershell)
-  - [Provisioning de un bosque nuevo](#provisioning-de-un-bosque-nuevo)
-  - [Administración diaria](#administración-diaria-windows)
-  - [Hardening de host y protocolos AD](#hardening-de-host-y-protocolos-ad-windows)
-  - [Backup y recuperación](#backup-y-recuperación-windows)
-  - [Migración de dominio](#migración-de-dominio-windows)
-  - [Configuración manual post-instalación](#configuración-manual-post-instalación-windows)
-- [Clientes Windows y Linux](#clientes-windows-y-linux)
-- [VirtualBox, VMware y laboratorios multi-NIC](#virtualbox-vmware-y-laboratorios-multi-nic)
+- [¿A quién va dirigido?](#audiencia)
+- [Qué incluye el repositorio](#contenido-repositorio)
+- [Filosofía del proyecto](#filosofia)
+- [Modelo de seguridad](#modelo-seguridad)
+- [Navegación de los menús](#navegacion)
+- [Elección rápida del asistente](#eleccion-asistente)
+- [Debian / Ubuntu · Samba Active Directory Control Plane](#debian-samba-ad)
+  - [Requisitos y targets](#requisitos-linux)
+  - [Descarga y ejecución](#descarga-linux)
+  - [Modos del script](#modos-linux)
+  - [CLI instalables](#cli-linux)
+  - [Bootstrap de un DC nuevo](#bootstrap-linux)
+  - [Administración diaria](#operacion-linux)
+  - [DNS y resolver local](#dns-linux)
+  - [Kerberos, Samba y hardening](#hardening-linux)
+  - [Group Policy](#gpo-linux)
+  - [Ubuntu ADSys y GPO](#ubuntu-adsys)
+  - [Migración de dominio](#migracion-linux)
+  - [Directorios, logs y estado](#estado-linux)
+  - [Configuración manual post-instalación](#postinstalacion-linux)
+- [Windows Server Active Directory Control Plane](#windows-ad)
+  - [Requisitos y targets](#requisitos-windows)
+  - [Descarga y ejecución](#descarga-windows)
+  - [Modos PowerShell](#modos-windows)
+  - [Provisioning de un bosque nuevo](#provisioning-windows)
+  - [Administración diaria](#operacion-windows)
+  - [Hardening de host y protocolos AD](#hardening-windows)
+  - [Backup y recuperación](#backup-windows)
+  - [Migración de dominio](#migracion-windows)
+  - [Configuración manual post-instalación](#postinstalacion-windows)
+- [Clientes Windows y Linux](#clientes)
+- [VirtualBox, VMware y laboratorios multi-NIC](#virtualizacion)
 - [Alta disponibilidad](#alta-disponibilidad)
 - [Troubleshooting](#troubleshooting)
-- [Preguntas frecuentes](#preguntas-frecuentes)
-- [Validación antes de producción](#validación-antes-de-producción)
+- [Preguntas frecuentes](#faq)
+- [Validación antes de producción](#validacion-produccion)
 - [Referencias](#referencias)
 - [Licencia](#licencia)
-- [Estado del proyecto](#estado-del-proyecto)
+- [Estado del proyecto](#estado-proyecto)
 
 ---
 
+## Compatibilidad del README
+
+Este documento evita extensiones exclusivas de un único renderer de Markdown.
+
+Los avisos utilizan blockquotes estándar, por ejemplo:
+
+```markdown
+> **Importante:** revisa el cambio antes de aplicarlo.
+```
+
+La tabla de contenidos utiliza anclas HTML ASCII explícitas para reducir diferencias entre
+GitHub, GitLab, VS Code, Obsidian, CommonMark, MarkText y otros previews. Los bloques de código,
+tablas, listas y enlaces usan sintaxis Markdown ampliamente soportada.
+
+<a id="audiencia"></a>
 # ¿A quién va dirigido?
 
 Estos asistentes están pensados principalmente para:
@@ -93,13 +108,23 @@ No está orientado a sustituir el conocimiento del administrador. Cuando una dec
 
 ---
 
+<a id="contenido-repositorio"></a>
 # Qué incluye el repositorio
 
 | Archivo | Plataforma | Línea actual | Función |
 |---|---|---:|---|
-| `debian-ad-assistant.sh` | Debian / Ubuntu Server | 4.6.x | Samba AD DC, DNS, Kerberos, Chrony, GPO, hardening, backups, migración y administración |
+| `debian-ad-assistant.sh` | Debian / Ubuntu Server | 4.6.4 | Samba AD DC, DNS, Kerberos, Chrony, GPO, hardening, backups, migración y administración |
 | `windows-server-ad-assistant.ps1` | Windows Server | 1.3.x | AD DS, DNS, GPO, auditoría, hardening, backup, provisioning y migración |
 | `DEBIAN-AD-Assistant-GPO-Guide-v4.4.0.md` | Samba AD / GPO | guía | Formato JSON, biblioteca GPO y operación avanzada |
+
+Versión Debian documentada en esta revisión:
+
+```text
+4.6.4-kerberos-audit-fix
+```
+
+Esta revisión incluye las correcciones recientes de detección/instalación de Chrony,
+validación de sintaxis, espera de sincronización y auditoría Kerberos no interactiva.
 
 Los nombres de versión pueden avanzar más rápido que esta tabla. Antes de ejecutar:
 
@@ -115,6 +140,7 @@ Get-Content .\windows-server-ad-assistant.ps1 -TotalCount 20
 
 ---
 
+<a id="filosofia"></a>
 # Filosofía del proyecto
 
 Ambos asistentes siguen el mismo patrón:
@@ -167,6 +193,7 @@ Principios:
 
 ---
 
+<a id="modelo-seguridad"></a>
 # Modelo de seguridad
 
 Los asistentes son **audit-first** y **backup-first**.
@@ -187,11 +214,12 @@ Algunas áreas son deliberadamente conservadoras:
 - no se realiza un rename de dominio de producción como si fuera un simple cambio DNS;
 - no se habilita una GPO en producción sin dar al operador control sobre link, scope y estado.
 
-> [!WARNING]
+> **Advertencia:**
 > Un controlador de dominio es infraestructura de identidad. Un cambio aparentemente pequeño en DNS, hora, Kerberos, LDAP o SYSVOL puede impedir el inicio de sesión de toda la organización.
 
 ---
 
+<a id="navegacion"></a>
 # Navegación de los menús
 
 Los dos asistentes utilizan navegación consistente:
@@ -222,6 +250,7 @@ abre usuarios, grupos, equipos, permisos, GPO y operaciones habituales.
 
 ---
 
+<a id="eleccion-asistente"></a>
 # Elección rápida del asistente
 
 ```text
@@ -239,8 +268,10 @@ Ambos pueden convivir en laboratorios, pero **no son intercambiables**. Cada uno
 
 ---
 
+<a id="debian-samba-ad"></a>
 # Debian / Ubuntu · Samba Active Directory Control Plane
 
+<a id="requisitos-linux"></a>
 ## Requisitos y targets Linux
 
 Targets principales:
@@ -273,6 +304,7 @@ Para producción se recomienda NIC cableada. Wi-Fi puede funcionar técnicamente
 
 ---
 
+<a id="descarga-linux"></a>
 ## Descarga y ejecución Linux
 
 Repositorio:
@@ -344,7 +376,7 @@ curl -fsSL \
 
 El asistente abre `/dev/tty` para mantener los prompts interactivos incluso si stdin contiene el propio script.
 
-> [!TIP]
+> **Consejo:**
 > Para producción es mejor descargar una tag/release concreta, revisar el archivo y verificar SHA-256. Ejecutar `main` directamente es cómodo para laboratorio, pero `main` puede cambiar.
 
 ### Verificar SHA-256
@@ -357,6 +389,7 @@ Guarda el hash aprobado en tu sistema de cambios o CMDB.
 
 ---
 
+<a id="modos-linux"></a>
 ## Modos del script Linux
 
 Ayuda:
@@ -400,6 +433,7 @@ sudo bash ./debian-ad-assistant.sh --migration
 
 ---
 
+<a id="cli-linux"></a>
 ## CLI instalables Linux
 
 Instalación:
@@ -464,11 +498,12 @@ Actualizar shortcuts después de sustituir el script:
 sudo bash ./debian-ad-assistant.sh --install-cli
 ```
 
-> [!NOTE]
+> **Nota:**
 > Si copias una nueva versión al servidor pero no vuelves a ejecutar `--install-cli`, `/usr/local/libexec/debian-ad-assistant` puede seguir siendo la versión antigua.
 
 ---
 
+<a id="bootstrap-linux"></a>
 ## Bootstrap de un DC nuevo
 
 Ejecuta:
@@ -512,6 +547,7 @@ No elimines `sam.ldb`, `secrets.ldb` o SYSVOL para «volver a intentar» un boot
 
 ---
 
+<a id="operacion-linux"></a>
 ## Administración diaria Linux
 
 Main Control Plane:
@@ -610,6 +646,7 @@ Membresías y operaciones avanzadas `DS ACL`.
 
 ---
 
+<a id="dns-linux"></a>
 ## DNS y resolver local Linux
 
 Active Directory depende de DNS. El modelo esperado es:
@@ -702,6 +739,7 @@ Los forwarders públicos/corporativos se configuran **en el DNS del DC**, no en 
 
 ---
 
+<a id="hardening-linux"></a>
 ## Kerberos, Samba y hardening Linux
 
 Acceso directo:
@@ -767,8 +805,16 @@ Antes de eliminar RC4 se inventarían:
 computer accounts
 service accounts con SPN
 msDS-SupportedEncryptionTypes
-tickets actuales
+tickets actuales cuando existe un ccache válido
 ```
+
+La auditoría de seguridad es **no interactiva**: no debe solicitar una contraseña Kerberos ni
+abortar solo porque el ccache aislado del asistente esté vacío. El inventario local continúa;
+`kvno` y los enctypes del ticket se consideran evidencia adicional.
+
+El asistente utiliza un ccache Kerberos aislado por ejecución para operaciones autenticadas. Un
+`kinit` ejecutado previamente por el usuario que invoca `sudo` no equivale automáticamente al
+cache privado de la ejecución privilegiada.
 
 Clasificaciones:
 
@@ -779,6 +825,17 @@ RC4_AND_AES
 IMPLICIT_DEFAULT
 OTHER
 ```
+
+En Samba, valores como:
+
+```text
+kdc supported enctypes = 0
+kdc default domain supported enctypes = 0
+```
+
+representan comportamiento automático/default de Samba; no significan «cero algoritmos
+habilitados». La interfaz los presenta como valores automáticos para evitar interpretaciones
+erróneas.
 
 No habilites AES-only solo porque el menú lo permita. Revisa primero el informe.
 
@@ -813,17 +870,56 @@ kvno cifs/dc01.corp.example.com
 
 Kerberos depende de una hora consistente.
 
-Pruebas:
+El asistente distingue explícitamente:
 
-```bash
-chronyc tracking
-chronyc sources -v
+```text
+package   = chrony
+daemon    = /usr/sbin/chronyd
+client    = /usr/bin/chronyc
+systemd   = chrony.service
 ```
 
-El asistente detecta `ntp_signd` de Samba y puede configurar Chrony para respuestas MS-SNTP firmadas cuando la versión instalada lo soporta.
+No confundas el nombre del proceso (`chronyd`) con la unidad systemd (`chrony.service`).
+
+Diagnóstico manual:
+
+```bash
+dpkg-query -W chrony
+dpkg -L chrony | grep -E '/(chronyd|chronyc)$'
+
+sudo /usr/sbin/chronyd   -p   -f /etc/chrony/chrony.conf
+
+systemctl status chrony.service --no-pager -l
+
+chronyc tracking
+chronyc sources -v
+chronyc activity
+```
+
+Después de reiniciar Chrony puede aparecer temporalmente:
+
+```text
+Leap status : Not synchronised
+```
+
+La herramienta utiliza `chronyc waitsync` antes de clasificarlo como fallo. Si existe una fuente
+alcanzable o seleccionada y Chrony aún está convergiendo, se informa como estado transitorio.
+
+Prueba manual equivalente:
+
+```bash
+chronyc waitsync 12 0 0 5
+echo $?
+```
+
+Un retorno `0` indica que Chrony alcanzó estado sincronizado dentro del periodo de espera.
+
+El asistente detecta `ntp_signd` de Samba y puede configurar Chrony para respuestas MS-SNTP
+firmadas cuando la versión instalada lo soporta.
 
 ---
 
+<a id="gpo-linux"></a>
 ## Group Policy Linux
 
 Acceso:
@@ -942,6 +1038,7 @@ No asumas que una política Windows Registry será consumida por un Ubuntu ADSys
 
 ---
 
+<a id="ubuntu-adsys"></a>
 ## Ubuntu ADSys y GPO
 
 En un Ubuntu cliente con ADSys:
@@ -995,6 +1092,7 @@ Mantén GPO de Ubuntu y Windows separadas siempre que sea posible.
 
 ---
 
+<a id="migracion-linux"></a>
 ## Migración de dominio Linux
 
 Acceso:
@@ -1042,6 +1140,7 @@ Las credenciales no se incrustan en los paquetes generados.
 
 ---
 
+<a id="estado-linux"></a>
 ## Directorios, logs y estado Linux
 
 Persistencia:
@@ -1099,6 +1198,7 @@ Migración:
 
 ---
 
+<a id="postinstalacion-linux"></a>
 # Configuración manual post-instalación Linux
 
 `--bootstrap` termina el provisioning, pero un DC nuevo **no debe considerarse production-ready automáticamente**.
@@ -1138,7 +1238,7 @@ network:
           via: 192.168.10.1
 ```
 
-> [!IMPORTANT]
+> **Importante:**
 > El asistente gestiona el resolver local del DC para usar Samba DNS. No reinstales a ciegas un symlink de `systemd-resolved` después de configurar Netplan.
 
 Prueba remota segura:
@@ -1359,8 +1459,10 @@ Un DC que requiere reiniciar Samba manualmente después de cada boot todavía no
 
 ---
 
+<a id="windows-ad"></a>
 # Windows Server Active Directory Control Plane
 
+<a id="requisitos-windows"></a>
 ## Requisitos y targets Windows
 
 Targets:
@@ -1397,6 +1499,7 @@ El propio script declara:
 
 ---
 
+<a id="descarga-windows"></a>
 ## Descarga y ejecución Windows
 
 Canonical repository filename:
@@ -1481,6 +1584,7 @@ Al cerrar esa consola, el scope `Process` desaparece.
 
 ---
 
+<a id="modos-windows"></a>
 ## Modos PowerShell
 
 Sintaxis:
@@ -1528,11 +1632,12 @@ Ejemplos:
   -AllowRemoteFirewallChange
 ```
 
-> [!WARNING]
+> **Advertencia:**
 > `-AllowRemoteFirewallChange` no significa «aplicar sin preguntar». Solo permite proponer cambios globales de firewall durante una sesión remota; los cambios de alto impacto siguen requiriendo confirmación.
 
 ---
 
+<a id="provisioning-windows"></a>
 ## Provisioning de un bosque nuevo
 
 ```powershell
@@ -1576,6 +1681,7 @@ El servidor reiniciará durante la promoción.
 
 ---
 
+<a id="operacion-windows"></a>
 ## Administración diaria Windows
 
 Modo:
@@ -1649,6 +1755,7 @@ replication
 
 ---
 
+<a id="hardening-windows"></a>
 ## Hardening de host y protocolos AD Windows
 
 ### Host security
@@ -1741,6 +1848,7 @@ Las versiones de Windows Server actualizadas en 2026 ya incluyen cambios importa
 
 ---
 
+<a id="backup-windows"></a>
 ## Backup y recuperación Windows
 
 Menú:
@@ -1785,11 +1893,12 @@ control-plane-report-<timestamp-pid>.json
 
 System State utiliza `wbadmin` cuando está disponible.
 
-> [!IMPORTANT]
+> **Importante:**
 > No guardes la única copia del System State en el mismo disco físico/VM que el DC.
 
 ---
 
+<a id="migracion-windows"></a>
 ## Migración de dominio Windows
 
 Modo:
@@ -1823,6 +1932,7 @@ Un rename real de AD no es una redirección DNS.
 
 ---
 
+<a id="postinstalacion-windows"></a>
 # Configuración manual post-instalación Windows
 
 ## 1. IP estática
@@ -2000,6 +2110,7 @@ Al volver:
 
 ---
 
+<a id="clientes"></a>
 # Clientes Windows y Linux
 
 ## Unir un Windows al dominio
@@ -2082,6 +2193,7 @@ adsysctl update
 
 ---
 
+<a id="virtualizacion"></a>
 # VirtualBox, VMware y laboratorios multi-NIC
 
 Una causa frecuente de fallos AD en laboratorio es combinar:
@@ -2148,6 +2260,7 @@ Active Directory necesita DNS SRV.
 
 ---
 
+<a id="alta-disponibilidad"></a>
 # Alta disponibilidad
 
 Un solo DC sigue siendo un Single Point of Failure.
@@ -2180,6 +2293,7 @@ Buenas prácticas:
 
 ---
 
+<a id="troubleshooting"></a>
 # Troubleshooting
 
 ## Linux: `/etc/resolv.conf` apunta a un stub roto
@@ -2374,6 +2488,7 @@ Utiliza el audit y evidence antes de hacer rollback global.
 
 ---
 
+<a id="faq"></a>
 # Preguntas frecuentes
 
 ## ¿Puedo ejecutar el script más de una vez?
@@ -2567,6 +2682,7 @@ Para volver un solo nivel:
 
 ---
 
+<a id="validacion-produccion"></a>
 # Validación antes de producción
 
 ## Bash
@@ -2660,6 +2776,7 @@ reboot
 
 ---
 
+<a id="referencias"></a>
 # Referencias
 
 ## Samba
@@ -2707,6 +2824,7 @@ reboot
 
 ---
 
+<a id="licencia"></a>
 # Licencia
 
 MIT License.
@@ -2721,6 +2839,7 @@ El software se proporciona sin garantía. Revisa siempre los cambios antes de ut
 
 ---
 
+<a id="estado-proyecto"></a>
 # Estado del proyecto
 
 Proyecto en evolución activa.
