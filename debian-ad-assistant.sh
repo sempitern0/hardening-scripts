@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 4.2.2-gpo-user-fix
+# Version 4.3.0-platform-aware-gpo
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -40,7 +40,7 @@ IFS=$'\n\t'
 umask 077
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="4.2.2-gpo-user-fix"
+SCRIPT_VERSION="4.3.0-platform-aware-gpo"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -1132,6 +1132,184 @@ configure_samba_service_model() {
     result PASS "Samba service model" "samba-ad-dc" "dedicated AD/DC"
 }
 
+
+# ---------------------------------------------------------------------------
+# Persistent resolver management for Samba AD DNS
+# ---------------------------------------------------------------------------
+
+resolv_conf_description() {
+    local link_target=""
+    if [[ -L /etc/resolv.conf ]]; then
+        link_target="$(readlink /etc/resolv.conf 2>/dev/null || true)"
+        if [[ -e /etc/resolv.conf ]]; then
+            printf 'symlink -> %s' "$link_target"
+        else
+            printf 'BROKEN symlink -> %s' "$link_target"
+        fi
+    elif [[ -f /etc/resolv.conf ]]; then
+        printf 'regular file'
+    elif [[ -e /etc/resolv.conf ]]; then
+        printf 'non-regular object'
+    else
+        printf 'missing'
+    fi
+}
+
+resolv_conf_is_broken_or_stub_without_resolved() {
+    local link_target="" resolved_state=""
+    [[ -L /etc/resolv.conf ]] || return 1
+    link_target="$(readlink /etc/resolv.conf 2>/dev/null || true)"
+    [[ -e /etc/resolv.conf ]] || return 0
+    resolved_state="$(safe_systemctl_state systemd-resolved)"
+    [[ "$link_target" == *"/run/systemd/resolve/"* && "$resolved_state" != "active" ]]
+}
+
+write_regular_resolv_conf() {
+    local nameserver="$1"
+    local search_domain="${2:-}"
+    local tmp="${RUN_ROOT}/resolv.conf.new"
+
+    {
+        printf '# Managed by %s %s\n' "$SCRIPT_NAME" "$SCRIPT_VERSION"
+        printf '# Samba AD DC resolver. External DNS is forwarded by Samba.\n'
+        printf 'nameserver %s\n' "$nameserver"
+        [[ -n "$search_domain" ]] && printf 'search %s\n' "$search_domain"
+        printf 'options timeout:2 attempts:2\n'
+    } >"$tmp"
+
+    chmod 0644 "$tmp"
+
+    # Do not follow a systemd-resolved symlink into /run. Replace the pathname
+    # itself so /etc/resolv.conf survives reboot as a normal file.
+    rm -f /etc/resolv.conf
+    install -o root -g root -m 0644 "$tmp" /etc/resolv.conf
+
+    [[ -f /etc/resolv.conf && ! -L /etc/resolv.conf ]] || {
+        fail_msg "/etc/resolv.conf was not converted to a persistent regular file."
+        return 1
+    }
+}
+
+write_ad_resolv_conf() {
+    [[ -n "${DOMAIN:-}" ]] || {
+        fail_msg "Cannot write AD resolver configuration without DOMAIN."
+        return 1
+    }
+    write_regular_resolv_conf "127.0.0.1" "$DOMAIN"
+}
+
+validate_system_dc_locator() {
+    [[ -n "${DOMAIN:-}" && -n "${DC_FQDN:-}" ]] || return 1
+    command_exists dig || return 1
+
+    local srv
+    srv="$(dig +time=3 +tries=1 +short SRV "_ldap._tcp.dc._msdcs.${DOMAIN}" 2>/dev/null || true)"
+    grep -Fiq "$DC_FQDN" <<<"$srv"
+}
+
+audit_local_resolver_state() {
+    local desc resolved_state fail=0
+    desc="$(resolv_conf_description)"
+    resolved_state="$(safe_systemctl_state systemd-resolved)"
+
+    if resolv_conf_is_broken_or_stub_without_resolved; then
+        result FAIL "Local resolver file" "$desc; systemd-resolved=$resolved_state" \
+            "regular /etc/resolv.conf -> 127.0.0.1"
+        return 1
+    fi
+
+    if [[ ! -f /etc/resolv.conf ]]; then
+        result FAIL "Local resolver file" "$desc" "readable regular file"
+        return 1
+    fi
+
+    if [[ -L /etc/resolv.conf ]]; then
+        result WARN "Local resolver file" "$desc" "regular file managed by assistant"
+        fail=1
+    elif grep -Eq '^[[:space:]]*nameserver[[:space:]]+127\.0\.0\.1([[:space:]]|$)' /etc/resolv.conf; then
+        result PASS "Local resolver file" "regular; nameserver=127.0.0.1" "persistent Samba DNS"
+    else
+        result WARN "Local resolver file" "regular but not using 127.0.0.1" "nameserver 127.0.0.1"
+        fail=1
+    fi
+
+    if [[ -n "${DOMAIN:-}" ]]; then
+        if grep -Eiq "^[[:space:]]*(search|domain)[[:space:]].*${DOMAIN//./\\.}" /etc/resolv.conf; then
+            result PASS "Resolver search domain" "$DOMAIN" "$DOMAIN"
+        else
+            result WARN "Resolver search domain" "missing/other" "$DOMAIN"
+            fail=1
+        fi
+    fi
+
+    return "$fail"
+}
+
+repair_local_resolver_only() {
+    step "Repair local AD resolver"
+
+    [[ -n "${DOMAIN:-}" && -n "${DC_FQDN:-}" && -n "${DC_IP:-}" ]] || {
+        discover_network_topology
+        discover_existing_identity
+    }
+
+    command_exists dig || {
+        fail_msg "dig is required to validate Samba DNS."
+        return 1
+    }
+
+    systemctl is-active --quiet samba-ad-dc || {
+        fail_msg "samba-ad-dc is not active; resolver was not changed."
+        return 1
+    }
+
+    dig +time=3 +tries=1 @127.0.0.1 "$DC_FQDN" A +short 2>/dev/null | grep -Fxq "$DC_IP" || {
+        fail_msg "Samba DNS does not resolve $DC_FQDN to $DC_IP."
+        return 1
+    }
+
+    local srv
+    srv="$(dig +time=3 +tries=1 @127.0.0.1 +short SRV "_ldap._tcp.dc._msdcs.${DOMAIN}" 2>/dev/null || true)"
+    if ! grep -Fiq "$DC_FQDN" <<<"$srv" && command_exists samba_dnsupdate; then
+        msg_info "Refreshing Samba DNS registrations..."
+        samba_dnsupdate --verbose >>"$LOG_FILE" 2>&1 || true
+        srv="$(dig +time=3 +tries=1 @127.0.0.1 +short SRV "_ldap._tcp.dc._msdcs.${DOMAIN}" 2>/dev/null || true)"
+    fi
+    grep -Fiq "$DC_FQDN" <<<"$srv" || {
+        fail_msg "AD DC locator SRV record is missing; resolver was not changed."
+        return 1
+    }
+
+    capture_resolver_state
+    DNS_TRANSACTION_ACTIVE=1
+
+    systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
+
+    if ! write_ad_resolv_conf; then
+        rollback_dns_transaction "failed to write persistent Samba resolver"
+        return 1
+    fi
+
+    if ! getent ahostsv4 "$DC_FQDN" | awk '{print $1}' | grep -Fxq "$DC_IP"; then
+        rollback_dns_transaction "system resolver cannot resolve the DC through Samba DNS"
+        return 1
+    fi
+
+    if ! validate_system_dc_locator; then
+        rollback_dns_transaction "system resolver cannot discover the AD DC SRV record"
+        return 1
+    fi
+
+    if ! getent ahostsv4 raw.githubusercontent.com >/dev/null 2>&1; then
+        rollback_dns_transaction "Samba DNS forwarding is unavailable through the system resolver"
+        return 1
+    fi
+
+    DNS_TRANSACTION_ACTIVE=0
+    change APPLIED "/etc/resolv.conf converted to persistent Samba AD resolver"
+    result PASS "Local AD resolver" "regular /etc/resolv.conf -> 127.0.0.1" "persistent across reboot"
+}
+
 capture_resolver_state() {
     RESOLV_SNAPSHOT="${RUN_ROOT}/resolv.conf.before"
     [[ -e /etc/resolv.conf || -L /etc/resolv.conf ]] &&
@@ -1142,8 +1320,9 @@ capture_resolver_state() {
 
 restore_resolv_snapshot() {
     rm -f /etc/resolv.conf
-    [[ -e "$RESOLV_SNAPSHOT" || -L "$RESOLV_SNAPSHOT" ]] &&
+    if [[ -e "$RESOLV_SNAPSHOT" || -L "$RESOLV_SNAPSHOT" ]]; then
         cp -a --no-dereference "$RESOLV_SNAPSHOT" /etc/resolv.conf
+    fi
 }
 
 rollback_dns_transaction() {
@@ -1169,19 +1348,30 @@ detect_dns_forwarder() {
 samba_dns_stack_healthy() {
     command_exists dig || return 1
     systemctl is-active --quiet samba-ad-dc || return 1
-    [[ -n "$DC_FQDN" && -n "$DC_IP" ]] || return 1
+    [[ -n "$DOMAIN" && -n "$DC_FQDN" && -n "$DC_IP" ]] || return 1
+
+    [[ -f /etc/resolv.conf && ! -L /etc/resolv.conf ]] || return 1
+    grep -Eq '^[[:space:]]*nameserver[[:space:]]+127\.0\.0\.1([[:space:]]|$)' /etc/resolv.conf || return 1
+    grep -Eiq "^[[:space:]]*(search|domain)[[:space:]].*${DOMAIN//./\\.}" /etc/resolv.conf || return 1
+
     dig +time=3 +tries=1 @127.0.0.1 "$DC_FQDN" A +short 2>/dev/null | grep -Fxq "$DC_IP" || return 1
-    grep -Eq '^[[:space:]]*nameserver[[:space:]]+127\.0\.0\.1([[:space:]]|$)' /etc/resolv.conf 2>/dev/null || return 1
+
+    local srv
+    srv="$(dig +time=3 +tries=1 @127.0.0.1 +short SRV "_ldap._tcp.dc._msdcs.${DOMAIN}" 2>/dev/null || true)"
+    grep -Fiq "$DC_FQDN" <<<"$srv" || return 1
+
+    getent ahostsv4 "$DC_FQDN" | awk '{print $1}' | grep -Fxq "$DC_IP" || return 1
+    validate_system_dc_locator || return 1
 }
 
 prepare_dns_transaction() {
     step "Prepare DNS transition"
     DNS_NEEDS_COMMIT=1
 
-    if [[ "$BOOTSTRAP_RESUME" -eq 1 ]] && samba_dns_stack_healthy; then
+    if samba_dns_stack_healthy; then
         DNS_FORWARDER="${DNS_FORWARDER:-$(detect_dns_forwarder)}"
         DNS_NEEDS_COMMIT=0
-        result SKIP "DNS transition" "Samba DNS/resolver already healthy" "retained"
+        result SKIP "DNS transition" "Samba DNS + persistent host resolver already healthy" "retained"
         return 0
     fi
 
@@ -1195,12 +1385,13 @@ prepare_dns_transaction() {
         die "Upstream resolver $DNS_FORWARDER cannot resolve external names."
 
     [[ $RESOLVED_WAS_ACTIVE -eq 1 ]] && systemctl stop systemd-resolved
-    printf 'nameserver %s\noptions timeout:2 attempts:2\n' "$DNS_FORWARDER" >/etc/resolv.conf
-    chmod 644 /etc/resolv.conf
+    write_regular_resolv_conf "$DNS_FORWARDER" "" || return 1
 
     getent ahostsv4 raw.githubusercontent.com >/dev/null 2>&1 ||
         die "External DNS failed during temporary resolver transition."
-    result PASS "Temporary resolver" "$DNS_FORWARDER" "external DNS preserved"
+
+    result PASS "Temporary resolver" "regular /etc/resolv.conf -> $DNS_FORWARDER" \
+        "external DNS preserved without resolved stub"
 }
 
 wait_for_samba() {
@@ -1239,19 +1430,39 @@ commit_samba_dns_resolver() {
 
     dig +time=3 +tries=1 @127.0.0.1 "$DC_FQDN" A +short | grep -Fxq "$DC_IP" ||
         die "Samba DNS does not resolve $DC_FQDN to $DC_IP."
+
+    local srv
+    srv="$(dig +time=3 +tries=1 @127.0.0.1 +short SRV "_ldap._tcp.dc._msdcs.${DOMAIN}" 2>/dev/null || true)"
+    if ! grep -Fiq "$DC_FQDN" <<<"$srv"; then
+        command_exists samba_dnsupdate && samba_dnsupdate --verbose >>"$LOG_FILE" 2>&1 || true
+        srv="$(dig +time=3 +tries=1 @127.0.0.1 +short SRV "_ldap._tcp.dc._msdcs.${DOMAIN}" 2>/dev/null || true)"
+    fi
+    grep -Fiq "$DC_FQDN" <<<"$srv" ||
+        die "Samba DNS is missing the AD DC locator SRV record for $DOMAIN."
+
     dig +time=4 +tries=1 @127.0.0.1 raw.githubusercontent.com A +short | grep -Eq '^[0-9]' ||
         die "Samba DNS forwarding is not working."
 
-    printf 'nameserver 127.0.0.1\nsearch %s\noptions timeout:2 attempts:2\n' "$DOMAIN" >/etc/resolv.conf
-    chmod 644 /etc/resolv.conf
-    systemctl disable systemd-resolved >/dev/null 2>&1 || true
+    systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
+    write_ad_resolv_conf || return 1
+
+    getent ahostsv4 "$DC_FQDN" | awk '{print $1}' | grep -Fxq "$DC_IP" ||
+        die "System resolver cannot resolve $DC_FQDN through /etc/resolv.conf."
+
+    validate_system_dc_locator ||
+        die "System resolver cannot discover _ldap._tcp.dc._msdcs.${DOMAIN}."
+
+    getent ahostsv4 raw.githubusercontent.com >/dev/null 2>&1 ||
+        die "System resolver cannot use Samba DNS forwarding."
 
     [[ -f /var/lib/samba/private/krb5.conf ]] || die "Missing Samba-generated krb5.conf."
     backup_file /etc/krb5.conf
     install -o root -g root -m 0644 /var/lib/samba/private/krb5.conf /etc/krb5.conf
 
     DNS_TRANSACTION_ACTIVE=0
+    change APPLIED "Persistent /etc/resolv.conf -> Samba DNS (127.0.0.1)"
     result PASS "Samba DNS" "$DC_FQDN -> $DC_IP" "authoritative + forwarding"
+    result PASS "Host resolver" "regular /etc/resolv.conf -> 127.0.0.1" "persistent after reboot"
 }
 
 repair_dns_stack() {
@@ -1546,12 +1757,15 @@ EOF
 # ---------------------------------------------------------------------------
 
 samba_gpo() {
-    # GPO operations use LDAP + SYSVOL/SMB and therefore need an authenticated
-    # domain security context. Prefer the assistant's isolated Kerberos cache.
+    local -a target_args=()
+    [[ -n "${DC_FQDN:-}" ]] && target_args=(-H "ldap://${DC_FQDN}")
+
     if samba-tool --help 2>&1 | grep -Fq -- '--use-krb5-ccache'; then
-        KRB5CCNAME="$KRB5CCNAME" samba-tool --use-krb5-ccache="$KRB5CCNAME" gpo "$@"
+        KRB5CCNAME="$KRB5CCNAME" samba-tool --use-krb5-ccache="$KRB5CCNAME" \
+            gpo "$@" "${target_args[@]}"
     else
-        KRB5CCNAME="$KRB5CCNAME" samba-tool --use-kerberos=required gpo "$@"
+        KRB5CCNAME="$KRB5CCNAME" samba-tool --use-kerberos=required \
+            gpo "$@" "${target_args[@]}"
     fi
 }
 
@@ -1945,6 +2159,7 @@ validate_ad() {
     [[ -n "$DC_IP" ]] || DC_IP="${AD_IP:-$PRIMARY_IP}"
 
     audit_samba_boot_persistence
+    audit_local_resolver_state || fail=1
 
     systemctl is-active --quiet samba-ad-dc \
         && result PASS "samba-ad-dc" "active" "active" \
@@ -1981,8 +2196,15 @@ validate_ad() {
     fi
 
     getent ahostsv4 raw.githubusercontent.com >/dev/null 2>&1 \
-        && result PASS "Host resolver" "external resolution works" "working" \
-        || { result FAIL "Host resolver" "failed" "working"; fail=1; }
+        && result PASS "Host resolver external" "external resolution works" "working" \
+        || { result FAIL "Host resolver external" "failed" "working"; fail=1; }
+
+    if validate_system_dc_locator; then
+        result PASS "System DC locator" "_ldap._tcp.dc._msdcs.${DOMAIN}" "$DC_FQDN"
+    else
+        result FAIL "System DC locator" "SRV discovery failed via /etc/resolv.conf" "$DC_FQDN"
+        fail=1
+    fi
 
     samba-tool domain info "$DC_IP" >"${RUN_ROOT}/domain-info.txt" 2>&1 \
         && result PASS "Domain info" "reachable" "$DOMAIN" \
@@ -2682,6 +2904,393 @@ deploy_security_gpo_template() {
     result PASS "$name" "$guid linked to $target_dn" "deployed"
 }
 
+
+# ---------------------------------------------------------------------------
+# Platform-aware Group Policy management
+#
+# GPO consumers are not interchangeable:
+#   * Windows clients consume Windows CSE/Registry policies.
+#   * Ubuntu ADSys clients consume Ubuntu-specific policies/templates.
+#   * Samba/winbind Linux clients can consume Samba VGP/CSE policies.
+#   * SSSD may use GPOs for access control, which is a separate concern.
+# ---------------------------------------------------------------------------
+
+get_sysvol_path() {
+    local path=""
+
+    if command_exists samba-tool; then
+        path="$(
+            samba-tool testparm \
+                --section-name=sysvol \
+                --parameter-name=path 2>/dev/null |
+            tail -n1 |
+            sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true
+        )"
+    fi
+
+    if [[ -z "$path" ]] && command_exists testparm; then
+        path="$(
+            testparm -s \
+                --section-name=sysvol \
+                --parameter-name=path 2>/dev/null |
+            tail -n1 |
+            sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true
+        )"
+    fi
+
+    if [[ -z "$path" ]]; then
+        if [[ -d /var/lib/samba/sysvol ]]; then
+            path="/var/lib/samba/sysvol"
+        elif [[ -d /var/lib/samba/state/sysvol ]]; then
+            path="/var/lib/samba/state/sysvol"
+        fi
+    fi
+
+    [[ -n "$path" ]] || return 1
+    printf '%s' "$path"
+}
+
+get_policy_definitions_path() {
+    local sysvol
+    sysvol="$(get_sysvol_path)" || return 1
+    printf '%s/%s/Policies/PolicyDefinitions' "$sysvol" "${DOMAIN,,}"
+}
+
+audit_platform_gpo_readiness() {
+    local store=""
+    store="$(get_policy_definitions_path 2>/dev/null || true)"
+
+    ui_menu_screen "GPO PLATFORM READINESS" "Central Store and client-policy capability inventory"
+
+    if [[ -n "$store" ]]; then
+        printf '  %-24s %s\n' "Central Store" "$store"
+        if [[ -d "$store" ]]; then
+            result PASS "PolicyDefinitions" "present" "$store"
+        else
+            result WARN "PolicyDefinitions" "missing" "$store"
+        fi
+
+        if [[ -f "$store/Ubuntu.admx" ]]; then
+            result PASS "Ubuntu ADMX" "$store/Ubuntu.admx" "present"
+        else
+            result WARN "Ubuntu ADMX" "not installed" "Ubuntu.admx"
+        fi
+
+        if [[ -f "$store/en-US/Ubuntu.adml" ]]; then
+            result PASS "Ubuntu ADML en-US" "$store/en-US/Ubuntu.adml" "present"
+        else
+            result WARN "Ubuntu ADML en-US" "not installed" "en-US/Ubuntu.adml"
+        fi
+    else
+        result FAIL "SYSVOL path" "could not determine" "readable sysvol share"
+    fi
+
+    if samba-tool gpo admxload --help >/dev/null 2>&1; then
+        result PASS "Samba ADMX loader" "available" "samba-tool gpo admxload"
+    else
+        result WARN "Samba ADMX loader" "unsupported" "modern Samba"
+    fi
+
+    if command_exists samba-gpupdate; then
+        result PASS "Local samba-gpupdate" "installed on this host" "Samba Linux GPO client available"
+    else
+        result INFO "Local samba-gpupdate" "not installed on DC" "only needed on Samba/winbind clients"
+    fi
+
+    if command_exists adsysctl; then
+        result PASS "ADSys tooling" "adsysctl available" "can generate Ubuntu ADMX/ADML locally"
+    else
+        result INFO "ADSys tooling" "not installed on DC" "templates may be copied from an Ubuntu ADSys client"
+    fi
+
+    printf '\n'
+    printf '  %bClient policy families%b\n' "$C_BOLD" "$C_RESET"
+    printf '    Windows       : Registry/CSE policies + Windows ADMX Central Store\n'
+    printf '    Ubuntu ADSys  : Ubuntu.admx/Ubuntu.adml + ADSys client\n'
+    printf '    Samba Linux   : samba-gpupdate + Samba VGP/CSE policy types\n'
+    printf '    SSSD          : GPO-based access control; not a Windows desktop-policy engine\n'
+}
+
+install_ubuntu_adsys_templates_from_files() {
+    local admx="$1" adml="$2" store=""
+
+    [[ -f "$admx" ]] || { msg_warn "Ubuntu ADMX file not found: $admx"; return 1; }
+    [[ -f "$adml" ]] || { msg_warn "Ubuntu ADML file not found: $adml"; return 1; }
+
+    store="$(get_policy_definitions_path)" || {
+        msg_warn "Unable to determine SYSVOL PolicyDefinitions path."
+        return 1
+    }
+
+    mkdir -p "$store/en-US"
+
+    [[ -e "$store/Ubuntu.admx" ]] && backup_file "$store/Ubuntu.admx"
+    [[ -e "$store/en-US/Ubuntu.adml" ]] && backup_file "$store/en-US/Ubuntu.adml"
+
+    install -o root -g root -m 0644 "$admx" "$store/Ubuntu.admx"
+    install -o root -g root -m 0644 "$adml" "$store/en-US/Ubuntu.adml"
+
+    result PASS "Ubuntu ADSys templates" "$store" "Ubuntu.admx + en-US/Ubuntu.adml"
+    change APPLIED "Installed Ubuntu ADSys administrative templates into SYSVOL Central Store"
+}
+
+generate_and_install_ubuntu_adsys_templates() {
+    command_exists adsysctl || {
+        msg_warn "adsysctl is not installed. Generate Ubuntu.admx/Ubuntu.adml on an ADSys-capable Ubuntu client and use the local-file installer."
+        return 1
+    }
+
+    local mode tmp
+    mode="$(ask 'Template generation [lts-only/all]' 'lts-only')"
+    case "$mode" in
+        lts-only|all) ;;
+        *) msg_warn "Expected lts-only or all."; return 1 ;;
+    esac
+
+    tmp="$(mktemp -d "${RUN_ROOT}/adsys-admx.XXXXXX")"
+    (
+        cd "$tmp"
+        adsysctl policy admx "$mode"
+    ) || {
+        msg_warn "adsysctl could not generate the administrative templates."
+        return 1
+    }
+
+    [[ -f "$tmp/Ubuntu.admx" && -f "$tmp/Ubuntu.adml" ]] || {
+        msg_warn "adsysctl completed but Ubuntu.admx/Ubuntu.adml were not found."
+        return 1
+    }
+
+    install_ubuntu_adsys_templates_from_files "$tmp/Ubuntu.admx" "$tmp/Ubuntu.adml"
+}
+
+create_platform_scoped_gpo() {
+    local prefix="$1" description="$2"
+    local name guid dn
+
+    name="$(ask 'GPO display name' "${prefix} - New Policy")"
+    [[ -n "$name" ]] || return 1
+
+    printf '\n  Target family: %s\n' "$description"
+    if ! guid="$(create_gpo_safe "$name")"; then
+        msg_warn "GPO creation failed; no link was created."
+        return 1
+    fi
+
+    printf '  Created GUID : %s\n' "$guid"
+
+    if confirm "Link this GPO to a domain/OU now?" Y; then
+        dn="$(select_directory_target_dn)" || return 0
+        local output=""
+        if ! capture_samba_gpo output setlink "$dn" "$guid"; then
+            printf '%s\n' "$output" >&2
+            msg_warn "GPO exists but linking failed."
+            return 1
+        fi
+        result PASS "GPO link" "$name -> $dn" "linked"
+    fi
+}
+
+ubuntu_adsys_gpo_menu() {
+    while true; do
+        ui_menu_screen "UBUNTU ADSYS POLICY CONTROL" "Ubuntu-specific templates and GPO scaffolding; kept separate from Windows policy catalog"
+        ui_menu_item "1" "Audit ADSys readiness" "Check Central Store, Ubuntu ADMX/ADML and local tooling"
+        ui_menu_item "2" "Install local templates" "Copy existing Ubuntu.admx + Ubuntu.adml into SYSVOL"
+        ui_menu_item "3" "Generate templates" "Use local adsysctl to generate lts-only/all templates"
+        ui_menu_item "4" "Create Ubuntu GPO" "Create/link an empty UBU-prefixed policy for ADSys clients" "$C_GREEN"
+        ui_menu_item "5" "Show targeting model" "Explain machine/user Ubuntu policies and refresh behavior"
+        ui_menu_exit
+        ui_rule
+
+        local choice admx adml
+        choice="$(ask 'Select operation' '1')"
+        case "$choice" in
+            1) audit_platform_gpo_readiness; ui_pause ;;
+            2)
+                admx="$(ask 'Path to Ubuntu.admx')"
+                adml="$(ask 'Path to Ubuntu.adml')"
+                install_ubuntu_adsys_templates_from_files "$admx" "$adml"
+                ui_pause
+                ;;
+            3) generate_and_install_ubuntu_adsys_templates; ui_pause ;;
+            4)
+                create_platform_scoped_gpo "UBU" "Ubuntu ADSys clients"
+                printf '\n%bNext step:%b edit Ubuntu-specific settings from a compatible Group Policy editor using the Ubuntu administrative templates.\n' \
+                    "$C_CYAN" "$C_RESET"
+                ui_pause
+                ;;
+            5)
+                printf '\n'
+                ui_rule
+                printf '%bUbuntu ADSys policy model%b\n' "$C_BOLD" "$C_RESET"
+                ui_rule
+                printf '  Machine policies : Computer Configuration -> Policies -> Administrative Templates -> Ubuntu\n'
+                printf '  User policies    : User Configuration -> Policies -> Administrative Templates -> Ubuntu\n'
+                printf '  Machine refresh  : boot / periodic refresh / adsysctl update -m\n'
+                printf '  User refresh     : login / periodic refresh / adsysctl update\n'
+                printf '\n  Keep Ubuntu and Windows settings in separate GPOs/OUs where practical.\n'
+                printf '  ADMX/ADML define the editing UI; the Ubuntu client still needs ADSys to consume Ubuntu policies.\n'
+                ui_pause
+                ;;
+            0) break ;;
+            *) msg_warn "Invalid menu option."; ui_pause ;;
+        esac
+    done
+}
+
+samba_linux_gpo_menu() {
+    while true; do
+        ui_menu_screen "SAMBA LINUX POLICY CONTROL" "Samba VGP/CSE policies for Linux clients using Samba/winbind and samba-gpupdate"
+        ui_menu_item "1" "List local CSEs" "Show Samba Client Side Extensions registered on this host"
+        ui_menu_item "2" "Effective GPOs" "List GPOs Samba resolves for a user/computer account"
+        ui_menu_item "3" "Inspect smb.conf policy" "Show Samba smb.conf settings stored in a selected GPO"
+        ui_menu_item "4" "Set smb.conf policy" "Set one Samba/winbind smb.conf GPO setting" "$C_YELLOW"
+        ui_menu_item "5" "Create Samba Linux GPO" "Create/link an empty LNX-prefixed policy" "$C_GREEN"
+        ui_menu_item "6" "Show native policy types" "Display Samba-supported manage/CSE families"
+        ui_menu_exit
+        ui_rule
+
+        local choice guid account setting value output=""
+        choice="$(ask 'Select operation' '1')"
+        case "$choice" in
+            1)
+                samba-tool gpo cse list || true
+                ui_pause
+                ;;
+            2)
+                account="$(ask 'Domain user/computer account')"
+                if capture_samba_gpo output list "$account"; then
+                    printf '%s\n' "$output"
+                else
+                    printf '%s\n' "$output" >&2
+                fi
+                ui_pause
+                ;;
+            3)
+                guid="$(select_gpo_guid)" || { ui_pause; continue; }
+                if capture_samba_gpo output manage smb_conf list "$guid"; then
+                    printf '%s\n' "$output"
+                else
+                    printf '%s\n' "$output" >&2
+                fi
+                ui_pause
+                ;;
+            4)
+                guid="$(select_gpo_guid)" || { ui_pause; continue; }
+                setting="$(ask 'smb.conf setting name' 'apply group policies')"
+                value="$(ask 'Value' 'yes')"
+                if confirm "Store Samba Linux smb.conf policy '$setting = $value' in $guid?" N; then
+                    if ! capture_samba_gpo output manage smb_conf set "$guid" "$setting" "$value"; then
+                        printf '%s\n' "$output" >&2
+                        msg_warn "Samba Linux GPO setting failed."
+                    fi
+                fi
+                ui_pause
+                ;;
+            5) create_platform_scoped_gpo "LNX" "Samba/winbind Linux clients"; ui_pause ;;
+            6)
+                printf '\n'
+                ui_rule
+                printf '%bNative Samba Linux GPO families%b\n' "$C_BOLD" "$C_RESET"
+                ui_rule
+                printf '  smb_conf        Samba/winbind smb.conf settings\n'
+                printf '  scripts         Startup/logon-style scripts supported by Samba CSEs\n'
+                printf '  motd / issue    Login banners\n'
+                printf '  access          Host access policy\n'
+                printf '  openssh         OpenSSH settings (when supported by installed Samba)\n'
+                printf '  sudoers         Sudo policy (when supported)\n'
+                printf '  files/symlink   File and symlink policy CSEs (when supported)\n'
+                printf '\n  Client requirement: Samba/winbind policy support and samba-gpupdate/CSEs.\n'
+                ui_pause
+                ;;
+            0) break ;;
+            *) msg_warn "Invalid menu option."; ui_pause ;;
+        esac
+    done
+}
+
+sssd_gpo_compatibility_audit() {
+    local sysvol="" entry guid name path gpt status
+    local -a entries=()
+
+    sysvol="$(get_sysvol_path)" || {
+        msg_warn "Unable to determine SYSVOL path."
+        return 1
+    }
+
+    mapfile -t entries < <(gpo_inventory_tsv)
+
+    ui_menu_screen "SSSD GPO ACCESS-CONTROL COMPATIBILITY" "Read-only check that LDAP GPO objects have corresponding SYSVOL/GPT.INI data"
+    printf '  %-42s %-39s %s\n' "GPO" "GUID" "SYSVOL"
+    ui_rule
+
+    for entry in "${entries[@]}"; do
+        guid="${entry%%$'\t'*}"
+        name="${entry#*$'\t'}"
+        path="${sysvol}/${DOMAIN,,}/Policies/${guid}"
+        gpt="${path}/GPT.INI"
+
+        if [[ -f "$gpt" ]]; then
+            status="GPT.INI OK"
+            printf '  %-42s %-39s %b%s%b\n' "$name" "$guid" "$C_GREEN" "$status" "$C_RESET"
+        elif [[ -d "$path" ]]; then
+            status="GPT.INI MISSING"
+            printf '  %-42s %-39s %b%s%b\n' "$name" "$guid" "$C_YELLOW" "$status" "$C_RESET"
+        else
+            status="SYSVOL DIR MISSING"
+            printf '  %-42s %-39s %b%s%b\n' "$name" "$guid" "$C_RED" "$status" "$C_RESET"
+        fi
+    done
+
+    printf '\n'
+    printf '  This check is intentionally read-only. SSSD GPO access control is not the same\n'
+    printf '  as applying Windows or Ubuntu desktop policies. Missing SYSVOL/GPT.INI data\n'
+    printf '  should be diagnosed before attempting manual repair.\n'
+    ui_rule
+}
+
+mixed_platform_gpo_guidance() {
+    ui_menu_screen "MIXED WINDOWS / LINUX DOMAIN" "Recommended separation model for heterogeneous client policy"
+    printf '  Recommended structure:\n\n'
+    printf '    OU=Windows-Clients\n'
+    printf '      -> WIN/SEC GPOs (Windows Registry/CSE policies)\n\n'
+    printf '    OU=Ubuntu-Clients\n'
+    printf '      -> UBU GPOs (Ubuntu ADSys administrative templates/policies)\n\n'
+    printf '    OU=Samba-Linux\n'
+    printf '      -> LNX GPOs (Samba VGP/CSE policies where appropriate)\n\n'
+    printf '  SSSD GPO access control is evaluated separately and may inspect ordinary AD GPOs.\n'
+    printf '  Avoid assuming that a Registry policy useful for Windows has meaning on Ubuntu,\n'
+    printf '  or that an Ubuntu ADSys policy will be consumed by Windows clients.\n'
+    ui_rule
+}
+
+platform_gpo_catalog_menu() {
+    while true; do
+        ui_menu_screen "PLATFORM-AWARE GPO CONTROL" "Choose the policy consumer before creating or applying a Group Policy"
+        ui_menu_item "1" "Windows clients" "Windows Registry/CSE security-policy catalog" "$C_GREEN"
+        ui_menu_item "2" "Ubuntu ADSys clients" "Ubuntu.admx/ADML readiness and Ubuntu-scoped GPOs"
+        ui_menu_item "3" "Samba Linux clients" "Samba/winbind VGP/CSE policies and samba-gpupdate"
+        ui_menu_item "4" "SSSD access control" "Audit LDAP GPO objects vs SYSVOL/GPT.INI"
+        ui_menu_item "5" "Mixed estate guidance" "Recommended OU/GPO separation for Windows + Linux"
+        ui_menu_item "6" "Platform readiness" "Central Store and client-policy capability inventory"
+        ui_menu_exit
+        ui_rule
+
+        local choice
+        choice="$(ask 'Select target platform' '1')"
+        case "$choice" in
+            1) security_gpo_catalog_menu ;;
+            2) ubuntu_adsys_gpo_menu ;;
+            3) samba_linux_gpo_menu ;;
+            4) sssd_gpo_compatibility_audit; ui_pause ;;
+            5) mixed_platform_gpo_guidance; ui_pause ;;
+            6) audit_platform_gpo_readiness; ui_pause ;;
+            0) break ;;
+            *) msg_warn "Invalid platform selection."; ui_pause ;;
+        esac
+    done
+}
+
 security_gpo_catalog_menu() {
     ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"
     samba-tool gpo load --help >/dev/null 2>&1 ||
@@ -2690,7 +3299,7 @@ security_gpo_catalog_menu() {
     write_security_gpo_catalog_sources
 
     while true; do
-        ui_menu_screen "SECURITY GPO CATALOG" "Curated registry-based policies for common domain hardening"
+        ui_menu_screen "WINDOWS SECURITY GPO CATALOG" "Registry-based policies for Windows domain clients; do not use as an Ubuntu ADSys catalog"
         ui_menu_item "1" "PowerShell Logging" "Script Block + Module Logging"
         ui_menu_item "2" "Disable LLMNR" "Reduce multicast name-resolution poisoning exposure"
         ui_menu_item "3" "SMB Guest Hardening" "Disable insecure guest authentication"
@@ -3016,7 +3625,7 @@ gpo_admin_menu() {
         ui_menu_item "1" "List GPOs + GUIDs" "Indexed inventory; no manual GUID lookup required"
         ui_menu_item "2" "Inspect GPO" "Select an existing GPO by index"
         ui_menu_item "3" "Create GPO" "Create an empty policy and optionally link it" "$C_GREEN"
-        ui_menu_item "4" "Security GPO catalog" "Deploy common curated domain hardening policies" "$C_GREEN"
+        ui_menu_item "4" "Platform GPO catalog" "Windows, Ubuntu ADSys, Samba Linux and SSSD-aware policy flows" "$C_GREEN"
         ui_menu_item "5" "Load JSON policy" "Select GPO then merge registry policy payload"
         ui_menu_item "6" "List containers" "Select GPO then show linked containers"
         ui_menu_item "7" "Link / update" "Select GPO and domain/OU target" "$C_GREEN"
@@ -3053,7 +3662,7 @@ gpo_admin_menu() {
                 fi
                 ui_pause
                 ;;
-            4) security_gpo_catalog_menu ;;
+            4) platform_gpo_catalog_menu ;;
             5)
                 guid="$(select_gpo_guid)" || { ui_pause; continue; }
                 file="$(ask 'JSON policy file')"
@@ -3109,7 +3718,7 @@ ad-users|Users|Create, inspect, edit, enable/disable, reset passwords and manage
 ad-groups|Groups|Create, inspect and manage domain groups and their members.
 ad-computers|Computers|List/inspect domain computer accounts and show best-effort network presence.
 ad-permissions|Access & delegation|Manage memberships and advanced directory-service ACL operations.
-ad-gpo|Group Policy|List/select/create/link/backup/delete GPOs and deploy curated security policies.
+ad-gpo|Group Policy|Platform-aware GPO control for Windows, Ubuntu ADSys, Samba Linux and SSSD access-control diagnostics.
 ad-security|Security & resilience|Boot ordering, UFW, Fail2ban, sysctl and delegated-admin hardening.
 ad-audit|Audit|Run a read-only inventory and security evidence review.
 ad-validate|Validation|Run functional Samba AD/DC DNS, Kerberos, LDAP, SMB, DB and SYSVOL checks.
@@ -3224,6 +3833,7 @@ security_hardening_menu() {
         ui_menu_item "5" "Firewall policy" "Restrict AD and SSH exposure to trusted networks"
         ui_menu_item "6" "Delegated administrator" "Verify admin, promote it, optionally disable built-in Administrator"
         ui_menu_item "7" "Full AD/DC validation" "Run DNS, Kerberos, LDAP, SMB, database and SYSVOL checks"
+        ui_menu_item "8" "Repair local resolver" "Replace broken resolved stub with persistent Samba DNS /etc/resolv.conf" "$C_GREEN"
         ui_menu_exit
         ui_rule
         local choice
@@ -3236,6 +3846,7 @@ security_hardening_menu() {
             5) set_progress_plan 1; configure_ufw; ui_pause ;;
             6) set_progress_plan 1; harden_delegated_admin; ui_pause ;;
             7) set_progress_plan 1; validate_ad; ui_pause ;;
+            8) set_progress_plan 1; repair_local_resolver_only; ui_pause ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -3448,6 +4059,7 @@ manage_menu() {
         ui_menu_item "12" "Boot ordering" "Repair Samba startup dependency on network readiness"
         ui_menu_item "13" "Install CLI commands" "Deploy/refresh adctl and direct administrative shortcuts"
         ui_menu_item "14" "Installed CLI commands" "Show shortcut status and a description of every command"
+        ui_menu_item "15" "Repair local resolver" "Fix /etc/resolv.conf stub/symlink and validate AD DC discovery"
         ui_menu_exit
         ui_rule
         local choice
@@ -3467,6 +4079,7 @@ manage_menu() {
             12) configure_samba_boot_ordering; ui_pause ;;
             13) install_cli_commands; ui_pause ;;
             14) show_cli_commands; ui_pause ;;
+            15) set_progress_plan 1; repair_local_resolver_only; ui_pause ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
