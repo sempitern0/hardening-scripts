@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 4.6.0-samba-kerberos-hardening
+# Version 4.6.2-chrony-discovery-fix
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -39,8 +39,11 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
+# Ensure standard administrative binaries are discoverable in sudo/non-login shells.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="4.6.0-samba-kerberos-hardening"
+SCRIPT_VERSION="4.6.2-chrony-discovery-fix"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -867,7 +870,22 @@ install_required_packages() {
     [[ "$ENABLE_UFW" == "yes" ]] && package_available ufw && pkgs+=(ufw)
 
     DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}"
+
+    # Verify package payload, not only apt's return code.
+    local chronyd_path="" chronyc_path=""
+    chronyd_path="$(chronyd_binary 2>/dev/null || true)"
+    chronyc_path="$(chronyc_binary 2>/dev/null || true)"
+    [[ -n "$chronyd_path" && -n "$chronyc_path" ]] || {
+        fail_msg "Package 'chrony' was requested but its runtime binaries are unavailable."
+        printf '  Package state : %s
+' "$(chrony_package_status)" >&2
+        printf '  Expected      : /usr/sbin/chronyd and /usr/bin/chronyc
+' >&2
+        return 1
+    }
+
     result PASS "Packages" "required packages present" "Samba/Kerberos/DNS/Chrony"
+    result PASS "Chrony runtime" "$chronyd_path + $chronyc_path" "installed"
 }
 
 choose_ad_interface() {
@@ -1264,6 +1282,394 @@ repair_kerberos_client_config() {
     result PASS "Kerberos client config" "/etc/krb5.conf" "Samba-generated canonical config"
 }
 
+
+# ---------------------------------------------------------------------------
+# Chrony discovery, validation and diagnostics
+# ---------------------------------------------------------------------------
+
+
+chronyd_binary() {
+    local p=""
+
+    p="$(command -v chronyd 2>/dev/null || true)"
+    if [[ -n "$p" && -x "$p" ]]; then
+        printf '%s' "$p"
+        return 0
+    fi
+
+    for p in /usr/sbin/chronyd /sbin/chronyd /usr/local/sbin/chronyd; do
+        [[ -x "$p" ]] && { printf '%s' "$p"; return 0; }
+    done
+
+    return 1
+}
+
+chronyc_binary() {
+    local p=""
+    p="$(command -v chronyc 2>/dev/null || true)"
+    if [[ -n "$p" && -x "$p" ]]; then
+        printf '%s' "$p"
+        return 0
+    fi
+
+    for p in /usr/bin/chronyc /bin/chronyc /usr/local/bin/chronyc; do
+        [[ -x "$p" ]] && { printf '%s' "$p"; return 0; }
+    done
+
+    return 1
+}
+
+chrony_package_status() {
+    if command_exists dpkg-query; then
+        dpkg-query -W -f='${db:Status-Abbrev} ${Version}\n' chrony 2>/dev/null || true
+    elif command_exists dpkg; then
+        dpkg -s chrony 2>/dev/null |
+            awk -F': ' '/^(Status|Version):/{printf "%s=%s ",$1,$2} END{print ""}' || true
+    fi
+}
+
+chrony_package_installed() {
+    command_exists dpkg-query || return 1
+    [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' chrony 2>/dev/null || true)" == "ii " ]]
+}
+
+ensure_chrony_runtime() {
+    local daemon="" client="" pkg=""
+
+    daemon="$(chronyd_binary 2>/dev/null || true)"
+    client="$(chronyc_binary 2>/dev/null || true)"
+    pkg="$(chrony_package_status)"
+
+    if [[ -n "$daemon" && -n "$client" ]]; then
+        return 0
+    fi
+
+    printf '\n'
+    msg_warn "Chrony runtime is incomplete."
+    printf '  %-24s %s\n' "Package state" "${pkg:-not installed / unknown}"
+    printf '  %-24s %s\n' "chronyd" "${daemon:-missing}"
+    printf '  %-24s %s\n' "chronyc" "${client:-missing}"
+    printf '  %-24s %s\n' "PATH" "$PATH"
+
+    require_cmd apt-get "Chrony package installation/repair" || return 1
+
+    if ! chrony_package_installed; then
+        if ! confirm "Install required package 'chrony' now?" Y; then
+            return 1
+        fi
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y chrony
+    else
+        # Installed package with missing binaries is inconsistent. Reinstalling
+        # the same package is safer than guessing a renamed executable.
+        if ! confirm "Package 'chrony' is installed but binaries are missing. Reinstall it?" Y; then
+            return 1
+        fi
+        DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y chrony
+    fi
+
+    daemon="$(chronyd_binary 2>/dev/null || true)"
+    client="$(chronyc_binary 2>/dev/null || true)"
+
+    if [[ -z "$daemon" || -z "$client" ]]; then
+        fail_msg "Chrony package operation completed but required binaries are still unavailable."
+        printf '  Expected daemon: /usr/sbin/chronyd\n' >&2
+        printf '  Expected client: /usr/bin/chronyc\n' >&2
+        printf '  Check: dpkg -L chrony | grep -E "/(chronyd|chronyc)$"\n' >&2
+        return 1
+    fi
+
+    result PASS "Chrony runtime" "$daemon + $client" "installed"
+}
+
+chrony_main_config() {
+    local candidate=""
+
+    # Debian/Ubuntu package path.
+    for candidate in /etc/chrony/chrony.conf /etc/chrony.conf; do
+        [[ -f "$candidate" ]] && { printf '%s' "$candidate"; return 0; }
+    done
+
+    return 1
+}
+
+chrony_service_unit() {
+    local unit=""
+    for unit in chrony.service chronyd.service; do
+        if systemctl list-unit-files --type=service --no-legend "$unit" 2>/dev/null |
+            awk '{print $1}' | grep -Fxq "$unit"; then
+            printf '%s' "$unit"
+            return 0
+        fi
+    done
+
+    # Debian/Ubuntu use chrony.service. Return the expected unit even when
+    # systemd metadata is temporarily unavailable so diagnostics stay useful.
+    if [[ "$DISTRO_ID" == "debian" || "$DISTRO_ID" == "ubuntu" ]]; then
+        printf 'chrony.service'
+        return 0
+    fi
+
+    return 1
+}
+
+chrony_managed_fragment() {
+    printf '/etc/chrony/conf.d/90-debian-ad.conf'
+}
+
+chrony_signed_fragment() {
+    printf '/etc/chrony/conf.d/91-samba-ad-signed-time.conf'
+}
+
+chrony_config_includes_conf_d() {
+    local config=""
+    config="$(chrony_main_config)" || return 1
+
+    grep -Eiq \
+        '^[[:space:]]*(confdir[[:space:]]+/etc/chrony/conf\.d([[:space:]]|$)|include[[:space:]]+/etc/chrony/conf\.d/.*\.conf([[:space:]]|$))' \
+        "$config"
+}
+
+ensure_chrony_conf_d_included() {
+    local config=""
+    config="$(chrony_main_config)" || {
+        fail_msg "Unable to locate Chrony main configuration file."
+        return 1
+    }
+
+    mkdir -p /etc/chrony/conf.d
+
+    chrony_config_includes_conf_d && return 0
+
+    # Modern Debian/Ubuntu Chrony supports confdir. Add a small managed include
+    # only when the package configuration does not already include conf.d.
+    backup_file "$config"
+    {
+        printf '\n'
+        printf '# BEGIN DEBIAN-AD-ASSISTANT CHRONY INCLUDE\n'
+        printf 'confdir /etc/chrony/conf.d\n'
+        printf '# END DEBIAN-AD-ASSISTANT CHRONY INCLUDE\n'
+    } >>"$config"
+
+    return 0
+}
+
+resolve_ad_ntp_client_cidr() {
+    local cidr=""
+
+    if [[ -n "${AD_CLIENT_CIDR:-}" ]] && is_valid_cidr "$AD_CLIENT_CIDR"; then
+        printf '%s' "$AD_CLIENT_CIDR"
+        return 0
+    fi
+
+    if [[ -n "${AD_CIDR:-}" ]]; then
+        cidr="$(cidr_from_interface "$AD_CIDR")"
+        if [[ -n "$cidr" ]] && is_valid_cidr "$cidr"; then
+            printf '%s' "$cidr"
+            return 0
+        fi
+    fi
+
+    if [[ -n "${AD_IFACE:-}" ]]; then
+        cidr="$(
+            ip -4 -o addr show dev "$AD_IFACE" scope global 2>/dev/null |
+            awk 'NR==1{print $4}' || true
+        )"
+        if [[ -n "$cidr" ]]; then
+            cidr="$(cidr_from_interface "$cidr")"
+            if [[ -n "$cidr" ]] && is_valid_cidr "$cidr"; then
+                printf '%s' "$cidr"
+                return 0
+            fi
+        fi
+    fi
+
+    return 1
+}
+
+validate_ntp_source_token() {
+    local source="$1"
+
+    # The assistant accepts one hostname or IPv4 address, not a complete
+    # chrony directive. This prevents accidental values such as
+    # "pool pool.ntp.org" from generating malformed configuration.
+    [[ -n "$source" && "$source" != *[[:space:]]* ]] || return 1
+    is_valid_ipv4 "$source" && return 0
+    is_valid_dns_name "$source"
+}
+
+chrony_validate_config() {
+    local label="${1:-current}"
+    local quiet="${2:-no}"
+    local config="" output="" rc=0 daemon=""
+
+    daemon="$(chronyd_binary 2>/dev/null || true)"
+    if [[ -z "$daemon" ]]; then
+        [[ "$quiet" == "yes" ]] || {
+            msg_error "chronyd binary was not found."
+            printf '  Package state : %s\n' "$(chrony_package_status)" >&2
+            printf '  Expected path : /usr/sbin/chronyd\n' >&2
+            printf '  Current PATH  : %s\n' "$PATH" >&2
+        }
+        return 127
+    fi
+
+    config="$(chrony_main_config)" || {
+        [[ "$quiet" == "yes" ]] || msg_error "Chrony main configuration file was not found."
+        return 1
+    }
+
+    output="${RUN_ROOT}/chrony-validation-${label//[^A-Za-z0-9_.-]/_}.txt"
+
+    if "$daemon" -p -f "$config" >"$output" 2>&1; then
+        return 0
+    else
+        rc=$?
+    fi
+
+    if [[ "$quiet" != "yes" ]]; then
+        msg_error "Chrony configuration validation failed (rc=$rc)."
+        printf '  chronyd    : %s\n' "$daemon" >&2
+        printf '  Main config: %s\n' "$config" >&2
+        printf '  Evidence   : %s\n' "$output" >&2
+        printf '\n%bChrony parser output:%b\n' "$C_YELLOW" "$C_RESET" >&2
+        tail -n 50 "$output" >&2 || true
+    fi
+
+    return "$rc"
+}
+
+chrony_service_restart_safe() {
+    local unit="" status_file=""
+
+    unit="$(chrony_service_unit)" || {
+        msg_error "Chrony systemd service unit could not be identified."
+        return 1
+    }
+
+    status_file="${RUN_ROOT}/chrony-service-status.txt"
+
+    systemctl enable "$unit" >/dev/null 2>&1 || true
+
+    if ! systemctl restart "$unit"; then
+        systemctl status "$unit" --no-pager --full >"$status_file" 2>&1 || true
+        journalctl -u "$unit" -b --no-pager -n 80 >>"$status_file" 2>&1 || true
+        msg_error "Failed to restart $unit."
+        printf '  Evidence: %s\n' "$status_file" >&2
+        tail -n 50 "$status_file" >&2 || true
+        return 1
+    fi
+
+    if ! systemctl is-active --quiet "$unit"; then
+        systemctl status "$unit" --no-pager --full >"$status_file" 2>&1 || true
+        journalctl -u "$unit" -b --no-pager -n 80 >>"$status_file" 2>&1 || true
+        msg_error "$unit did not return ACTIVE after restart."
+        printf '  Evidence: %s\n' "$status_file" >&2
+        tail -n 50 "$status_file" >&2 || true
+        return 1
+    fi
+
+    return 0
+}
+
+chrony_restore_file_snapshot() {
+    local target="$1" snapshot="$2" existed="$3"
+
+    if [[ "$existed" -eq 1 ]]; then
+        cp -a "$snapshot" "$target"
+    else
+        rm -f "$target"
+    fi
+}
+
+show_chrony_diagnostics() {
+    section "CHRONY DIAGNOSTICS"
+
+    local config="" unit="" parser_file="${RUN_ROOT}/chrony-parser-current.txt"
+    local fragment signed daemon="" client="" pkg=""
+
+    config="$(chrony_main_config 2>/dev/null || true)"
+    unit="$(chrony_service_unit 2>/dev/null || true)"
+    fragment="$(chrony_managed_fragment)"
+    signed="$(chrony_signed_fragment)"
+    daemon="$(chronyd_binary 2>/dev/null || true)"
+    client="$(chronyc_binary 2>/dev/null || true)"
+    pkg="$(chrony_package_status)"
+
+    printf '  %-27s %s\n' "Package chrony" "${pkg:-not installed / unknown}"
+    printf '  %-27s %s\n' "chronyd binary" "${daemon:-missing}"
+    printf '  %-27s %s\n' "chronyc binary" "${client:-missing}"
+    printf '  %-27s %s\n' "PATH" "$PATH"
+    printf '  %-27s %s\n' "Chrony version" \
+        "$(if [[ -n "$daemon" ]]; then "$daemon" -v 2>/dev/null | head -n1; else printf 'unknown'; fi)"
+    printf '  %-27s %s\n' "systemd unit" "${unit:-not detected}"
+    printf '  %-27s %s\n' "main config" "${config:-not detected}"
+    printf '  %-27s %s\n' "managed fragment" "$fragment"
+    printf '  %-27s %s\n' "signed-time fragment" "$signed"
+
+    if [[ -n "$unit" ]]; then
+        printf '  %-27s %s\n' "service state" "$(safe_systemctl_state "$unit")"
+        printf '  %-27s %s\n' "service enabled" "$(safe_systemctl_enabled "$unit")"
+    fi
+
+    printf '\n'
+    if [[ -f "$fragment" ]]; then
+        printf '%bManaged time fragment:%b\n' "$C_BOLD" "$C_RESET"
+        nl -ba "$fragment"
+    else
+        printf '%bManaged time fragment:%b not present\n' "$C_BOLD" "$C_RESET"
+    fi
+
+    if [[ -f "$signed" ]]; then
+        printf '\n%bSigned-time fragment:%b\n' "$C_BOLD" "$C_RESET"
+        nl -ba "$signed"
+    fi
+
+    printf '\n%bPackage files:%b\n' "$C_BOLD" "$C_RESET"
+    if command_exists dpkg && chrony_package_installed; then
+        dpkg -L chrony 2>/dev/null | grep -E '/(chronyd|chronyc|chrony\.service)$' || true
+    else
+        printf '  chrony package not installed or dpkg unavailable\n'
+    fi
+
+    printf '\n%bParser validation:%b\n' "$C_BOLD" "$C_RESET"
+    if [[ -n "$daemon" && -n "$config" ]] && "$daemon" -p -f "$config" >"$parser_file" 2>&1; then
+        result PASS "Chrony syntax" "$config" "valid"
+        printf '  Expanded configuration saved to %s\n' "$parser_file"
+    else
+        result FAIL "Chrony syntax" "${config:-not detected}" "valid"
+        printf '  Parser evidence: %s\n' "$parser_file"
+        tail -n 50 "$parser_file" 2>/dev/null || true
+    fi
+
+    if [[ -n "$unit" ]]; then
+        printf '\n%bService status:%b\n' "$C_BOLD" "$C_RESET"
+        systemctl status "$unit" --no-pager --full 2>&1 | tail -n 35 || true
+    fi
+
+    if [[ -n "$client" ]]; then
+        printf '\n%bchronyc tracking:%b\n' "$C_BOLD" "$C_RESET"
+        "$client" -n tracking 2>&1 || true
+        printf '\n%bchronyc sources:%b\n' "$C_BOLD" "$C_RESET"
+        "$client" -n sources -v 2>&1 || true
+    fi
+
+    printf '\n'
+    printf 'Manual discovery commands:\n'
+    printf '  dpkg-query -W chrony\n'
+    printf '  dpkg -L chrony | grep -E "/(chronyd|chronyc)$"\n'
+    printf '  command -v chronyd || ls -l /usr/sbin/chronyd\n'
+    if [[ -n "$daemon" && -n "$config" ]]; then
+        printf '  sudo %q -p -f %q\n' "$daemon" "$config"
+    else
+        printf '  sudo /usr/sbin/chronyd -p -f /etc/chrony/chrony.conf\n'
+    fi
+    if [[ -n "$unit" ]]; then
+        printf '  sudo systemctl status %s\n' "$unit"
+        printf '  sudo journalctl -u %s -b --no-pager -n 100\n' "$unit"
+    fi
+}
+
 get_ntp_signd_dir() {
     local dir=""
     if command_exists samba; then
@@ -1282,23 +1688,35 @@ get_chrony_runtime_group() {
 }
 
 chrony_supports_ntp_signd() {
-    local tmp dir
-    command_exists chronyd || return 1
+    local tmp dir daemon=""
+    daemon="$(chronyd_binary 2>/dev/null || true)"
+    [[ -n "$daemon" ]] || return 1
+
     dir="$(get_ntp_signd_dir)"
     tmp="${RUN_ROOT}/chrony-ntpsignd-test.conf"
     printf 'ntpsigndsocket %s\n' "$dir" >"$tmp"
-    chronyd -p -f "$tmp" >/dev/null 2>&1
+    "$daemon" -p -f "$tmp" >/dev/null 2>&1
 }
 
 audit_signed_domain_time() {
     section "SIGNED DOMAIN TIME / CHRONY"
-    local dir group expected_group=""
+    local dir group expected_group="" unit="" config=""
     dir="$(get_ntp_signd_dir)"
     expected_group="$(get_chrony_runtime_group 2>/dev/null || true)"
+    unit="$(chrony_service_unit 2>/dev/null || true)"
+    config="$(chrony_main_config 2>/dev/null || true)"
 
-    systemctl is-active --quiet chrony \
-        && result PASS "Chrony service" "active" "active" \
-        || result WARN "Chrony service" "$(safe_systemctl_state chrony)" "active"
+    if [[ -n "$unit" ]] && systemctl is-active --quiet "$unit"; then
+        result PASS "Chrony service" "$unit active" "active"
+    else
+        result WARN "Chrony service" "${unit:-not detected}: $(safe_systemctl_state "${unit:-chrony.service}")" "active"
+    fi
+
+    if chrony_validate_config "audit" yes; then
+        result PASS "Chrony syntax" "${config:-detected config}" "valid"
+    else
+        result FAIL "Chrony syntax" "${config:-not detected}; see ${RUN_ROOT}/chrony-validation-audit.txt" "valid"
+    fi
 
     if chrony_supports_ntp_signd; then
         result PASS "Chrony MS-SNTP capability" "ntpsigndsocket supported" "supported"
@@ -1325,9 +1743,11 @@ audit_signed_domain_time() {
         result WARN "Chrony signed-time config" "ntpsigndsocket not configured" "$dir"
     fi
 
-    if command_exists chronyc; then
+    local chronyc_bin=""
+    chronyc_bin="$(chronyc_binary 2>/dev/null || true)"
+    if [[ -n "$chronyc_bin" ]]; then
         local tracking
-        tracking="$(chronyc -n tracking 2>/dev/null | awk -F': ' '/Leap status/{print $2;exit}' || true)"
+        tracking="$("$chronyc_bin" -n tracking 2>/dev/null | awk -F': ' '/Leap status/{print $2;exit}' || true)"
         [[ "${tracking,,}" == "normal" ]] \
             && result PASS "Chrony synchronization" "$tracking" "Normal" \
             || result WARN "Chrony synchronization" "${tracking:-unknown}" "Normal"
@@ -1335,12 +1755,21 @@ audit_signed_domain_time() {
 }
 
 configure_signed_domain_time() {
-    local dir group conf="/etc/chrony/conf.d/91-samba-ad-signed-time.conf"
+    local dir group conf snapshot existed=0
+
+    conf="$(chrony_signed_fragment)"
+
+    ensure_chrony_runtime || {
+        msg_warn "Chrony runtime is unavailable; signed domain time was not changed."
+        return 1
+    }
 
     chrony_supports_ntp_signd || {
         msg_warn "Installed chronyd does not accept the ntpsigndsocket directive."
         return 1
     }
+
+    ensure_chrony_conf_d_included || return 1
 
     dir="$(get_ntp_signd_dir)"
     group="$(get_chrony_runtime_group 2>/dev/null || true)"
@@ -1349,29 +1778,36 @@ configure_signed_domain_time() {
         return 1
     }
 
-    mkdir -p "$dir" /etc/chrony/conf.d
+    mkdir -p "$dir" "$(dirname "$conf")"
     chown root:"$group" "$dir"
     chmod 0750 "$dir"
 
+    snapshot="${RUN_ROOT}/$(basename "$conf").before"
+    if [[ -e "$conf" ]]; then
+        cp -a "$conf" "$snapshot"
+        existed=1
+    fi
     backup_file "$conf"
+
     cat >"$conf" <<EOF
 # Managed by ${SCRIPT_NAME} ${SCRIPT_VERSION}
-# Signed MS-SNTP responses for Active Directory domain members.
+# Signed MS-SNTP responses for trusted Active Directory domain members.
 ntpsigndsocket ${dir}
 EOF
     chmod 0644 "$conf"
 
-    if ! chronyd -p >/dev/null 2>&1; then
-        msg_warn "Chrony configuration validation failed; signed-time fragment will be removed."
-        rm -f "$conf"
+    if ! chrony_validate_config "signed-time"; then
+        chrony_restore_file_snapshot "$conf" "$snapshot" "$existed"
+        msg_warn "Signed-time fragment was rolled back."
         return 1
     fi
 
-    systemctl restart chrony
-    systemctl is-active --quiet chrony || {
-        msg_warn "chrony did not return active after signed-time configuration."
+    if ! chrony_service_restart_safe; then
+        chrony_restore_file_snapshot "$conf" "$snapshot" "$existed"
+        chrony_service_restart_safe >/dev/null 2>&1 || true
+        msg_warn "Signed-time fragment was rolled back after service failure."
         return 1
-    }
+    fi
 
     change APPLIED "Configured Chrony signed MS-SNTP via $dir"
     result PASS "Signed domain time" "$dir / group=$group" "chrony + Samba ntp_signd"
@@ -1670,6 +2106,7 @@ samba_kerberos_security_menu() {
         ui_menu_item "8" "Signed domain time" "Audit Chrony + Samba ntp_signd integration"
         ui_menu_item "9" "Configure signed time" "Enable Chrony MS-SNTP signing for trusted AD clients" "$C_GREEN"
         ui_menu_item "10" "Samba transport audit" "SMB, LDAP, NTLM, schannel and custom-share posture"
+        ui_menu_item "11" "Chrony diagnostics" "Show config path, parser output, systemd unit, tracking and sources"
         ui_menu_exit
         ui_rule
 
@@ -1684,8 +2121,14 @@ samba_kerberos_security_menu() {
             6) apply_kerberos_aes_only_profile; ui_pause ;;
             7) restore_kerberos_compatibility_defaults; ui_pause ;;
             8) audit_signed_domain_time; ui_pause ;;
-            9) configure_signed_domain_time; ui_pause ;;
+            9)
+                if ! configure_signed_domain_time; then
+                    msg_warn "Signed-domain-time configuration was not applied."
+                fi
+                ui_pause
+                ;;
             10) audit_samba_transport_security; ui_pause ;;
+            11) show_chrony_diagnostics; ui_pause ;;
             H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid security operation."; ui_pause ;;
@@ -2160,38 +2603,128 @@ repair_dns_stack() {
 
 configure_time() {
     step "Time synchronization"
+
+    local fragment snapshot existed=0
+    local default_cidr="" requested_cidr=""
+    local config="" unit=""
+
+    ensure_chrony_runtime || {
+        fail_msg "Chrony runtime is unavailable; time configuration was not changed."
+        return 1
+    }
+
+    config="$(chrony_main_config)" || {
+        fail_msg "Unable to locate Chrony main configuration (/etc/chrony/chrony.conf or /etc/chrony.conf)."
+        return 1
+    }
+    unit="$(chrony_service_unit)" || {
+        fail_msg "Unable to identify Chrony systemd service."
+        return 1
+    }
+
     TIMEZONE="$(ask 'Timezone' "${TIMEZONE:-Europe/London}")"
-    NTP_POOL="$(ask 'NTP pool/server' "${NTP_POOL:-pool.ntp.org}")"
-
-    timedatectl set-timezone "$TIMEZONE"
-    mkdir -p /etc/chrony/conf.d
-    backup_file /etc/chrony/conf.d/90-debian-ad.conf
-    cat >/etc/chrony/conf.d/90-debian-ad.conf <<EOF
-# Managed by ${SCRIPT_NAME} ${SCRIPT_VERSION}
-# Upstream synchronization plus NTP service restricted to the AD client scope.
-pool ${NTP_POOL} iburst maxsources 4
-allow ${AD_CLIENT_CIDR}
-makestep 1.0 3
-rtcsync
-EOF
-    chmod 0644 /etc/chrony/conf.d/90-debian-ad.conf
-
-    if ! chronyd -p >/dev/null 2>&1; then
-        fail_msg "Chrony configuration failed syntax validation."
+    if command_exists timedatectl &&
+       ! timedatectl list-timezones 2>/dev/null | grep -Fxq "$TIMEZONE"; then
+        msg_warn "Unknown timezone: $TIMEZONE"
         return 1
     fi
 
-    systemctl enable --now chrony >/dev/null
-    systemctl restart chrony
+    NTP_POOL="$(ask 'NTP pool/server' "${NTP_POOL:-pool.ntp.org}")"
+    validate_ntp_source_token "$NTP_POOL" || {
+        msg_warn "Invalid NTP source '$NTP_POOL'. Enter one hostname/IP only, e.g. pool.ntp.org or 192.0.2.10."
+        return 1
+    }
 
-    systemctl is-active --quiet chrony \
-        && result PASS "Chrony" "active" "active" \
-        || { result FAIL "Chrony" "$(safe_systemctl_state chrony)" "active"; return 1; }
-
-    if command_exists chronyc; then
-        chronyc -n tracking >"${RUN_ROOT}/chrony-tracking.txt" 2>&1 || true
-        chronyc -n sources >"${RUN_ROOT}/chrony-sources.txt" 2>&1 || true
+    default_cidr="$(resolve_ad_ntp_client_cidr 2>/dev/null || true)"
+    if [[ -z "$default_cidr" ]]; then
+        msg_warn "AD/NTP client CIDR could not be derived from the current AD interface."
+        requested_cidr="$(ask 'AD/NTP client network (CIDR)' '192.168.1.0/24')"
+    else
+        requested_cidr="$(ask 'AD/NTP client network (CIDR)' "$default_cidr")"
     fi
+
+    is_valid_ipv4 "$requested_cidr" && requested_cidr="${requested_cidr}/32"
+    if ! is_valid_cidr "$requested_cidr"; then
+        msg_warn "Invalid AD/NTP client CIDR: '$requested_cidr'."
+        return 1
+    fi
+    AD_CLIENT_CIDR="$requested_cidr"
+
+    timedatectl set-timezone "$TIMEZONE"
+
+    ensure_chrony_conf_d_included || return 1
+
+    fragment="$(chrony_managed_fragment)"
+    mkdir -p "$(dirname "$fragment")"
+
+    snapshot="${RUN_ROOT}/$(basename "$fragment").before"
+    if [[ -e "$fragment" ]]; then
+        cp -a "$fragment" "$snapshot"
+        existed=1
+    fi
+    backup_file "$fragment"
+
+    # Keep the assistant fragment small. Debian/Ubuntu already ship sensible
+    # rtcsync/makestep defaults. Duplicating those directives is unnecessary.
+    # The source and AD client scope are the settings owned by this assistant.
+    cat >"$fragment" <<EOF
+# Managed by ${SCRIPT_NAME} ${SCRIPT_VERSION}
+# Upstream synchronization source.
+pool ${NTP_POOL} iburst maxsources 4
+
+# Serve NTP only to the trusted Active Directory client network.
+allow ${AD_CLIENT_CIDR}
+EOF
+    chmod 0644 "$fragment"
+
+    printf '\n'
+    printf '  %-24s %s\n' "Chrony config" "$config"
+    printf '  %-24s %s\n' "systemd service" "$unit"
+    printf '  %-24s %s\n' "managed fragment" "$fragment"
+    printf '  %-24s %s\n' "NTP source" "$NTP_POOL"
+    printf '  %-24s %s\n' "AD/NTP clients" "$AD_CLIENT_CIDR"
+
+    if ! chrony_validate_config "time-configuration"; then
+        chrony_restore_file_snapshot "$fragment" "$snapshot" "$existed"
+        msg_warn "The previous Chrony fragment has been restored."
+
+        # Validate the restored configuration as additional evidence.
+        if chrony_validate_config "time-rollback" yes; then
+            result PASS "Chrony rollback" "previous configuration restored and valid" "valid"
+        else
+            result WARN "Chrony rollback" "previous configuration restored but parser still reports an error" \
+                "inspect existing Chrony configuration"
+        fi
+        return 1
+    fi
+
+    if ! chrony_service_restart_safe; then
+        chrony_restore_file_snapshot "$fragment" "$snapshot" "$existed"
+        chrony_service_restart_safe >/dev/null 2>&1 || true
+        msg_warn "Chrony changes were rolled back after restart failure."
+        return 1
+    fi
+
+    result PASS "Chrony syntax" "$config" "valid"
+    result PASS "Chrony service" "$unit active" "active"
+
+    local chronyc_bin=""
+    chronyc_bin="$(chronyc_binary 2>/dev/null || true)"
+    if [[ -n "$chronyc_bin" ]]; then
+        "$chronyc_bin" -n tracking >"${RUN_ROOT}/chrony-tracking.txt" 2>&1 || true
+        "$chronyc_bin" -n sources -v >"${RUN_ROOT}/chrony-sources.txt" 2>&1 || true
+
+        local leap=""
+        leap="$(awk -F': ' '/Leap status/{print $2;exit}' "${RUN_ROOT}/chrony-tracking.txt" 2>/dev/null || true)"
+        if [[ "${leap,,}" == "normal" ]]; then
+            result PASS "Chrony synchronization" "$leap" "Normal"
+        else
+            result WARN "Chrony synchronization" "${leap:-not synchronized yet}" \
+                "may need several polling cycles after restart"
+        fi
+    fi
+
+    change APPLIED "Configured Chrony source=$NTP_POOL clients=$AD_CLIENT_CIDR service=$unit"
 }
 
 verify_provisioned_identity() {
@@ -5860,7 +6393,9 @@ CURRENT IDENTITY
   [ ] kinit ${ADMIN_USER}@${REALM}
   [ ] kvno ldap/${DC_FQDN}
   [ ] klist -e and review ticket encryption
-  [ ] chronyc tracking / signed domain time
+  [ ] /usr/sbin/chronyd -p -f /etc/chrony/chrony.conf
+  [ ] systemctl status chrony.service
+  [ ] chronyc tracking / chronyc sources -v / signed domain time
 
 [SECURITY]
   [ ] Review UFW rules and trusted CIDRs.
@@ -6027,7 +6562,13 @@ manage_menu() {
             1) set_progress_plan 2; audit_existing; audit_security_baseline; ui_pause ;;
             2) set_progress_plan 1; validate_ad; ui_pause ;;
             3) repair_dns_stack; ui_pause ;;
-            4) set_progress_plan 1; configure_time; ui_pause ;;
+            4)
+                set_progress_plan 1
+                if ! configure_time; then
+                    msg_warn "Chrony configuration was not applied. Previous configuration was preserved where possible."
+                fi
+                ui_pause
+                ;;
             5) set_progress_plan 1; configure_ufw; ui_pause ;;
             6) set_progress_plan 1; ensure_directory_baseline; ui_pause ;;
             7) set_progress_plan 1; manage_gpos; ui_pause ;;
