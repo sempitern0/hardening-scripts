@@ -2657,6 +2657,73 @@ function Select-AdGroupsInteractive {
     return @($selected)
 }
 
+
+function Test-AdUserEffectiveGroupMembership {
+    param(
+        [Parameter(Mandatory)][Microsoft.ActiveDirectory.Management.ADUser]$User,
+        [Parameter(Mandatory)][Microsoft.ActiveDirectory.Management.ADGroup]$Group
+    )
+
+    try {
+        $memberships = @(Get-ADPrincipalGroupMembership -Identity $User -ErrorAction Stop)
+        return [bool]($memberships | Where-Object { $_.DistinguishedName -eq $Group.DistinguishedName })
+    }
+    catch {
+        Write-Log ("Could not verify existing membership {0} -> {1}: {2}" -f
+            $User.SamAccountName, $Group.Name, $_.Exception.Message) WARN
+        return $false
+    }
+}
+
+function Add-AdUserGroupMembershipSafe {
+    param(
+        [Parameter(Mandatory)]$User,
+        [Parameter(Mandatory)]$Group
+    )
+
+    if ($User -isnot [Microsoft.ActiveDirectory.Management.ADUser]) {
+        $User = Get-ADUser -Identity $User -ErrorAction Stop
+    }
+    if ($Group -isnot [Microsoft.ActiveDirectory.Management.ADGroup]) {
+        $Group = Get-ADGroup -Identity $Group -ErrorAction Stop
+    }
+
+    if (Test-AdUserEffectiveGroupMembership -User $User -Group $Group) {
+        if ($Group.Name -eq 'Domain Users') {
+            Write-Console ("SKIP: {0} already has effective membership in Domain Users (normally its primary group)." -f
+                $User.SamAccountName) Yellow
+        }
+        else {
+            Write-Console ("SKIP: {0} is already a member of {1}." -f
+                $User.SamAccountName, $Group.Name) Yellow
+        }
+        Write-Log ("Skipped duplicate/effective membership: {0} -> {1}" -f
+            $User.SamAccountName, $Group.Name) INFO
+        return $true
+    }
+
+    try {
+        Add-ADGroupMember -Identity $Group -Members $User -ErrorAction Stop
+        Write-Log ("Added {0} to group {1}" -f $User.SamAccountName, $Group.Name) CHANGE
+        return $true
+    }
+    catch {
+        # Re-check to tolerate races or provider-specific "already a member"
+        # errors without treating an idempotent end state as a failure.
+        if (Test-AdUserEffectiveGroupMembership -User $User -Group $Group) {
+            Write-Console ("SKIP: {0} already has effective membership in {1}." -f
+                $User.SamAccountName, $Group.Name) Yellow
+            return $true
+        }
+
+        Write-Console ("Could not add {0} to {1}: {2}" -f
+            $User.SamAccountName, $Group.Name, $_.Exception.Message) Red
+        Write-Log ("Failed group membership: {0} -> {1}: {2}" -f
+            $User.SamAccountName, $Group.Name, $_.Exception.Message) ERROR
+        return $false
+    }
+}
+
 function Manage-AdUserGroupsInteractive {
     param([string]$Identity)
 
@@ -2700,8 +2767,7 @@ function Manage-AdUserGroupsInteractive {
                         -Impact MEDIUM)) { continue }
 
                     New-ChangeSet
-                    Add-ADGroupMember -Identity $group -Members $user
-                    Write-Log ("Added {0} to group {1}" -f $user.SamAccountName, $group.Name) CHANGE
+                    [void](Add-AdUserGroupMembershipSafe -User $user -Group $group)
                 }
             }
             'R' {
@@ -2829,15 +2895,11 @@ function New-AdUserInteractive {
     Write-Log ("Created AD user: {0}" -f $sam) CHANGE
 
     if (Read-BooleanChoice -Prompt 'Assign domain group memberships now?' -Default $true) {
+        Write-Console 'Note: new AD users already use Domain Users as their primary group; it does not need to be added again.' Cyan
+        $createdUser = Get-ADUser -Identity $sam -ErrorAction Stop
         $groups = @(Select-AdGroupsInteractive -AllowCreate)
         foreach ($group in $groups) {
-            try {
-                Add-ADGroupMember -Identity $group -Members $sam
-                Write-Log ("Added {0} to group {1}" -f $sam, $group.Name) CHANGE
-            }
-            catch {
-                Write-Console ("Could not add {0} to {1}: {2}" -f $sam, $group.Name, $_.Exception.Message) Red
-            }
+            [void](Add-AdUserGroupMembershipSafe -User $createdUser -Group $group)
         }
     }
 }

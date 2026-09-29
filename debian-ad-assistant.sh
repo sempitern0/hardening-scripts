@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 4.7.0-operator-selectors
+# Version 4.7.1-membership-idempotency
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -43,7 +43,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="4.7.0-operator-selectors"
+SCRIPT_VERSION="4.7.1-membership-idempotency"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -4210,6 +4210,53 @@ select_user_group_membership() {
     printf '%s' "${groups[$((choice-1))]}"
 }
 
+
+user_has_effective_group_membership() {
+    local user="$1" group="$2"
+    samba-tool user getgroups "$user" 2>/dev/null |
+        awk -v target="$group" '
+            BEGIN { IGNORECASE=1 }
+            $0 == target { found=1; exit }
+            END { exit(found ? 0 : 1) }
+        '
+}
+
+add_user_to_group_safe() {
+    local user="$1" group="$2" output=""
+
+    if user_has_effective_group_membership "$user" "$group"; then
+        if [[ "${group,,}" == "domain users" ]]; then
+            result SKIP "Group membership" \
+                "$user -> $group (already effective; normally the user's primary group)" \
+                "no change required"
+        else
+            result SKIP "Group membership" \
+                "$user -> $group already effective" \
+                "no duplicate membership"
+        fi
+        return 0
+    fi
+
+    if output="$(samba-tool group addmembers "$group" "$user" 2>&1)"; then
+        change APPLIED "Added $user to group=$group"
+        result PASS "Group membership" "$user -> $group" "added"
+        return 0
+    fi
+
+    # Re-check after the command. This covers races and Samba versions that
+    # return a non-zero status for an already-effective membership.
+    if user_has_effective_group_membership "$user" "$group"; then
+        result SKIP "Group membership" \
+            "$user -> $group is already effective" \
+            "no duplicate membership"
+        return 0
+    fi
+
+    msg_warn "Unable to add '$user' to group '$group'."
+    [[ -n "$output" ]] && printf '%s\n' "$output" >&2
+    return 1
+}
+
 manage_user_memberships() {
     local user="$1" choice group
     while true; do
@@ -4227,8 +4274,9 @@ manage_user_memberships() {
             1) samba-tool user getgroups "$user" | sort; ui_pause ;;
             2)
                 if group="$(select_domain_group)"; then
-                    samba-tool group addmembers "$group" "$user"
-                    change APPLIED "Added $user to group=$group"
+                    if ! add_user_to_group_safe "$user" "$group"; then
+                        msg_warn "Membership change was not applied; remaining operations can continue."
+                    fi
                 fi
                 ui_pause
                 ;;
@@ -4427,11 +4475,15 @@ create_user_interactive() {
     fi
 
     if confirm "Add '$user' to domain groups now?" Y; then
+        printf '
+%bNote:%b new AD users already use "Domain Users" as their primary group; it does not need to be added again.
+'             "$C_CYAN" "$C_RESET"
         while true; do
             group=""
             if group="$(select_domain_group)"; then
-                samba-tool group addmembers "$group" "$user"
-                change APPLIED "Added $user to group=$group"
+                if ! add_user_to_group_safe "$user" "$group"; then
+                    msg_warn "Could not add the selected group; the user was created successfully and the wizard will continue."
+                fi
             fi
             confirm "Add '$user' to another group?" N || break
         done
