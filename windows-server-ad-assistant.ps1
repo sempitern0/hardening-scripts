@@ -34,18 +34,19 @@
       ADAdmin      Active Directory operations console
       Provision    Guided NEW forest provisioning
       Migration    Domain migration assessment and tooling
+      DirectorySecurity  Kerberos/LDAP/SMB protocol security center
 
 .EXAMPLE
-    .\windows-server-ad-v1.1.0-professional.ps1
+    .\windows-server-ad-v1.3.0-directory-security-hardening.ps1
 
 .EXAMPLE
-    .\windows-server-ad-v1.1.0-professional.ps1 -Mode Audit
+    .\windows-server-ad-v1.3.0-directory-security-hardening.ps1 -Mode Audit
 
 .EXAMPLE
-    .\windows-server-ad-v1.1.0-professional.ps1 -Mode ADAdmin
+    .\windows-server-ad-v1.3.0-directory-security-hardening.ps1 -Mode ADAdmin
 
 .EXAMPLE
-    .\windows-server-ad-v1.1.0-professional.ps1 -Mode Validate
+    .\windows-server-ad-v1.3.0-directory-security-hardening.ps1 -Mode Validate
 
 .NOTES
     Validate in a lab before production deployment.
@@ -53,7 +54,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Audit','Validate','Harden','Backup','ADAdmin','Provision','Migration')]
+    [ValidateSet('Interactive','Audit','Validate','Harden','Backup','ADAdmin','Provision','Migration','DirectorySecurity')]
     [string]$Mode = 'Interactive',
 
     [string]$ExportPath = "$env:ProgramData\WindowsADControlPlane",
@@ -1151,6 +1152,346 @@ function Audit-SMB {
     }
 }
 
+
+function Get-KerberosCryptoInventory {
+    Assert-DomainController
+    if (-not (Import-ADModules)) { return @() }
+
+    $objects = @()
+    try {
+        $objects += @(Get-ADComputer -Filter * -Properties msDS-SupportedEncryptionTypes,ServicePrincipalName,PasswordLastSet,DNSHostName)
+    }
+    catch {}
+
+    try {
+        $objects += @(Get-ADUser -LDAPFilter '(&(objectCategory=person)(objectClass=user)(servicePrincipalName=*))' `
+            -Properties msDS-SupportedEncryptionTypes,ServicePrincipalName,PasswordLastSet)
+    }
+    catch {}
+
+    foreach ($obj in $objects) {
+        $mask = 0
+        $raw = $obj.'msDS-SupportedEncryptionTypes'
+        if ($null -ne $raw) {
+            try { $mask = [int]$raw } catch { $mask = 0 }
+        }
+
+        $hasRc4 = (($mask -band 0x4) -ne 0)
+        $hasAes = (($mask -band 0x18) -ne 0)
+
+        $classification = if ($mask -eq 0) {
+            'IMPLICIT_DEFAULT'
+        }
+        elseif ($hasRc4 -and $hasAes) {
+            'RC4_AND_AES'
+        }
+        elseif ($hasRc4) {
+            'RC4_ONLY'
+        }
+        elseif ($hasAes) {
+            'AES_READY'
+        }
+        else {
+            'OTHER'
+        }
+
+        [pscustomobject]@{
+            Account                    = $obj.SamAccountName
+            ObjectClass                = $obj.ObjectClass
+            SupportedEncryptionTypes   = $raw
+            Classification             = $classification
+            PasswordLastSet            = $obj.PasswordLastSet
+            SPNCount                   = @($obj.ServicePrincipalName).Count
+        }
+    }
+}
+
+function Get-KdcHardeningEvents {
+    param([int]$Days = 30)
+
+    if (-not $script:IsDomainController) { return @() }
+
+    $ids = 201..209
+    try {
+        return @(Get-WinEvent -FilterHashtable @{
+            LogName      = 'System'
+            ProviderName = 'Kdcsvc'
+            StartTime    = (Get-Date).AddDays(-1 * $Days)
+        } -ErrorAction Stop | Where-Object { $_.Id -in $ids })
+    }
+    catch {
+        return @()
+    }
+}
+
+function Audit-DirectoryProtocolSecurity {
+    Write-Step 'Directory protocol security'
+
+    if (-not $script:IsDomainController) {
+        Add-Result 'AD Security' 'Directory protocol security' 'SKIP' 'Not a Domain Controller' 'DC only'
+        return
+    }
+
+    $generation = Get-WindowsServerGeneration -Info $script:ServerInfo
+
+    # SMB signing - both directions matter for a DC.
+    if (Test-Command 'Get-SmbServerConfiguration') {
+        try {
+            $s = Get-SmbServerConfiguration
+            Add-Result 'AD Security' 'SMB server signing required' `
+                $(if ($s.RequireSecuritySignature) { 'PASS' } else { 'FAIL' }) `
+                ("RequireSecuritySignature={0}" -f $s.RequireSecuritySignature) `
+                'True on a Domain Controller'
+        }
+        catch {}
+    }
+
+    if (Test-Command 'Get-SmbClientConfiguration') {
+        try {
+            $c = Get-SmbClientConfiguration
+            Add-Result 'AD Security' 'SMB client signing required' `
+                $(if ($c.RequireSecuritySignature) { 'PASS' } else { 'WARN' }) `
+                ("RequireSecuritySignature={0}" -f $c.RequireSecuritySignature) `
+                'True for privileged/DC outbound SMB'
+        }
+        catch {}
+    }
+
+    # LDAP signing and channel binding.
+    $ntds = 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Parameters'
+    $ldapSigning = Get-RegistryValueSafe -Path $ntds -Name 'LDAPServerIntegrity'
+    $ldapCbt = Get-RegistryValueSafe -Path $ntds -Name 'LdapEnforceChannelBinding'
+
+    if ($null -eq $ldapSigning -and $generation -eq '2025') {
+        Add-Result 'AD Security' 'LDAP server signing' 'INFO' `
+            'No explicit LDAPServerIntegrity value; Server 2025 enforcement/default policy may apply' `
+            'Require signing'
+    }
+    else {
+        Add-Result 'AD Security' 'LDAP server signing' `
+            $(if ($ldapSigning -eq 2) { 'PASS' } elseif ($null -eq $ldapSigning) { 'WARN' } else { 'FAIL' }) `
+            ("LDAPServerIntegrity={0}" -f $(if ($null -eq $ldapSigning) { '<not set>' } else { $ldapSigning })) `
+            '2 (Require signing)'
+    }
+
+    Add-Result 'AD Security' 'LDAP channel binding' `
+        $(if ($ldapCbt -eq 2) { 'PASS' } elseif ($ldapCbt -eq 1) { 'WARN' } elseif ($null -eq $ldapCbt) { 'INFO' } else { 'FAIL' }) `
+        ("LdapEnforceChannelBinding={0}" -f $(if ($null -eq $ldapCbt) { '<not set>' } else { $ldapCbt })) `
+        '2 after compatibility validation'
+
+    # LAN Manager / NTLMv1 posture.
+    $lsaPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+    $lm = Get-RegistryValueSafe -Path $lsaPath -Name 'LmCompatibilityLevel'
+    Add-Result 'AD Security' 'LAN Manager authentication level' `
+        $(if ($lm -ge 5) { 'PASS' } elseif ($null -eq $lm) { 'INFO' } else { 'WARN' }) `
+        ("LmCompatibilityLevel={0}" -f $(if ($null -eq $lm) { '<not set>' } else { $lm })) `
+        '5 where legacy NTLMv1 compatibility is not required'
+
+    # 2026 Kerberos RC4 enforcement / explicit overrides.
+    $kdcPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\Kdc'
+    $ddset = Get-RegistryValueSafe -Path $kdcPath -Name 'DefaultDomainSupportedEncTypes'
+    if ($null -eq $ddset) {
+        Add-Result 'Kerberos' 'DefaultDomainSupportedEncTypes' 'INFO' `
+            'Not explicitly configured; current Windows Update KDC default applies' `
+            'AES-first/AES-only on current patched DCs'
+    }
+    else {
+        $ddsetInt = [int]$ddset
+        $hasRc4 = (($ddsetInt -band 0x4) -ne 0)
+        $hasAes = (($ddsetInt -band 0x18) -ne 0)
+        Add-Result 'Kerberos' 'DefaultDomainSupportedEncTypes' `
+            $(if (-not $hasRc4 -and $hasAes) { 'PASS' } elseif ($hasRc4) { 'WARN' } else { 'INFO' }) `
+            ('0x{0:X}' -f $ddsetInt) `
+            'AES128/AES256 without RC4 (0x18) unless an explicit exception is required'
+    }
+
+    $phase = Get-RegistryValueSafe -Path $kdcPath -Name 'RC4DefaultDisablementPhase'
+    if ($null -ne $phase) {
+        Add-Result 'Kerberos' 'RC4DefaultDisablementPhase' 'WARN' `
+            ("Explicit legacy transition value={0}" -f $phase) `
+            'Removed/obsolete after July 2026 enforcement on current patched DCs'
+    }
+
+    $events = @(Get-KdcHardeningEvents -Days 30)
+    $eventPath = Join-Path $script:RunPath 'kdc-hardening-events-30d.csv'
+    if ($events.Count -gt 0) {
+        $events |
+            Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, Message |
+            Export-Csv -LiteralPath $eventPath -NoTypeInformation -Encoding UTF8
+        Add-Result 'Kerberos' 'KDC hardening events 201-209' 'WARN' `
+            ("{0} event(s); {1}" -f $events.Count, $eventPath) `
+            '0 unresolved compatibility events'
+    }
+    else {
+        Add-Result 'Kerberos' 'KDC hardening events 201-209' 'PASS' `
+            'No events found in last 30 days' `
+            'No unresolved RC4 compatibility events'
+    }
+
+    $inventory = @(Get-KerberosCryptoInventory)
+    if ($inventory.Count -gt 0) {
+        $inventoryPath = Join-Path $script:RunPath 'kerberos-crypto-inventory.csv'
+        $inventory | Export-Csv -LiteralPath $inventoryPath -NoTypeInformation -Encoding UTF8
+
+        $rc4Only = @($inventory | Where-Object Classification -eq 'RC4_ONLY').Count
+        $mixed = @($inventory | Where-Object Classification -eq 'RC4_AND_AES').Count
+        $implicit = @($inventory | Where-Object Classification -eq 'IMPLICIT_DEFAULT').Count
+        $aesReady = @($inventory | Where-Object Classification -eq 'AES_READY').Count
+
+        Add-Result 'Kerberos' 'Explicit RC4-only principals' `
+            $(if ($rc4Only -eq 0) { 'PASS' } else { 'FAIL' }) `
+            ("Count={0}" -f $rc4Only) `
+            '0 before AES-only enforcement'
+
+        Add-Result 'Kerberos' 'Explicit RC4+AES principals' `
+            $(if ($mixed -eq 0) { 'PASS' } else { 'WARN' }) `
+            ("Count={0}" -f $mixed) `
+            'Remove RC4 after validation'
+
+        Add-Result 'Kerberos' 'Implicit/default enctype principals' 'INFO' `
+            ("Count={0}" -f $implicit) `
+            'Validate against current KDC enforcement and third-party clients'
+
+        Add-Result 'Kerberos' 'Explicit AES-ready principals' 'INFO' `
+            ("Count={0}; report={1}" -f $aesReady, $inventoryPath) `
+            'Informational'
+    }
+}
+
+function Remediate-SmbSigningStrict {
+    $impact = if ($script:IsDomainController) { 'MEDIUM' } else { 'HIGH' }
+
+    if (Test-Command 'Set-SmbServerConfiguration') {
+        [void](Invoke-Change `
+            -Name 'Require SMB server signing' `
+            -Reason 'Reject unsigned inbound SMB and reduce relay/tampering exposure.' `
+            -Impact $impact `
+            -Action {
+                Set-SmbServerConfiguration -EnableSecuritySignature $true -RequireSecuritySignature $true -Force
+            } `
+            -PostCheck {
+                $s = Get-SmbServerConfiguration
+                return ($s.EnableSecuritySignature -and $s.RequireSecuritySignature)
+            })
+    }
+
+    if (Test-Command 'Set-SmbClientConfiguration') {
+        [void](Invoke-Change `
+            -Name 'Require SMB client signing' `
+            -Reason 'Require integrity protection for outbound SMB from this privileged server/DC.' `
+            -Impact $impact `
+            -Action {
+                Set-SmbClientConfiguration -RequireSecuritySignature $true -Force
+            } `
+            -PostCheck {
+                return [bool](Get-SmbClientConfiguration).RequireSecuritySignature
+            })
+    }
+}
+
+function Remediate-LdapSigning {
+    Assert-DomainController
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Parameters'
+
+    [void](Invoke-Change `
+        -Name 'Require LDAP server signing' `
+        -Reason 'Reject unsigned LDAP binds to the Domain Controller. Validate legacy LDAP clients first.' `
+        -Impact HIGH `
+        -Action {
+            New-Item -Path $path -Force | Out-Null
+            New-ItemProperty -Path $path -Name 'LDAPServerIntegrity' -PropertyType DWord -Value 2 -Force | Out-Null
+        } `
+        -PostCheck {
+            return ((Get-RegistryValueSafe -Path $path -Name 'LDAPServerIntegrity') -eq 2)
+        })
+}
+
+function Remediate-LdapChannelBinding {
+    Assert-DomainController
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Parameters'
+
+    [void](Invoke-Change `
+        -Name 'Enforce LDAP channel binding' `
+        -Reason 'Require valid TLS channel binding for LDAP over TLS. This can break legacy LDAP clients.' `
+        -Impact HIGH `
+        -Action {
+            New-Item -Path $path -Force | Out-Null
+            New-ItemProperty -Path $path -Name 'LdapEnforceChannelBinding' -PropertyType DWord -Value 2 -Force | Out-Null
+        } `
+        -PostCheck {
+            return ((Get-RegistryValueSafe -Path $path -Name 'LdapEnforceChannelBinding') -eq 2)
+        })
+}
+
+function Remediate-KerberosAesDefault {
+    Assert-DomainController
+
+    $inventory = @(Get-KerberosCryptoInventory)
+    $rc4Only = @($inventory | Where-Object Classification -eq 'RC4_ONLY')
+    $events = @(Get-KdcHardeningEvents -Days 30)
+
+    Write-Console ''
+    Write-Console ('RC4-only principals : {0}' -f $rc4Only.Count) $(if ($rc4Only.Count -gt 0) { 'Red' } else { 'Green' })
+    Write-Console ('KDC 201-209 events  : {0} in last 30 days' -f $events.Count) $(if ($events.Count -gt 0) { 'Yellow' } else { 'Green' })
+
+    if ($rc4Only.Count -gt 0) {
+        $path = Join-Path $script:RunPath 'kerberos-rc4-only-principals.csv'
+        $rc4Only | Export-Csv -LiteralPath $path -NoTypeInformation -Encoding UTF8
+        Write-Console ("AES-only change blocked. Remediate explicit RC4-only principals first: {0}" -f $path) Red
+        return
+    }
+
+    if ($events.Count -gt 0) {
+        Write-Console 'Recent KDC compatibility events exist. Review them before enforcement.' Yellow
+    }
+
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Kdc'
+    [void](Invoke-Change `
+        -Name 'Set Kerberos KDC default to AES128 + AES256 (0x18)' `
+        -Reason 'Remove RC4 from the default KDC service-ticket encryption assumption after compatibility review.' `
+        -Impact HIGH `
+        -Action {
+            New-Item -Path $path -Force | Out-Null
+            New-ItemProperty -Path $path -Name 'DefaultDomainSupportedEncTypes' -PropertyType DWord -Value 0x18 -Force | Out-Null
+        } `
+        -PostCheck {
+            return ((Get-RegistryValueSafe -Path $path -Name 'DefaultDomainSupportedEncTypes') -eq 0x18)
+        })
+}
+
+function Show-DirectorySecurityMenu {
+    Assert-DomainController
+
+    while ($true) {
+        if ($script:MainMenuRequested) { return }
+        Write-MenuHeader 'DIRECTORY PROTOCOL SECURITY' 'Kerberos RC4/AES posture, LDAP signing/channel binding and strict SMB integrity'
+        Write-MenuItem '1' 'Full protocol audit' 'Kerberos principal inventory, KDC events, LDAP and SMB signing'
+        Write-MenuItem '2' 'Require SMB signing' 'Require inbound + outbound SMB signing on this server/DC' Good
+        Write-MenuItem '3' 'Require LDAP signing' 'Reject unsigned LDAP binds after client compatibility review' Warn
+        Write-MenuItem '4' 'LDAP channel binding' 'Require TLS channel binding; high compatibility impact' Danger
+        Write-MenuItem '5' 'Kerberos RC4 readiness' 'Show service/computer encryption inventory and KDC events'
+        Write-MenuItem '6' 'Explicit AES-only KDC default' 'Set DefaultDomainSupportedEncTypes=0x18 after readiness scan' Danger
+        Write-MenuNavigation
+        Write-Rule
+
+        switch (Read-MenuChoice -Default '1') {
+            '1' { Audit-DirectoryProtocolSecurity; Pause-ControlPlane }
+            '2' { Remediate-SmbSigningStrict; Pause-ControlPlane }
+            '3' { Remediate-LdapSigning; Pause-ControlPlane }
+            '4' { Remediate-LdapChannelBinding; Pause-ControlPlane }
+            '5' {
+                $script:Results.Clear()
+                Audit-DirectoryProtocolSecurity
+                Pause-ControlPlane
+            }
+            '6' { Remediate-KerberosAesDefault; Pause-ControlPlane }
+            'H' { $script:MainMenuRequested = $true; return }
+            '0' { return }
+            default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
+        }
+    }
+}
+
 function Audit-RemoteAccess {
     Write-Step 'Remote access'
 
@@ -1291,7 +1632,7 @@ function Audit-Updates {
 }
 
 function Invoke-HostAudit {
-    Set-StepPlan 9
+    Set-StepPlan 10
 
     Audit-Compatibility
     Audit-Network
@@ -1301,6 +1642,7 @@ function Invoke-HostAudit {
     Audit-RemoteAccess
     Audit-Administrators
     Audit-LoggingNameResolution
+    Audit-DirectoryProtocolSecurity
     Audit-Updates
 
     Complete-Progress
@@ -1556,15 +1898,7 @@ function Remediate-RdpNla {
 }
 
 function Remediate-Smb {
-    if (Test-Command 'Set-SmbServerConfiguration') {
-        [void](Invoke-Change `
-            -Name 'Enable SMB server signing capability' `
-            -Reason 'Provide integrity protection for SMB traffic.' `
-            -Impact MEDIUM `
-            -Action {
-                Set-SmbServerConfiguration -EnableSecuritySignature $true -Force
-            })
-    }
+    Remediate-SmbSigningStrict
 
     if (Test-Command 'Set-SmbClientConfiguration') {
         [void](Invoke-Change `
@@ -3909,6 +4243,9 @@ function Show-SecurityMenu {
         Write-MenuItem '6' 'SMB controls' 'Signing capability, guest logons, SMBv1 member-server handling'
         Write-MenuItem '7' 'LLMNR' 'Disable multicast name resolution' Warn
         Write-MenuItem '8' 'PowerShell logging' 'Script block + module logging'
+        if ($script:IsDomainController) {
+            Write-MenuItem '9' 'Directory protocol security' 'Kerberos AES/RC4, LDAP signing/channel binding and strict SMB' Good
+        }
         Write-MenuNavigation
         Write-Rule
 
@@ -3921,6 +4258,10 @@ function Show-SecurityMenu {
             '6' { Remediate-Smb; Pause-ControlPlane }
             '7' { Remediate-Llmnr; Pause-ControlPlane }
             '8' { Remediate-PowerShellLogging; Pause-ControlPlane }
+            '9' {
+                if ($script:IsDomainController) { Show-DirectorySecurityMenu }
+                else { Write-Console 'Directory protocol security requires a Domain Controller.' Yellow; Pause-ControlPlane }
+            }
             'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
@@ -3943,6 +4284,7 @@ function Show-AdOperationsMenu {
         Write-MenuItem '7' 'Backup & recovery' 'Change-set, GPO and system-state backup'
         Write-MenuItem '8' 'Host security' 'Role-aware server hardening'
         Write-MenuItem '9' 'Domain migration' 'Assessment, inventory, trusts and migration packages' Warn
+        Write-MenuItem '10' 'Directory protocol security' 'Kerberos/LDAP/SMB security posture for the Domain Controller' Good
         Write-MenuNavigation
         Write-Rule
 
@@ -3956,6 +4298,7 @@ function Show-AdOperationsMenu {
             '7' { Show-RecoveryMenu }
             '8' { Show-SecurityMenu }
             '9' { Show-DomainMigrationMenu }
+            '10' { Show-DirectorySecurityMenu }
             'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
@@ -3985,6 +4328,9 @@ function Show-MainMenu {
         Write-MenuItem '6' 'Provision new AD forest' 'First-DC workflow; static IPv4 required' Warn
         Write-MenuItem '7' 'Current findings' 'Display latest audit/validation results'
         Write-MenuItem '8' 'Domain migration center' 'Assessment, inventory and client-migration tooling' Warn
+        if ($script:IsDomainController) {
+            Write-MenuItem '9' 'Directory protocol security' 'Kerberos AES/RC4, LDAP signing/channel binding and strict SMB' Good
+        }
         Write-MenuItem '0' 'Exit' 'Close control plane' Danger
         Write-Rule
 
@@ -4025,6 +4371,10 @@ function Show-MainMenu {
             '8' {
                 if ($script:IsDomainController) { Show-DomainMigrationMenu }
                 else { Write-Console 'Domain migration center requires a Domain Controller.' Yellow; Pause-ControlPlane }
+            }
+            '9' {
+                if ($script:IsDomainController) { Show-DirectorySecurityMenu }
+                else { Write-Console 'Directory protocol security requires a Domain Controller.' Yellow; Pause-ControlPlane }
             }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
@@ -4164,6 +4514,15 @@ try {
 
         'Migration' {
             Show-DomainMigrationMenu
+        }
+
+        'DirectorySecurity' {
+            if ($script:IsDomainController) {
+                Show-DirectorySecurityMenu
+            }
+            else {
+                throw 'DirectorySecurity mode requires a Domain Controller.'
+            }
         }
 
         default {

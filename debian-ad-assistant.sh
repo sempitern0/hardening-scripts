@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 4.5.0-migration-nav
+# Version 4.6.0-samba-kerberos-hardening
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -40,7 +40,7 @@ IFS=$'\n\t'
 umask 077
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="4.5.0-migration-nav"
+SCRIPT_VERSION="4.6.0-samba-kerberos-hardening"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -237,7 +237,7 @@ ui_menu_item() {
 
 ui_menu_exit() {
     ui_menu_item "0" "Back" "Return to previous console" "$C_RED"
-    ui_menu_item "H" "Main menu" "Jump directly to the AD/DC Operations Console" "$C_MAGENTA"
+    ui_menu_item "H" "Main menu" "Jump to the full AD/DC Main Control Plane" "$C_MAGENTA"
 }
 
 ui_menu_root_exit() {
@@ -391,6 +391,8 @@ Usage:
   sudo bash $0 --permissions
   sudo bash $0 --gpo
   sudo bash $0 --security
+  sudo bash $0 --samba-security
+  sudo bash $0 --kerberos
   sudo bash $0 --migration
   sudo bash $0 --install-cli
   sudo bash $0 --cli-info
@@ -399,7 +401,8 @@ Usage:
 
 Convenience commands installed by --install-cli:
   adctl, ad-users, ad-groups, ad-computers, ad-permissions,
-  ad-gpo, ad-security, ad-migrate, ad-audit, ad-validate, ad-status, ad-backup, ad-tools
+  ad-gpo, ad-security, ad-samba, ad-kerberos, ad-migrate,
+  ad-audit, ad-validate, ad-status, ad-backup, ad-tools
 
 Safety:
   - Existing sam.ldb is never reprovisioned.
@@ -412,13 +415,16 @@ EOF
 detect_invocation_alias() {
     [[ "$MODE" == "interactive" ]] || return 0
     case "$(basename "$0")" in
-        adctl) MODE="admin" ;;
+        adctl) MODE="manage" ;;
+        ad-ops) MODE="admin" ;;
         ad-users) MODE="users" ;;
         ad-groups) MODE="groups" ;;
         ad-computers) MODE="computers" ;;
         ad-permissions) MODE="permissions" ;;
         ad-gpo) MODE="gpo" ;;
         ad-security) MODE="security" ;;
+        ad-samba) MODE="samba-security" ;;
+        ad-kerberos) MODE="kerberos-security" ;;
         ad-migrate) MODE="migration" ;;
         ad-audit) MODE="audit" ;;
         ad-validate) MODE="validate" ;;
@@ -444,6 +450,8 @@ parse_args() {
             --permissions) MODE="permissions" ;;
             --gpo) MODE="gpo" ;;
             --security) MODE="security" ;;
+            --samba-security|--samba-hardening) MODE="samba-security" ;;
+            --kerberos|--kerberos-security) MODE="kerberos-security" ;;
             --migration|--migrate) MODE="migration" ;;
             --install-cli) MODE="install-cli" ;;
             --cli-info|--tools) MODE="cli-info" ;;
@@ -1015,20 +1023,678 @@ configure_hostname_hosts() {
 set_smb_global_option() {
     local key="$1" value="$2"
     require_cmd python3 "safe smb.conf editing" || return 1
-    python3 -c '
+
+    python3 - "$key" "$value" <<'PY'
 from pathlib import Path
-import re,sys
-p=Path("/etc/samba/smb.conf")
-key,value=sys.argv[1],sys.argv[2]
-t=p.read_text(encoding="utf-8")
-rx=re.compile(r"(?mi)^[ \t]*"+re.escape(key)+r"[ \t]*=.*$")
-line="\t%s = %s"%(key,value)
-if rx.search(t):
-    t=rx.sub(line,t,count=1)
+import re, sys
+
+path = Path("/etc/samba/smb.conf")
+key, value = sys.argv[1], sys.argv[2]
+lines = path.read_text(encoding="utf-8").splitlines()
+
+global_start = None
+global_end = len(lines)
+
+for i, line in enumerate(lines):
+    if re.match(r"^\s*\[global\]\s*$", line, re.I):
+        global_start = i
+        break
+
+if global_start is None:
+    raise SystemExit("smb.conf has no [global] section")
+
+for i in range(global_start + 1, len(lines)):
+    if re.match(r"^\s*\[[^\]]+\]\s*$", lines[i]):
+        global_end = i
+        break
+
+assignment = re.compile(r"^\s*" + re.escape(key) + r"\s*=", re.I)
+replacement = f"\t{key} = {value}"
+
+for i in range(global_start + 1, global_end):
+    if assignment.match(lines[i]):
+        lines[i] = replacement
+        break
 else:
-    t=re.sub(r"(?mi)^\[global\][ \t]*$",lambda m:m.group(0)+"\n"+line,t,count=1)
-p.write_text(t,encoding="utf-8")
-' "$key" "$value"
+    lines.insert(global_start + 1, replacement)
+
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+}
+
+
+remove_smb_global_option() {
+    local key="$1"
+    require_cmd python3 "safe smb.conf editing" || return 1
+
+    python3 - "$key" <<'PY'
+from pathlib import Path
+import re, sys
+
+path = Path("/etc/samba/smb.conf")
+key = sys.argv[1]
+lines = path.read_text(encoding="utf-8").splitlines()
+
+global_start = None
+global_end = len(lines)
+for i, line in enumerate(lines):
+    if re.match(r"^\s*\[global\]\s*$", line, re.I):
+        global_start = i
+        break
+if global_start is None:
+    raise SystemExit("smb.conf has no [global] section")
+
+for i in range(global_start + 1, len(lines)):
+    if re.match(r"^\s*\[[^\]]+\]\s*$", lines[i]):
+        global_end = i
+        break
+
+assignment = re.compile(r"^\s*" + re.escape(key) + r"\s*=", re.I)
+out = []
+for i, line in enumerate(lines):
+    if global_start < i < global_end and assignment.match(line):
+        continue
+    out.append(line)
+
+path.write_text("\n".join(out) + "\n", encoding="utf-8")
+PY
+}
+
+samba_parameter_supported() {
+    local key="$1"
+    testparm -s --parameter-name="$key" >/dev/null 2>&1
+}
+
+samba_effective_value() {
+    local key="$1"
+    testparm -s --parameter-name="$key" 2>/dev/null |
+        tail -n1 |
+        sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+samba_version_string() {
+    samba -V 2>/dev/null | sed -E 's/^[Vv]ersion[[:space:]]+//' | head -n1
+}
+
+samba_security_result() {
+    local key="$1" expected="$2" mode="${3:-exact}"
+    local actual=""
+    if ! samba_parameter_supported "$key"; then
+        result INFO "Samba: $key" "unsupported by installed version" "capability-dependent"
+        return 0
+    fi
+    actual="$(samba_effective_value "$key")"
+
+    case "$mode" in
+        exact)
+            [[ "${actual,,}" == "${expected,,}" ]] \
+                && result PASS "Samba: $key" "$actual" "$expected" \
+                || result WARN "Samba: $key" "${actual:-unset}" "$expected"
+            ;;
+        oneof)
+            case "|${expected,,}|" in
+                *"|${actual,,}|"*) result PASS "Samba: $key" "$actual" "$expected" ;;
+                *) result WARN "Samba: $key" "${actual:-unset}" "$expected" ;;
+            esac
+            ;;
+    esac
+}
+
+audit_samba_transport_security() {
+    section "SAMBA TRANSPORT & AUTHENTICATION SECURITY"
+    printf '  %-27s %s\n' "Samba version" "$(samba_version_string)"
+    printf '  %-27s %s\n' "Role" "$SAMBA_ROLE"
+
+    samba_security_result "ldap server require strong auth" "yes"
+    samba_security_result "client ldap sasl wrapping" "seal"
+    samba_security_result "server signing" "mandatory|default" oneof
+    samba_security_result "server min protocol" "SMB2_02|SMB2_10|SMB3|SMB3_00|SMB3_02|SMB3_11" oneof
+    samba_security_result "ntlm auth" "ntlmv2-only|disabled" oneof
+    samba_security_result "lanman auth" "no"
+    samba_security_result "raw NTLMv2 auth" "no"
+    samba_security_result "allow nt4 crypto" "no"
+    samba_security_result "reject md5 clients" "yes"
+    samba_security_result "reject md5 servers" "yes"
+    samba_security_result "server schannel" "yes"
+    samba_security_result "server schannel require seal" "yes"
+
+    if samba_parameter_supported "tls enabled"; then
+        samba_security_result "tls enabled" "yes"
+    fi
+
+    local mapguest
+    mapguest="$(samba_effective_value "map to guest" 2>/dev/null || true)"
+    case "${mapguest,,}" in
+        never|"") result PASS "Samba guest mapping" "${mapguest:-Never}" "Never" ;;
+        *) result WARN "Samba guest mapping" "$mapguest" "Never on an AD DC" ;;
+    esac
+
+    local sections custom=""
+    sections="$(
+        testparm -s 2>/dev/null |
+        awk '/^\[[^]]+\]/{gsub(/^\[|\]$/,""); print tolower($0)}'
+    )"
+    while IFS= read -r s; do
+        case "$s" in
+            global|sysvol|netlogon|"") ;;
+            *) custom+="${s} " ;;
+        esac
+    done <<<"$sections"
+
+    if [[ -z "$custom" ]]; then
+        result PASS "Dedicated AD/DC shares" "sysvol + netlogon only" "dedicated authentication controller"
+    else
+        result WARN "Dedicated AD/DC shares" "additional shares: $custom" "move file/print workloads to member servers"
+    fi
+}
+
+audit_kerberos_client_config() {
+    section "KERBEROS CLIENT CONFIGURATION"
+
+    local generated="/var/lib/samba/private/krb5.conf"
+    local installed="/etc/krb5.conf"
+    local realm weak stale
+
+    [[ -r "$generated" ]] \
+        && result PASS "Samba-generated krb5.conf" "$generated" "present" \
+        || result FAIL "Samba-generated krb5.conf" "missing" "$generated"
+
+    [[ -r "$installed" ]] \
+        && result PASS "System krb5.conf" "$installed" "readable" \
+        || { result FAIL "System krb5.conf" "missing/unreadable" "$installed"; return 1; }
+
+    realm="$(awk -F= '/^[[:space:]]*default_realm[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);print $2;exit}' "$installed" || true)"
+    [[ "${realm^^}" == "${REALM^^}" ]] \
+        && result PASS "Kerberos default realm" "$realm" "$REALM" \
+        || result WARN "Kerberos default realm" "${realm:-unset}" "$REALM"
+
+    if grep -Eiq '^[[:space:]]*(allow_weak_crypto|allow_rc4|allow_des3)[[:space:]]*=[[:space:]]*(true|yes|1)' "$installed"; then
+        weak="$(grep -Ei '^[[:space:]]*(allow_weak_crypto|allow_rc4|allow_des3)[[:space:]]*=' "$installed" | tr '\n' '; ')"
+        result WARN "MIT Kerberos weak crypto overrides" "$weak" "no explicit weak-crypto enable"
+    else
+        result PASS "MIT Kerberos weak crypto overrides" "not enabled" "not enabled"
+    fi
+
+    stale="$(grep -Ei '^[[:space:]]*(default_tkt_enctypes|default_tgs_enctypes)[[:space:]]*=' "$installed" || true)"
+    if [[ -n "$stale" ]]; then
+        result WARN "Static client enctype lists" "$(tr '\n' '; ' <<<"$stale")" "avoid stale default_tkt/default_tgs lists"
+    else
+        result PASS "Static client enctype lists" "not configured" "library defaults / permitted_enctypes"
+    fi
+
+    if [[ -r "$generated" ]] && cmp -s "$generated" "$installed"; then
+        result PASS "Kerberos config provenance" "matches Samba-generated config" "canonical DC client config"
+    else
+        result INFO "Kerberos config provenance" "custom/modified from Samba-generated file" "review if multiple realms/trusts are intentional"
+    fi
+
+    if command_exists klist && KRB5CCNAME="$KRB5CCNAME" klist -s >/dev/null 2>&1; then
+        local principal
+        principal="$(KRB5CCNAME="$KRB5CCNAME" klist 2>/dev/null | awk -F': ' '/Default principal:/{print $2;exit}')"
+        result PASS "Kerberos credential cache" "$principal" "valid isolated assistant ticket"
+    else
+        result INFO "Kerberos credential cache" "no current ticket" "ticket acquired on demand"
+    fi
+}
+
+repair_kerberos_client_config() {
+    section "KERBEROS CLIENT CONFIG REPAIR"
+    local generated="/var/lib/samba/private/krb5.conf"
+
+    [[ -r "$generated" ]] || {
+        msg_warn "Missing Samba-generated Kerberos configuration: $generated"
+        return 1
+    }
+
+    printf 'The DC client configuration will be replaced with Samba-generated krb5.conf.\n'
+    printf 'If this host intentionally contains multiple Kerberos realms, review/merge manually instead.\n'
+    confirm "Install Samba-generated /etc/krb5.conf?" N || return 0
+
+    backup_file /etc/krb5.conf
+    install -o root -g root -m 0644 "$generated" /etc/krb5.conf
+
+    local realm
+    realm="$(awk -F= '/^[[:space:]]*default_realm[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);print $2;exit}' /etc/krb5.conf || true)"
+    if [[ "${realm^^}" != "${REALM^^}" ]]; then
+        fail_msg "Installed Kerberos realm '$realm' does not match '$REALM'."
+        return 1
+    fi
+
+    change APPLIED "Reinstalled /etc/krb5.conf from Samba-generated DC configuration"
+    result PASS "Kerberos client config" "/etc/krb5.conf" "Samba-generated canonical config"
+}
+
+get_ntp_signd_dir() {
+    local dir=""
+    if command_exists samba; then
+        dir="$(samba -b 2>/dev/null | awk -F': ' '/NTP_SIGND_SOCKET_DIR/{print $2;exit}' | xargs || true)"
+    fi
+    [[ -n "$dir" ]] || dir="/var/lib/samba/ntp_signd"
+    printf '%s' "$dir"
+}
+
+get_chrony_runtime_group() {
+    local candidate
+    for candidate in _chrony chrony; do
+        getent group "$candidate" >/dev/null 2>&1 && { printf '%s' "$candidate"; return 0; }
+    done
+    return 1
+}
+
+chrony_supports_ntp_signd() {
+    local tmp dir
+    command_exists chronyd || return 1
+    dir="$(get_ntp_signd_dir)"
+    tmp="${RUN_ROOT}/chrony-ntpsignd-test.conf"
+    printf 'ntpsigndsocket %s\n' "$dir" >"$tmp"
+    chronyd -p -f "$tmp" >/dev/null 2>&1
+}
+
+audit_signed_domain_time() {
+    section "SIGNED DOMAIN TIME / CHRONY"
+    local dir group expected_group=""
+    dir="$(get_ntp_signd_dir)"
+    expected_group="$(get_chrony_runtime_group 2>/dev/null || true)"
+
+    systemctl is-active --quiet chrony \
+        && result PASS "Chrony service" "active" "active" \
+        || result WARN "Chrony service" "$(safe_systemctl_state chrony)" "active"
+
+    if chrony_supports_ntp_signd; then
+        result PASS "Chrony MS-SNTP capability" "ntpsigndsocket supported" "supported"
+    else
+        result WARN "Chrony MS-SNTP capability" "ntpsigndsocket not accepted" "required for signed Windows domain time"
+        return 0
+    fi
+
+    if [[ -d "$dir" ]]; then
+        group="$(stat -c '%G' "$dir" 2>/dev/null || true)"
+        result PASS "Samba ntp_signd directory" "$dir group=$group" "present"
+        if [[ -n "$expected_group" && "$group" != "$expected_group" ]]; then
+            result WARN "ntp_signd group access" "$group" "$expected_group"
+        elif [[ -n "$expected_group" ]]; then
+            result PASS "ntp_signd group access" "$group" "$expected_group"
+        fi
+    else
+        result WARN "Samba ntp_signd directory" "$dir missing" "present after Samba AD/DC start"
+    fi
+
+    if grep -RqsE "^[[:space:]]*ntpsigndsocket[[:space:]]+${dir//\//\\/}([[:space:]]|$)" /etc/chrony 2>/dev/null; then
+        result PASS "Chrony signed-time config" "$dir" "configured"
+    else
+        result WARN "Chrony signed-time config" "ntpsigndsocket not configured" "$dir"
+    fi
+
+    if command_exists chronyc; then
+        local tracking
+        tracking="$(chronyc -n tracking 2>/dev/null | awk -F': ' '/Leap status/{print $2;exit}' || true)"
+        [[ "${tracking,,}" == "normal" ]] \
+            && result PASS "Chrony synchronization" "$tracking" "Normal" \
+            || result WARN "Chrony synchronization" "${tracking:-unknown}" "Normal"
+    fi
+}
+
+configure_signed_domain_time() {
+    local dir group conf="/etc/chrony/conf.d/91-samba-ad-signed-time.conf"
+
+    chrony_supports_ntp_signd || {
+        msg_warn "Installed chronyd does not accept the ntpsigndsocket directive."
+        return 1
+    }
+
+    dir="$(get_ntp_signd_dir)"
+    group="$(get_chrony_runtime_group 2>/dev/null || true)"
+    [[ -n "$group" ]] || {
+        msg_warn "Unable to determine chrony runtime group (_chrony/chrony)."
+        return 1
+    }
+
+    mkdir -p "$dir" /etc/chrony/conf.d
+    chown root:"$group" "$dir"
+    chmod 0750 "$dir"
+
+    backup_file "$conf"
+    cat >"$conf" <<EOF
+# Managed by ${SCRIPT_NAME} ${SCRIPT_VERSION}
+# Signed MS-SNTP responses for Active Directory domain members.
+ntpsigndsocket ${dir}
+EOF
+    chmod 0644 "$conf"
+
+    if ! chronyd -p >/dev/null 2>&1; then
+        msg_warn "Chrony configuration validation failed; signed-time fragment will be removed."
+        rm -f "$conf"
+        return 1
+    fi
+
+    systemctl restart chrony
+    systemctl is-active --quiet chrony || {
+        msg_warn "chrony did not return active after signed-time configuration."
+        return 1
+    }
+
+    change APPLIED "Configured Chrony signed MS-SNTP via $dir"
+    result PASS "Signed domain time" "$dir / group=$group" "chrony + Samba ntp_signd"
+}
+
+apply_samba_safe_security_baseline() {
+    section "SAMBA SAFE SECURITY BASELINE"
+    printf 'This profile keeps Windows 7+/SMB2 compatibility and does NOT force SMB3 encryption or AES-only Kerberos.\n'
+    printf 'It makes secure AD/DC defaults explicit and protects LDAP/SMB/NTLM downgrade surfaces.\n\n'
+    confirm "Apply the compatibility-safe Samba AD/DC baseline?" N || return 0
+
+    local snapshot="${RUN_ROOT}/smb.conf.pre-safe-hardening"
+    cp -a /etc/samba/smb.conf "$snapshot"
+    backup_file /etc/samba/smb.conf
+
+    local spec key value
+    local -a baseline=(
+        "ldap server require strong auth|yes"
+        "client ldap sasl wrapping|seal"
+        "server signing|mandatory"
+        "server min protocol|SMB2_02"
+        "client ipc signing|mandatory"
+        "ntlm auth|ntlmv2-only"
+        "lanman auth|no"
+        "raw NTLMv2 auth|no"
+        "allow nt4 crypto|no"
+        "map to guest|Never"
+        "kdc force enable rc4 weak session keys|no"
+    )
+
+    for spec in "${baseline[@]}"; do
+        IFS='|' read -r key value <<<"$spec"
+        if samba_parameter_supported "$key"; then
+            set_smb_global_option "$key" "$value"
+        else
+            msg_info "Skipping unsupported Samba parameter: $key"
+        fi
+    done
+
+    if ! testparm -s >/dev/null 2>&1; then
+        cp -a "$snapshot" /etc/samba/smb.conf
+        msg_error "testparm rejected the hardened smb.conf; original configuration restored."
+        return 1
+    fi
+
+    if ! systemctl restart samba-ad-dc || ! wait_for_samba; then
+        cp -a "$snapshot" /etc/samba/smb.conf
+        systemctl restart samba-ad-dc >/dev/null 2>&1 || true
+        msg_error "Samba health check failed after hardening; original configuration restored."
+        return 1
+    fi
+
+    if ! samba-tool domain info "$DC_IP" >/dev/null 2>&1; then
+        cp -a "$snapshot" /etc/samba/smb.conf
+        systemctl restart samba-ad-dc >/dev/null 2>&1 || true
+        msg_error "Domain discovery failed after hardening; original configuration restored."
+        return 1
+    fi
+
+    change APPLIED "Applied compatibility-safe Samba AD/DC security baseline"
+    result PASS "Samba security baseline" "applied + service validated" "secure AD/DC defaults"
+    audit_samba_transport_security
+}
+
+build_kerberos_crypto_readiness_report() {
+    local raw="${RUN_ROOT}/kerberos-principals.ldif"
+    local report="${RUN_ROOT}/kerberos-crypto-readiness.tsv"
+    local base
+    base="$(domain_dn "$DOMAIN")"
+
+    ldbsearch -H /var/lib/samba/private/sam.ldb -b "$base" \
+        '(|(objectClass=user)(objectClass=computer))' \
+        sAMAccountName objectClass servicePrincipalName msDS-SupportedEncryptionTypes pwdLastSet \
+        >"$raw" 2>/dev/null || return 1
+
+    python3 - "$raw" "$report" <<'PY'
+from pathlib import Path
+import sys
+
+raw = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+out = Path(sys.argv[2])
+
+rows = []
+for block in raw.split("\n\n"):
+    attrs = {}
+    for line in block.splitlines():
+        if ": " not in line:
+            continue
+        k, v = line.split(": ", 1)
+        attrs.setdefault(k, []).append(v)
+
+    sam = (attrs.get("sAMAccountName") or [""])[0]
+    if not sam:
+        continue
+
+    classes = [x.lower() for x in attrs.get("objectClass", [])]
+    kind = "computer" if "computer" in classes else "user"
+    spns = attrs.get("servicePrincipalName", [])
+    enc_raw = (attrs.get("msDS-SupportedEncryptionTypes") or [""])[0]
+
+    try:
+        enc = int(enc_raw, 0) if enc_raw else 0
+    except ValueError:
+        enc = 0
+
+    if enc == 0:
+        state = "IMPLICIT_DEFAULT"
+    else:
+        has_rc4 = bool(enc & 0x4)
+        has_aes = bool(enc & (0x8 | 0x10))
+        if has_rc4 and has_aes:
+            state = "RC4_AND_AES"
+        elif has_rc4:
+            state = "RC4_ONLY"
+        elif has_aes:
+            state = "AES_READY"
+        else:
+            state = "OTHER"
+
+    # Service-bearing users and all computers matter most for migration/readiness.
+    if kind == "computer" or spns:
+        rows.append((sam, kind, enc_raw or "0/unset", state, len(spns)))
+
+with out.open("w", encoding="utf-8") as fh:
+    fh.write("account\tkind\tmsDS-SupportedEncryptionTypes\tclassification\tspn_count\n")
+    for row in sorted(rows, key=lambda r: (r[3], r[0].lower())):
+        fh.write("\t".join(map(str, row)) + "\n")
+PY
+
+    printf '%s' "$report"
+}
+
+audit_kerberos_crypto_readiness() {
+    section "KERBEROS CRYPTO READINESS"
+    local report="" rc4_only=0 transitional=0 implicit=0 aes=0
+
+    if samba_parameter_supported "kdc supported enctypes"; then
+        result INFO "KDC supported enctypes" "$(samba_effective_value 'kdc supported enctypes')" "review before AES-only"
+    fi
+    if samba_parameter_supported "kdc default domain supported enctypes"; then
+        result INFO "KDC default domain enctypes" "$(samba_effective_value 'kdc default domain supported enctypes')" "AES preferred"
+    fi
+    if samba_parameter_supported "kerberos encryption types"; then
+        result INFO "Samba Kerberos client enctypes" "$(samba_effective_value 'kerberos encryption types')" "strong for AES-only profile"
+    fi
+
+    samba-tool domain level show >"${RUN_ROOT}/domain-functional-level.txt" 2>&1 || true
+    result INFO "Domain functional level" "$(tr '\n' '; ' <"${RUN_ROOT}/domain-functional-level.txt" | cut -c1-180)" "2008+ required for normal AES use"
+
+    if report="$(build_kerberos_crypto_readiness_report)"; then
+        rc4_only="$(awk -F'\t' '$4=="RC4_ONLY"{n++}END{print n+0}' "$report")"
+        transitional="$(awk -F'\t' '$4=="RC4_AND_AES"{n++}END{print n+0}' "$report")"
+        implicit="$(awk -F'\t' '$4=="IMPLICIT_DEFAULT"{n++}END{print n+0}' "$report")"
+        aes="$(awk -F'\t' '$4=="AES_READY"{n++}END{print n+0}' "$report")"
+
+        (( rc4_only == 0 )) \
+            && result PASS "Explicit RC4-only principals" "0" "0" \
+            || result WARN "Explicit RC4-only principals" "$rc4_only" "0 before AES-only enforcement"
+
+        (( transitional == 0 )) \
+            && result PASS "Explicit RC4+AES principals" "0" "0 preferred" \
+            || result WARN "Explicit RC4+AES principals" "$transitional" "review/remove RC4 where possible"
+
+        result INFO "Implicit/default enctypes" "$implicit" "validate actual client/service interoperability"
+        result INFO "Explicit AES-ready principals" "$aes" "informational"
+        printf '  %-31s %s\n' "Readiness report" "$report"
+    else
+        result WARN "Kerberos principal scan" "failed" "review manually"
+    fi
+
+    ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"
+    if command_exists kvno; then
+        KRB5CCNAME="$KRB5CCNAME" kvno "ldap/${DC_FQDN}" >/dev/null 2>&1 || true
+        KRB5CCNAME="$KRB5CCNAME" kvno "cifs/${DC_FQDN}" >/dev/null 2>&1 || true
+    fi
+
+    if command_exists klist; then
+        KRB5CCNAME="$KRB5CCNAME" klist -e >"${RUN_ROOT}/kerberos-ticket-enctypes.txt" 2>&1 || true
+        if grep -Eiq 'arcfour|rc4' "${RUN_ROOT}/kerberos-ticket-enctypes.txt"; then
+            result WARN "Current Kerberos ticket enctypes" "RC4/arcfour observed" "AES preferred"
+        else
+            result PASS "Current Kerberos ticket enctypes" "no RC4 observed in assistant cache" "AES"
+        fi
+        printf '  %-31s %s\n' "Ticket enctype evidence" "${RUN_ROOT}/kerberos-ticket-enctypes.txt"
+    fi
+}
+
+apply_kerberos_aes_only_profile() {
+    section "KERBEROS AES-ONLY ENFORCEMENT"
+
+    local report rc4_only snapshot="${RUN_ROOT}/smb.conf.pre-aes-only"
+    report="$(build_kerberos_crypto_readiness_report)" || {
+        msg_warn "Cannot build Kerberos readiness report. AES-only enforcement is blocked."
+        return 1
+    }
+    rc4_only="$(awk -F'\t' '$4=="RC4_ONLY"{n++}END{print n+0}' "$report")"
+
+    if (( rc4_only > 0 )); then
+        msg_error "AES-only enforcement blocked: $rc4_only principal(s) explicitly advertise RC4 without AES."
+        printf 'Review: %s\n' "$report"
+        return 1
+    fi
+
+    for key in "kerberos encryption types" "kdc supported enctypes" "kdc default domain supported enctypes"; do
+        samba_parameter_supported "$key" || {
+            msg_error "Installed Samba does not support required AES-only control: $key"
+            return 1
+        }
+    done
+
+    printf 'This can break legacy devices, trusts, service accounts or third-party Kerberos implementations.\n'
+    printf 'Windows 7 supports AES, but old accounts/devices may still lack usable AES keys.\n'
+    printf 'Readiness evidence: %s\n\n' "$report"
+
+    create_domain_backup no
+    confirm_high_risk "Enforce AES-only Kerberos ticket encryption on this Samba AD/DC" || return 0
+
+    cp -a /etc/samba/smb.conf "$snapshot"
+    backup_file /etc/samba/smb.conf
+
+    set_smb_global_option "kerberos encryption types" "strong"
+    set_smb_global_option "kdc supported enctypes" "aes128-cts-hmac-sha1-96 aes256-cts-hmac-sha1-96"
+    set_smb_global_option "kdc default domain supported enctypes" "aes128-cts-hmac-sha1-96 aes256-cts-hmac-sha1-96"
+    samba_parameter_supported "kdc force enable rc4 weak session keys" &&
+        set_smb_global_option "kdc force enable rc4 weak session keys" "no"
+
+    if ! testparm -s >/dev/null 2>&1 || ! systemctl restart samba-ad-dc || ! wait_for_samba; then
+        cp -a "$snapshot" /etc/samba/smb.conf
+        systemctl restart samba-ad-dc >/dev/null 2>&1 || true
+        msg_error "AES-only profile failed service validation; smb.conf restored."
+        return 1
+    fi
+
+    KRB5CCNAME="$KRB5CCNAME" kdestroy >/dev/null 2>&1 || true
+    local principal="${ADMIN_USER}@${REALM}"
+    if ! KRB5CCNAME="$KRB5CCNAME" kinit "$principal" <"$INPUT_FD"; then
+        cp -a "$snapshot" /etc/samba/smb.conf
+        systemctl restart samba-ad-dc >/dev/null 2>&1 || true
+        msg_error "Fresh Kerberos authentication failed under AES-only profile; smb.conf restored."
+        return 1
+    fi
+
+    if command_exists kvno && ! KRB5CCNAME="$KRB5CCNAME" kvno "ldap/${DC_FQDN}" >/dev/null 2>&1; then
+        cp -a "$snapshot" /etc/samba/smb.conf
+        systemctl restart samba-ad-dc >/dev/null 2>&1 || true
+        msg_error "LDAP service ticket failed under AES-only profile; smb.conf restored."
+        return 1
+    fi
+
+    change APPLIED "Enforced Samba KDC AES-only encryption profile"
+    result PASS "Kerberos AES-only profile" "AES128 + AES256 / Samba client strong" "validated with fresh ticket"
+}
+
+restore_kerberos_compatibility_defaults() {
+    section "RESTORE SAMBA KERBEROS COMPATIBILITY DEFAULTS"
+    printf 'This removes assistant-enforced AES-only overrides and returns to the installed Samba defaults.\n'
+    confirm_high_risk "Remove explicit Samba KDC/client enctype restrictions" || return 0
+
+    local snapshot="${RUN_ROOT}/smb.conf.pre-kerberos-defaults"
+    cp -a /etc/samba/smb.conf "$snapshot"
+    backup_file /etc/samba/smb.conf
+
+    remove_smb_global_option "kerberos encryption types"
+    remove_smb_global_option "kdc supported enctypes"
+    remove_smb_global_option "kdc default domain supported enctypes"
+
+    if ! testparm -s >/dev/null 2>&1 || ! systemctl restart samba-ad-dc || ! wait_for_samba; then
+        cp -a "$snapshot" /etc/samba/smb.conf
+        systemctl restart samba-ad-dc >/dev/null 2>&1 || true
+        msg_error "Compatibility-default restoration failed; previous smb.conf restored."
+        return 1
+    fi
+
+    change APPLIED "Removed explicit Samba Kerberos enctype overrides"
+    result PASS "Kerberos compatibility defaults" "installed Samba defaults restored" "service healthy"
+}
+
+audit_samba_kerberos_security() {
+    audit_samba_transport_security
+    audit_kerberos_client_config
+    audit_kerberos_crypto_readiness
+    audit_signed_domain_time
+}
+
+samba_kerberos_security_menu() {
+    while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
+        ui_menu_screen "SAMBA & KERBEROS SECURITY" "Protocol hardening, KDC crypto posture, signed time and compatibility-safe remediation"
+        ui_menu_item "1" "Full security audit" "Samba transport/auth, Kerberos config/crypto and signed time"
+        ui_menu_item "2" "Safe Samba baseline" "LDAP strong auth, signing, SMB2+, NTLMv2-only and legacy crypto blocks" "$C_GREEN"
+        ui_menu_item "3" "Kerberos config audit" "Realm, generated config provenance, weak crypto and ticket cache"
+        ui_menu_item "4" "Repair krb5.conf" "Restore Samba-generated Kerberos client configuration"
+        ui_menu_item "5" "Kerberos crypto readiness" "Inventory principals/SPNs and current ticket encryption"
+        ui_menu_item "6" "Enforce AES-only KDC" "Advanced: block RC4 after readiness scan + domain backup" "$C_RED"
+        ui_menu_item "7" "Restore KDC defaults" "Remove explicit AES-only overrides and use Samba defaults" "$C_YELLOW"
+        ui_menu_item "8" "Signed domain time" "Audit Chrony + Samba ntp_signd integration"
+        ui_menu_item "9" "Configure signed time" "Enable Chrony MS-SNTP signing for trusted AD clients" "$C_GREEN"
+        ui_menu_item "10" "Samba transport audit" "SMB, LDAP, NTLM, schannel and custom-share posture"
+        ui_menu_exit
+        ui_rule
+
+        local choice
+        choice="$(ask 'Select security operation' '1')"
+        case "$choice" in
+            1) audit_samba_kerberos_security; ui_pause ;;
+            2) apply_samba_safe_security_baseline; ui_pause ;;
+            3) audit_kerberos_client_config; ui_pause ;;
+            4) repair_kerberos_client_config; ui_pause ;;
+            5) audit_kerberos_crypto_readiness; ui_pause ;;
+            6) apply_kerberos_aes_only_profile; ui_pause ;;
+            7) restore_kerberos_compatibility_defaults; ui_pause ;;
+            8) audit_signed_domain_time; ui_pause ;;
+            9) configure_signed_domain_time; ui_pause ;;
+            10) audit_samba_transport_security; ui_pause ;;
+            H|h) MENU_MAIN_REQUESTED=1; break ;;
+            0) break ;;
+            *) msg_warn "Invalid security operation."; ui_pause ;;
+        esac
+    done
+}
+
+kerberos_security_menu() {
+    samba_kerberos_security_menu
 }
 
 configure_samba_interface_scope() {
@@ -1501,13 +2167,31 @@ configure_time() {
     mkdir -p /etc/chrony/conf.d
     backup_file /etc/chrony/conf.d/90-debian-ad.conf
     cat >/etc/chrony/conf.d/90-debian-ad.conf <<EOF
-# Managed by ${SCRIPT_NAME}.
+# Managed by ${SCRIPT_NAME} ${SCRIPT_VERSION}
+# Upstream synchronization plus NTP service restricted to the AD client scope.
 pool ${NTP_POOL} iburst maxsources 4
 allow ${AD_CLIENT_CIDR}
+makestep 1.0 3
+rtcsync
 EOF
+    chmod 0644 /etc/chrony/conf.d/90-debian-ad.conf
+
+    if ! chronyd -p >/dev/null 2>&1; then
+        fail_msg "Chrony configuration failed syntax validation."
+        return 1
+    fi
+
     systemctl enable --now chrony >/dev/null
     systemctl restart chrony
-    result PASS "Chrony" "$(safe_systemctl_state chrony)" "active"
+
+    systemctl is-active --quiet chrony \
+        && result PASS "Chrony" "active" "active" \
+        || { result FAIL "Chrony" "$(safe_systemctl_state chrony)" "active"; return 1; }
+
+    if command_exists chronyc; then
+        chronyc -n tracking >"${RUN_ROOT}/chrony-tracking.txt" 2>&1 || true
+        chronyc -n sources >"${RUN_ROOT}/chrony-sources.txt" 2>&1 || true
+    fi
 }
 
 verify_provisioned_identity() {
@@ -2257,6 +2941,12 @@ audit_security_baseline() {
         || result INFO "Fail2ban sshd" "not confirmed" "optional"
 
     audit_samba_boot_persistence
+
+    if [[ "$SAMBA_ROLE" == ad-dc || "$SAMBA_ROLE" == ad-dc-config ]]; then
+        audit_samba_transport_security
+        audit_kerberos_client_config
+        audit_signed_domain_time
+    fi
 }
 
 audit_existing() {
@@ -4956,13 +5646,16 @@ domain_migration_menu() {
 
 cli_command_catalog() {
     cat <<'EOF'
-adctl|Main control plane|Open the full AD/DC operations console.
+adctl|Main control plane|Open the full AD/DC Main Control Plane: maintenance, operations, security, backup and migration.
+ad-ops|Directory operations|Open the reduced daily users/groups/computers/permissions/GPO operations console.
 ad-users|Users|Create, inspect, edit, enable/disable, reset passwords and manage group memberships.
 ad-groups|Groups|Create, inspect and manage domain groups and their members.
 ad-computers|Computers|List/inspect domain computer accounts and show best-effort network presence.
 ad-permissions|Access & delegation|Manage memberships and advanced directory-service ACL operations.
 ad-gpo|Group Policy|Platform-aware GPO lifecycle, built-in/custom JSON library, status, scope, Ubuntu ADSys and Samba Linux.
-ad-security|Security & resilience|Boot ordering, UFW, Fail2ban, sysctl and delegated-admin hardening.
+ad-security|Host security|Boot ordering, UFW, Fail2ban, sysctl, delegated-admin and Samba/Kerberos hardening.
+ad-samba|Samba security|Samba transport/authentication hardening, signed time and Kerberos crypto posture.
+ad-kerberos|Kerberos security|Kerberos config integrity, encryption readiness, AES-only enforcement and rollback.
 ad-migrate|Domain migration|Assess domain changes, inventory scope and generate client migration packages.
 ad-audit|Audit|Run a read-only inventory and security evidence review.
 ad-validate|Validation|Run functional Samba AD/DC DNS, Kerberos, LDAP, SMB, DB and SYSVOL checks.
@@ -5032,9 +5725,12 @@ show_cli_commands() {
         "$C_GREEN" "$C_RESET" "$installed" "$C_YELLOW" "$C_RESET" "$missing"
     printf '\n'
     printf '  Examples:\n'
-    printf '    sudo adctl        %b# main operations console%b\n' "$C_DIM" "$C_RESET"
+    printf '    sudo adctl        %b# full main control plane%b\n' "$C_DIM" "$C_RESET"
+    printf '    sudo ad-ops       %b# reduced daily directory operations console%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-users     %b# user administration%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-gpo       %b# Group Policy console%b\n' "$C_DIM" "$C_RESET"
+    printf '    sudo ad-samba     %b# Samba/Kerberos security center%b\n' "$C_DIM" "$C_RESET"
+    printf '    sudo ad-kerberos  %b# Kerberos security center%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-validate  %b# full functional validation%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-tools     %b# show this catalog again%b\n' "$C_DIM" "$C_RESET"
     ui_rule
@@ -5079,6 +5775,7 @@ security_hardening_menu() {
         ui_menu_item "6" "Delegated administrator" "Verify admin, promote it, optionally disable built-in Administrator"
         ui_menu_item "7" "Full AD/DC validation" "Run DNS, Kerberos, LDAP, SMB, database and SYSVOL checks"
         ui_menu_item "8" "Repair local resolver" "Replace broken resolved stub with persistent Samba DNS /etc/resolv.conf" "$C_GREEN"
+        ui_menu_item "9" "Samba & Kerberos security" "Protocol hardening, crypto readiness and signed domain time" "$C_GREEN"
         ui_menu_exit
         ui_rule
         local choice
@@ -5092,6 +5789,7 @@ security_hardening_menu() {
             6) set_progress_plan 1; harden_delegated_admin; ui_pause ;;
             7) set_progress_plan 1; validate_ad; ui_pause ;;
             8) set_progress_plan 1; repair_local_resolver_only; ui_pause ;;
+            9) samba_kerberos_security_menu ;;
             H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
@@ -5102,7 +5800,7 @@ security_hardening_menu() {
 domain_admin_console() {
     while true; do
         MENU_MAIN_REQUESTED=0
-        ui_menu_screen "AD/DC OPERATIONS CONSOLE" "Daily administration surface for a production Samba Active Directory controller"
+        ui_menu_screen "AD/DC DAILY OPERATIONS" "Focused users, groups, computers, permissions, GPOs and routine administration"
         ui_menu_item "1" "Users" "Create, edit, enable, disable and reset domain identities"
         ui_menu_item "2" "Groups" "Manage domain groups and memberships"
         ui_menu_item "3" "Computers" "Inventory joined devices and inspect network presence"
@@ -5157,9 +5855,12 @@ CURRENT IDENTITY
 
 [AD/DNS/KERBEROS]
   [ ] sudo ${0} --validate
+  [ ] sudo ad-samba -> Full security audit
   [ ] dig @127.0.0.1 ${DC_FQDN}
   [ ] kinit ${ADMIN_USER}@${REALM}
   [ ] kvno ldap/${DC_FQDN}
+  [ ] klist -e and review ticket encryption
+  [ ] chronyc tracking / signed domain time
 
 [SECURITY]
   [ ] Review UFW rules and trusted CIDRs.
@@ -5274,6 +5975,13 @@ bootstrap_mode() {
 
     ensure_directory_baseline
 
+    # Samba creates ntp_signd as part of the AD/DC runtime. Configure Chrony
+    # only after provisioning/startup so permissions and socket path can be
+    # validated without making first-boot time service fragile.
+    if chrony_supports_ntp_signd; then
+        configure_signed_domain_time || warn_msg "Signed MS-SNTP could not be finalized; review ad-samba."
+    fi
+
     if [[ "$ENABLE_GPOS" == yes ]] && confirm "Create/link baseline GPOs?" Y; then
         manage_gpos
     else
@@ -5293,7 +6001,7 @@ bootstrap_mode() {
 
 manage_menu() {
     while true; do
-        ui_menu_screen "DOMAIN CONTROLLER MANAGEMENT" "Maintenance, recovery, security and operational administration"
+        ui_menu_screen "AD/DC MAIN CONTROL PLANE" "Maintenance, daily operations, security, recovery and migration"
         ui_menu_item "1" "Audit current state" "Inventory OS, topology, services and security evidence"
         ui_menu_item "2" "Validate AD/DC health" "Functional DNS/Kerberos/LDAP/SMB/database checks"
         ui_menu_item "3" "Repair DNS / Kerberos" "Transactional Samba DNS, resolver and Kerberos recovery"
@@ -5310,6 +6018,7 @@ manage_menu() {
         ui_menu_item "14" "Installed CLI commands" "Show shortcut status and a description of every command"
         ui_menu_item "15" "Repair local resolver" "Fix /etc/resolv.conf stub/symlink and validate AD DC discovery"
         ui_menu_item "16" "Domain migration center" "Assess domain changes and prepare coexistence/client migration"
+        ui_menu_item "17" "Samba & Kerberos security" "LDAP/SMB hardening, KDC crypto, krb5 integrity and signed time" "$C_GREEN"
         ui_menu_root_exit
         ui_rule
         local choice
@@ -5331,6 +6040,7 @@ manage_menu() {
             14) show_cli_commands; ui_pause ;;
             15) set_progress_plan 1; repair_local_resolver_only; ui_pause ;;
             16) domain_migration_menu ;;
+            17) samba_kerberos_security_menu ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -5435,6 +6145,8 @@ main() {
         permissions) prepare_existing_ad_context; permissions_admin_menu; save_config ;;
         gpo) prepare_existing_ad_context; gpo_admin_menu; save_config ;;
         security) prepare_existing_ad_context; security_hardening_menu; save_config ;;
+        samba-security) prepare_existing_ad_context; samba_kerberos_security_menu; save_config ;;
+        kerberos-security) prepare_existing_ad_context; kerberos_security_menu; save_config ;;
         migration) prepare_existing_ad_context; domain_migration_menu; save_config ;;
         install-cli) install_cli_commands ;;
         cli-info) show_cli_commands ;;
@@ -5444,7 +6156,7 @@ main() {
 
     if (( MENU_MAIN_REQUESTED )); then
         MENU_MAIN_REQUESTED=0
-        domain_admin_console
+        manage_menu
         save_config
     fi
 
