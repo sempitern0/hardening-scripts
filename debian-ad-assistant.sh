@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 4.7.1-membership-idempotency
+# Version 4.9.0-dependency-lifecycle
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -43,7 +43,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="4.7.1-membership-idempotency"
+SCRIPT_VERSION="4.9.0-dependency-lifecycle"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -120,6 +120,9 @@ RESOLVED_WAS_ACTIVE=0
 RESOLVED_WAS_ENABLED=0
 BOOTSTRAP_RESUME=0
 MENU_MAIN_REQUESTED=0
+RESET_COMPLETED=0
+RESET_RECOVERY_DIR=""
+RESET_RECOVERY_ROOT="/var/backups/debian-ad-assistant"
 
 KRB5_CACHE=""
 # Preserve the caller's cache hint for read-only diagnostics. The assistant still
@@ -400,6 +403,8 @@ Usage:
   sudo bash $0 --samba-security
   sudo bash $0 --kerberos
   sudo bash $0 --migration
+  sudo bash $0 --reset-domain
+  sudo bash $0 --dependencies
   sudo bash $0 --install-cli
   sudo bash $0 --cli-info
   sudo bash $0 --no-color
@@ -407,7 +412,7 @@ Usage:
 
 Convenience commands installed by --install-cli:
   adctl, ad-users, ad-groups, ad-computers, ad-permissions,
-  ad-gpo, ad-security, ad-samba, ad-kerberos, ad-migrate,
+  ad-gpo, ad-security, ad-samba, ad-kerberos, ad-migrate, ad-reset, ad-deps,
   ad-audit, ad-validate, ad-status, ad-backup, ad-tools
 
 Safety:
@@ -432,6 +437,8 @@ detect_invocation_alias() {
         ad-samba) MODE="samba-security" ;;
         ad-kerberos) MODE="kerberos-security" ;;
         ad-migrate) MODE="migration" ;;
+        ad-reset) MODE="reset-domain" ;;
+        ad-deps) MODE="dependencies" ;;
         ad-audit) MODE="audit" ;;
         ad-validate) MODE="validate" ;;
         ad-backup) MODE="backup" ;;
@@ -459,6 +466,8 @@ parse_args() {
             --samba-security|--samba-hardening) MODE="samba-security" ;;
             --kerberos|--kerberos-security) MODE="kerberos-security" ;;
             --migration|--migrate) MODE="migration" ;;
+            --reset-domain|--factory-reset|--decommission) MODE="reset-domain" ;;
+            --dependencies|--deps) MODE="dependencies" ;;
             --install-cli) MODE="install-cli" ;;
             --cli-info|--tools) MODE="cli-info" ;;
             --no-color) FORCE_NO_COLOR=1 ;;
@@ -503,7 +512,7 @@ ensure_privileges() {
 
 need_tty() {
     case "$MODE" in
-        bootstrap|manage|interactive|backup|admin|users|groups|computers|permissions|gpo|security|migration|install-cli)
+        bootstrap|manage|interactive|backup|admin|users|groups|computers|permissions|gpo|security|migration|reset-domain|dependencies|install-cli)
             [[ -r /dev/tty ]] || die "Mode '$MODE' requires a controlling TTY."
             INPUT_FD="/dev/tty"
             ;;
@@ -858,38 +867,305 @@ package_available() {
     apt-cache show "$1" >/dev/null 2>&1
 }
 
+
+dependency_dns_package() {
+    if package_available bind9-dnsutils; then
+        printf 'bind9-dnsutils'
+    else
+        printf 'dnsutils'
+    fi
+}
+
+dependency_catalog() {
+    local profile="${1:-existing}"
+    local dns_pkg=""
+    dns_pkg="$(dependency_dns_package)"
+
+    cat <<EOF
+samba-ad-dc|required|Samba AD/DC runtime and samba-tool
+krb5-user|required|Kerberos client tools: kinit, klist, kvno
+chrony|required|NTP/Chrony daemon and chronyc client
+ldb-tools|required|Local LDB inspection and authenticated ldbmodify workflows
+smbclient|required|SMB/SYSVOL validation
+python3|required|JSON, LDIF and safe configuration transformations
+iproute2|required|Network/interface/listener discovery
+${dns_pkg}|required|dig and DNS/SRV diagnostics
+EOF
+
+    if [[ "$profile" == "bootstrap" ]]; then
+        printf 'samba-ad-provision|required|Samba AD schema/provisioning payload\n'
+    fi
+
+    printf 'ufw|optional|Host firewall when enabled by policy\n'
+    printf 'fail2ban|optional|SSH brute-force protection when explicitly enabled\n'
+}
+
+package_installed() {
+    local pkg="$1"
+    dpkg-query -W -f='${db:Status-Abbrev}' "$pkg" 2>/dev/null | grep -Fxq 'ii '
+}
+
+package_installed_version() {
+    dpkg-query -W -f='${Version}' "$1" 2>/dev/null || true
+}
+
+package_candidate_version() {
+    apt-cache policy "$1" 2>/dev/null |
+        awk '/Candidate:/{print $2;exit}'
+}
+
+package_candidate_origin() {
+    local pkg="$1"
+    apt-cache policy "$pkg" 2>/dev/null |
+        awk '
+            /^[[:space:]]+[0-9][^[:space:]]*[[:space:]]+[0-9]+$/ { version=$1; next }
+            /^[[:space:]]+[0-9]+[[:space:]]+(https?:|file:)/ {
+                print $2
+                exit
+            }
+        '
+}
+
+dependency_required_packages() {
+    local profile="${1:-existing}"
+    dependency_catalog "$profile" |
+        awk -F'|' '$2=="required"{print $1}'
+}
+
+dependency_optional_packages() {
+    local profile="${1:-existing}"
+    dependency_catalog "$profile" |
+        awk -F'|' '$2=="optional"{print $1}'
+}
+
+dependency_missing_required() {
+    local profile="${1:-existing}" pkg
+    while IFS= read -r pkg; do
+        [[ -n "$pkg" ]] || continue
+        package_installed "$pkg" || printf '%s\n' "$pkg"
+    done < <(dependency_required_packages "$profile")
+}
+
+dependency_pending_updates() {
+    local profile="${1:-existing}" pkg installed candidate
+    while IFS= read -r pkg; do
+        [[ -n "$pkg" ]] || continue
+        package_installed "$pkg" || continue
+        installed="$(package_installed_version "$pkg")"
+        candidate="$(package_candidate_version "$pkg")"
+        if [[ -n "$candidate" && "$candidate" != "(none)" ]] &&
+           dpkg --compare-versions "$candidate" gt "$installed"; then
+            printf '%s|%s|%s\n' "$pkg" "$installed" "$candidate"
+        fi
+    done < <(dependency_required_packages "$profile")
+}
+
+show_dependency_inventory() {
+    local profile="${1:-existing}"
+    local pkg class purpose installed candidate origin state
+    section "DEPENDENCY INVENTORY"
+
+    printf '  %-22s %-9s %-20s %-20s %s\n' \
+        "PACKAGE" "CLASS" "INSTALLED" "CANDIDATE" "PURPOSE"
+    ui_rule
+
+    while IFS='|' read -r pkg class purpose; do
+        [[ -n "$pkg" ]] || continue
+        installed="$(package_installed_version "$pkg")"
+        candidate="$(package_candidate_version "$pkg")"
+        origin="$(package_candidate_origin "$pkg")"
+        [[ -n "$installed" ]] || installed="-"
+        [[ -n "$candidate" ]] || candidate="-"
+
+        printf '  %-22s %-9s %-20.20s %-20.20s %s\n' \
+            "$pkg" "$class" "$installed" "$candidate" "$purpose"
+        [[ -n "$origin" ]] &&
+            printf '    source: %s\n' "$origin"
+    done < <(dependency_catalog "$profile")
+
+    printf '\n'
+    printf '  %bPackage policy%b\n' "$C_BOLD" "$C_RESET"
+    printf '    Required packages are distribution packages only.\n'
+    printf '    Optional packages are installed only when their feature is enabled.\n'
+    printf '    The assistant does not add PPAs, third-party APT repositories, pip packages,\n'
+    printf '    curl-based installers or language-specific package managers.\n'
+    printf '    Runtime provenance follows the APT sources configured by the administrator.\n'
+}
+
+install_missing_dependency_profile() {
+    local profile="${1:-existing}"
+    local -a missing=()
+    mapfile -t missing < <(dependency_missing_required "$profile")
+
+    if ((${#missing[@]} == 0)); then
+        result PASS "Dependencies" "$profile required packages present" "complete"
+        return 0
+    fi
+
+    printf '\nMissing required distribution packages:\n'
+    printf '  - %s\n' "${missing[@]}"
+
+    if [[ "$INPUT_FD" == "/dev/null" ]]; then
+        result WARN "Dependencies" \
+            "missing: ${missing[*]}" \
+            "install via ad-deps / --dependencies"
+        return 1
+    fi
+
+    confirm "Install missing required packages now?" Y || {
+        result WARN "Dependencies" \
+            "operator declined: ${missing[*]}" \
+            "required for full functionality"
+        return 1
+    }
+
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}"
+
+    mapfile -t missing < <(dependency_missing_required "$profile")
+    if ((${#missing[@]})); then
+        fail_msg "Required packages remain missing: ${missing[*]}"
+        return 1
+    fi
+
+    result PASS "Dependencies" "$profile required packages installed" "complete"
+}
+
 install_required_packages() {
     step "Install required packages"
     require_cmd apt-get "package management" || return 1
-    apt-get update
 
-    local dns_tools="dnsutils"
-    package_available bind9-dnsutils && dns_tools="bind9-dnsutils"
+    # Minimal bootstrap profile. acl/attr were intentionally removed because
+    # the assistant does not invoke getfacl/setfacl/getfattr/setfattr.
+    install_missing_dependency_profile bootstrap || return 1
 
-    local -a pkgs=(
-        samba-ad-dc samba-ad-provision krb5-user chrony acl attr
-        ldb-tools smbclient python3 iproute2 "$dns_tools"
-    )
-    [[ "$ENABLE_UFW" == "yes" ]] && package_available ufw && pkgs+=(ufw)
-
-    DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}"
-
-    # Verify package payload, not only apt's return code.
     local chronyd_path="" chronyc_path=""
     chronyd_path="$(chronyd_binary 2>/dev/null || true)"
     chronyc_path="$(chronyc_binary 2>/dev/null || true)"
     [[ -n "$chronyd_path" && -n "$chronyc_path" ]] || {
-        fail_msg "Package 'chrony' was requested but its runtime binaries are unavailable."
-        printf '  Package state : %s
-' "$(chrony_package_status)" >&2
-        printf '  Expected      : /usr/sbin/chronyd and /usr/bin/chronyc
-' >&2
+        fail_msg "Package 'chrony' is installed but its runtime binaries are unavailable."
+        printf '  Package state : %s\n' "$(chrony_package_status)" >&2
+        printf '  Expected      : /usr/sbin/chronyd and /usr/bin/chronyc\n' >&2
         return 1
     }
 
-    result PASS "Packages" "required packages present" "Samba/Kerberos/DNS/Chrony"
+    result PASS "Packages" "minimal bootstrap dependency profile present" "Samba/Kerberos/DNS/Chrony"
     result PASS "Chrony runtime" "$chronyd_path + $chronyc_path" "installed"
 }
+
+ensure_existing_dependency_preflight() {
+    local -a missing=()
+    mapfile -t missing < <(dependency_missing_required existing)
+    ((${#missing[@]} == 0)) && return 0
+
+    printf '\n'
+    msg_warn "This existing AD/DC is missing one or more tools used by the control plane:"
+    printf '  - %s\n' "${missing[@]}"
+
+    if [[ "$INPUT_FD" != "/dev/null" ]]; then
+        install_missing_dependency_profile existing || true
+    else
+        result WARN "Dependencies" \
+            "missing: ${missing[*]}" \
+            "run sudo ad-deps"
+    fi
+}
+
+update_dependency_profile() {
+    local profile="${1:-existing}"
+    local -a updates=() pkgs=()
+    local row pkg installed candidate
+
+    apt-get update
+    mapfile -t updates < <(dependency_pending_updates "$profile")
+
+    if ((${#updates[@]} == 0)); then
+        result PASS "Dependency updates" "no package updates pending" "$profile"
+        return 0
+    fi
+
+    printf '\n%bPending dependency updates%b\n' "$C_BOLD" "$C_RESET"
+    for row in "${updates[@]}"; do
+        IFS='|' read -r pkg installed candidate <<<"$row"
+        printf '  %-22s %s -> %s\n' "$pkg" "$installed" "$candidate"
+        pkgs+=("$pkg")
+    done
+
+    # Samba updates deserve a recoverable domain backup because apt may restart
+    # services and Samba packages are version-coupled.
+    if printf '%s\n' "${pkgs[@]}" | grep -Eq '^samba-(ad-dc|ad-provision)$|^smbclient$'; then
+        printf '\nSamba-related packages are pending updates.\n'
+        if [[ "$SAMBA_ROLE" == "ad-dc" || "$SAMBA_ROLE" == "ad-dc-config" ]]; then
+            confirm "Create an online domain backup before updating Samba packages?" Y &&
+                create_domain_backup no
+        fi
+        confirm_high_risk "Update installed AD control-plane dependencies (including Samba components if listed)" ||
+            return 0
+    else
+        confirm "Update the listed dependency packages now?" N || return 0
+    fi
+
+    # Update only the explicit dependency set; do not perform dist-upgrade/full-upgrade.
+    DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y "${pkgs[@]}"
+
+    if [[ "$SAMBA_ROLE" == "ad-dc" || "$SAMBA_ROLE" == "ad-dc-config" ]]; then
+        systemctl is-active --quiet samba-ad-dc ||
+            systemctl restart samba-ad-dc >/dev/null 2>&1 || true
+
+        if ! wait_for_samba; then
+            result FAIL "Dependency update health" "samba-ad-dc did not become healthy" "review apt/dpkg logs"
+            return 1
+        fi
+        samba-tool domain info "$DC_IP" >/dev/null 2>&1 ||
+            result WARN "Dependency update health" "domain info validation failed" "review DNS/Samba"
+    fi
+
+    result PASS "Dependency updates" "selected dependency packages updated" "validated"
+}
+
+dependency_menu() {
+    while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
+
+        ui_menu_screen "DEPENDENCIES & PACKAGE LIFECYCLE" \
+            "Minimal distribution packages, missing-tool repair and scoped updates"
+        ui_menu_item "1" "Dependency inventory" \
+            "Installed/candidate versions, purpose and configured APT source"
+        ui_menu_item "2" "Install missing required" \
+            "Install only packages required by an existing AD/DC" "$C_GREEN"
+        ui_menu_item "3" "Update required packages" \
+            "Scoped --only-upgrade; no full/dist upgrade" "$C_YELLOW"
+        ui_menu_item "4" "Optional security tools" \
+            "UFW / Fail2ban only when explicitly wanted"
+        ui_menu_exit
+        ui_rule
+
+        local choice
+        choice="$(ask 'Select dependency operation' '1')"
+        case "$choice" in
+            1) show_dependency_inventory existing; ui_pause ;;
+            2) install_missing_dependency_profile existing; ui_pause ;;
+            3) update_dependency_profile existing; ui_pause ;;
+            4)
+                printf '\n'
+                printf '  UFW      : %s\n' "$(package_installed_version ufw || true)"
+                printf '  Fail2ban : %s\n' "$(package_installed_version fail2ban || true)"
+                printf '\nThese are optional and are not part of the minimum AD runtime.\n'
+                if confirm "Configure/install UFW through the security workflow now?" N; then
+                    configure_ufw
+                fi
+                if confirm "Configure/install Fail2ban for SSH now?" N; then
+                    configure_fail2ban
+                fi
+                ui_pause
+                ;;
+            H|h) MENU_MAIN_REQUESTED=1; return 0 ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid dependency operation."; ui_pause ;;
+        esac
+    done
+}
+
 
 choose_ad_interface() {
     discover_network_topology
@@ -6811,6 +7087,648 @@ domain_migration_menu() {
 }
 
 
+
+# ---------------------------------------------------------------------------
+# Domain decommission / local factory reset
+# ---------------------------------------------------------------------------
+
+confirm_exact_text() {
+    local prompt="$1" expected="$2" answer=""
+    printf '%b›%b %s\n' "$C_RED" "$C_RESET" "$prompt" >&2
+    printf '  Type exactly: %b%s%b\n  > ' "$C_BOLD" "$expected" "$C_RESET" >&2
+    read -r answer <"$INPUT_FD" || return 1
+    [[ "$answer" == "$expected" ]]
+}
+
+earliest_assistant_backup_for_path() {
+    local target="$1" rel="${target#/}" found=""
+    [[ -d "${STATE_DIR}/runs" ]] || return 1
+
+    found="$(
+        find "${STATE_DIR}/runs" \
+            -path "*/backup/rootfs/${rel}" \
+            -print 2>/dev/null |
+        LC_ALL=C sort |
+        head -n1
+    )"
+
+    [[ -n "$found" ]] || return 1
+    printf '%s' "$found"
+}
+
+restore_earliest_assistant_backup() {
+    local target="$1" source=""
+    source="$(earliest_assistant_backup_for_path "$target" 2>/dev/null || true)"
+    [[ -n "$source" ]] || return 1
+
+    rm -rf -- "$target"
+    mkdir -p "$(dirname "$target")"
+    cp -a --no-dereference -- "$source" "$target"
+    change APPLIED "Restored earliest assistant snapshot: $target"
+    return 0
+}
+
+remove_assistant_hosts_block() {
+    local file="/etc/hosts" tmp="${RUN_ROOT}/hosts.reset"
+    [[ -f "$file" ]] || return 0
+
+    awk '
+        BEGIN { inblock=0 }
+        $0=="# BEGIN DEBIAN-AD-ASSISTANT" { inblock=1; next }
+        $0=="# END DEBIAN-AD-ASSISTANT" { inblock=0; next }
+        !inblock { print }
+    ' "$file" >"$tmp"
+
+    install -o root -g root -m 0644 "$tmp" "$file"
+}
+
+remove_assistant_chrony_include_block() {
+    local config=""
+    config="$(chrony_main_config 2>/dev/null || true)"
+    [[ -n "$config" && -f "$config" ]] || return 0
+
+    local tmp="${RUN_ROOT}/chrony.main.reset"
+    awk '
+        BEGIN { inblock=0 }
+        $0=="# BEGIN DEBIAN-AD-ASSISTANT CHRONY INCLUDE" { inblock=1; next }
+        $0=="# END DEBIAN-AD-ASSISTANT CHRONY INCLUDE" { inblock=0; next }
+        !inblock { print }
+    ' "$config" >"$tmp"
+
+    install -o root -g root -m 0644 "$tmp" "$config"
+}
+
+local_domain_dc_count() {
+    local db="/var/lib/samba/private/sam.ldb"
+    local config_dn=""
+
+    command_exists ldbsearch || return 1
+    [[ -f "$db" ]] || return 1
+
+    config_dn="$(
+        ldbsearch -H "$db" -s base -b "" configurationNamingContext 2>/dev/null |
+            awk -F': ' '/^configurationNamingContext:/{print $2;exit}'
+    )"
+    [[ -n "$config_dn" ]] || return 1
+
+    ldbsearch -H "$db" -b "$config_dn" '(objectClass=nTDSDSA)' dn 2>/dev/null |
+        grep -c '^dn:' || true
+}
+
+custom_samba_shares() {
+    command_exists testparm || return 0
+    [[ -f /etc/samba/smb.conf ]] || return 0
+
+    testparm -s 2>/dev/null |
+        awk '
+            /^\[[^]]+\]/ {
+                s=$0
+                gsub(/^\[|\]$/, "", s)
+                low=tolower(s)
+                if (low!="global" && low!="sysvol" && low!="netlogon") print s
+            }
+        '
+}
+
+domain_reset_assessment() {
+    section "DOMAIN RESET ASSESSMENT"
+
+    detect_samba_role
+    discover_network_topology
+    discover_existing_identity
+
+    local dc_count="" custom="" resolver=""
+    dc_count="$(local_domain_dc_count 2>/dev/null || true)"
+    custom="$(custom_samba_shares 2>/dev/null || true)"
+    resolver="$(resolv_conf_description 2>/dev/null || true)"
+
+    printf '  %-28s %s\n' "Detected role" "$SAMBA_ROLE"
+    printf '  %-28s %s\n' "Domain" "${DOMAIN:-unknown}"
+    printf '  %-28s %s\n' "Realm" "${REALM:-unknown}"
+    printf '  %-28s %s\n' "DC" "${DC_FQDN:-unknown}"
+    printf '  %-28s %s\n' "Local AD database" \
+        "$( [[ -f /var/lib/samba/private/sam.ldb ]] && printf 'present' || printf 'missing' )"
+    printf '  %-28s %s\n' "DC objects in directory" "${dc_count:-unknown}"
+    printf '  %-28s %s\n' "Resolver" "${resolver:-unknown}"
+    printf '  %-28s %s\n' "samba-ad-dc" "$(safe_systemctl_state samba-ad-dc)"
+    printf '  %-28s %s\n' "Assistant state" \
+        "$( [[ -d "$STATE_DIR" ]] && printf 'present' || printf 'absent' )"
+    printf '  %-28s %s\n' "Recovery root" "$RESET_RECOVERY_ROOT"
+
+    printf '\n'
+    if [[ -n "$custom" ]]; then
+        printf '%bAdditional Samba shares detected:%b\n' "$C_YELLOW" "$C_RESET"
+        printf '%s\n' "$custom" | sed 's/^/  - /'
+        printf '  Their data directories are NOT deleted, but smb.conf will be restored/removed.\n'
+    else
+        printf '%bAdditional Samba shares:%b none detected beyond SYSVOL/NETLOGON.\n' "$C_GREEN" "$C_RESET"
+    fi
+
+    printf '\n%bReset scope:%b\n' "$C_BOLD" "$C_RESET"
+    printf '  - stop and disable samba-ad-dc\n'
+    printf '  - archive then remove local Samba AD databases/SYSVOL state\n'
+    printf '  - restore earliest assistant snapshots for hostname/hosts/resolver/Kerberos/Samba config when available\n'
+    printf '  - remove assistant systemd boot guards, Chrony fragments, Fail2ban fragment and sysctl file\n'
+    printf '  - unmask smbd/nmbd/winbind without enabling them\n'
+    printf '  - optionally reset ALL UFW policy (never automatic)\n'
+    printf '  - remove ad-* shortcuts and assistant state/log directories\n'
+    printf '  - keep installed packages and network interface/IP configuration\n'
+    printf '  - require a reboot before considering runtime kernel/network state clean\n'
+
+    printf '\n%bImportant:%b this is not an OS factory reset and it does not undo external client domain membership.\n' \
+        "$C_YELLOW" "$C_RESET"
+}
+
+create_domain_reset_recovery_bundle() {
+    local recovery="$1"
+    local -a config_paths=()
+    local p
+
+    mkdir -p "$recovery"/{domain-backup,raw,evidence}
+    chmod 700 "$recovery" "$recovery/domain-backup" "$recovery/raw" "$recovery/evidence"
+
+    {
+        printf 'Generated: %s\n' "$(date -Is)"
+        printf 'Assistant: %s %s\n' "$SCRIPT_NAME" "$SCRIPT_VERSION"
+        printf 'Host: %s\n' "$(hostname -f 2>/dev/null || hostname)"
+        printf 'Domain: %s\n' "${DOMAIN:-unknown}"
+        printf 'Realm: %s\n' "${REALM:-unknown}"
+        printf 'DC: %s\n' "${DC_FQDN:-unknown}"
+        printf 'DC count: %s\n' "$(local_domain_dc_count 2>/dev/null || printf 'unknown')"
+        printf '\n-- IP --\n'; ip -br addr 2>&1 || true
+        printf '\n-- routes --\n'; ip route 2>&1 || true
+        printf '\n-- resolver --\n'; ls -l /etc/resolv.conf 2>&1 || true; cat /etc/resolv.conf 2>&1 || true
+        printf '\n-- services --\n'
+        systemctl status samba-ad-dc chrony systemd-resolved --no-pager --full 2>&1 || true
+        printf '\n-- UFW --\n'; ufw status verbose 2>&1 || true
+        printf '\n-- Samba role/config --\n'; testparm -s 2>&1 || true
+        printf '\n-- FSMO --\n'; samba-tool fsmo show 2>&1 || true
+        printf '\n-- functional level --\n'; samba-tool domain level show 2>&1 || true
+    } >"${recovery}/evidence/pre-reset.txt"
+    chmod 600 "${recovery}/evidence/pre-reset.txt"
+
+    for p in \
+        /etc/hostname \
+        /etc/hosts \
+        /etc/resolv.conf \
+        /etc/krb5.conf \
+        /etc/samba \
+        /etc/chrony \
+        /etc/fail2ban/jail.d/90-debian-ad-assistant.conf \
+        /etc/sysctl.d/99-debian-ad-hardening.conf \
+        /etc/systemd/system/debian-ad-network-ready.service \
+        /etc/systemd/system/samba-ad-dc.service.d/20-debian-ad-network.conf \
+        /usr/local/libexec/debian-ad-wait-network \
+        /usr/local/libexec/debian-ad-assistant
+    do
+        [[ -e "$p" || -L "$p" ]] && config_paths+=("${p#/}")
+    done
+
+    if ((${#config_paths[@]})); then
+        tar --acls --xattrs --numeric-owner -cpf "${recovery}/raw/system-config.tar" \
+            -C / "${config_paths[@]}"
+        chmod 600 "${recovery}/raw/system-config.tar"
+    fi
+
+    if [[ -d "$STATE_DIR" || -d "$LOG_DIR" ]]; then
+        local -a assistant_paths=()
+        [[ -d "$STATE_DIR" ]] && assistant_paths+=("${STATE_DIR#/}")
+        [[ -d "$LOG_DIR" ]] && assistant_paths+=("${LOG_DIR#/}")
+        if ((${#assistant_paths[@]})); then
+            tar --acls --xattrs --numeric-owner -cpf "${recovery}/raw/assistant-state.tar" \
+                -C / "${assistant_paths[@]}"
+            chmod 600 "${recovery}/raw/assistant-state.tar"
+        fi
+    fi
+}
+
+create_offline_reset_domain_backup() {
+    local recovery="$1" output="${recovery}/evidence/domain-backup-offline.txt"
+
+    [[ -f /var/lib/samba/private/sam.ldb ]] || {
+        msg_warn "No sam.ldb found; Samba domain backup skipped."
+        return 2
+    }
+
+    if ! samba-tool domain backup offline --help 2>&1 | grep -Fq -- '--targetdir'; then
+        msg_warn "Installed Samba does not expose domain backup offline --targetdir."
+        return 2
+    fi
+
+    if samba-tool domain backup offline --targetdir="${recovery}/domain-backup" >"$output" 2>&1; then
+        chmod -R go-rwx "${recovery}/domain-backup"
+        result PASS "Pre-reset domain backup" "${recovery}/domain-backup" "offline backup completed"
+        return 0
+    fi
+
+    msg_warn "Samba offline domain backup failed. Evidence: $output"
+    tail -n 40 "$output" >&2 || true
+    return 1
+}
+
+archive_local_samba_state_for_reset() {
+    local recovery="$1"
+    local -a paths=()
+    local p
+
+    for p in /var/lib/samba /var/cache/samba /var/log/samba; do
+        [[ -e "$p" ]] && paths+=("${p#/}")
+    done
+
+    if ((${#paths[@]})); then
+        tar --acls --xattrs --numeric-owner -cpf "${recovery}/raw/samba-state.tar" \
+            -C / "${paths[@]}"
+        chmod 600 "${recovery}/raw/samba-state.tar"
+    fi
+}
+
+restore_resolver_after_domain_reset() {
+    if restore_earliest_assistant_backup /etc/resolv.conf; then
+        if [[ -L /etc/resolv.conf ]]; then
+            local target=""
+            target="$(readlink /etc/resolv.conf 2>/dev/null || true)"
+            if [[ "$target" == *"/run/systemd/resolve/"* ]]; then
+                systemctl enable systemd-resolved >/dev/null 2>&1 || true
+                systemctl start systemd-resolved >/dev/null 2>&1 || true
+            fi
+        fi
+        return 0
+    fi
+
+    msg_warn "No pre-assistant /etc/resolv.conf snapshot was found."
+
+    if systemctl list-unit-files systemd-resolved.service --no-legend 2>/dev/null |
+        grep -q '^systemd-resolved\.service'; then
+        systemctl enable systemd-resolved >/dev/null 2>&1 || true
+        systemctl start systemd-resolved >/dev/null 2>&1 || true
+
+        local stub="/run/systemd/resolve/stub-resolv.conf"
+        [[ -e "$stub" ]] || stub="/run/systemd/resolve/resolv.conf"
+        if [[ -e "$stub" ]]; then
+            rm -f /etc/resolv.conf
+            ln -s "$stub" /etc/resolv.conf
+            change APPLIED "Restored systemd-resolved resolver symlink"
+            return 0
+        fi
+    fi
+
+    local fallback="${DNS_FORWARDER:-}"
+    is_valid_ipv4 "$fallback" || fallback="$(ask 'Fallback DNS nameserver for clean host' '1.1.1.1')"
+    is_valid_ipv4 "$fallback" || {
+        msg_warn "Invalid fallback DNS; /etc/resolv.conf left for manual configuration."
+        return 1
+    }
+
+    rm -f /etc/resolv.conf
+    {
+        printf '# Resolver restored after Samba AD/DC reset.\n'
+        printf 'nameserver %s\n' "$fallback"
+    } >/etc/resolv.conf
+    chmod 0644 /etc/resolv.conf
+    change APPLIED "Configured fallback resolver $fallback"
+}
+
+restore_core_host_identity_after_reset() {
+    local restored_hostname=0
+    local samba_krb5_matches=0
+
+    if [[ -f /etc/krb5.conf && -f /var/lib/samba/private/krb5.conf ]] &&
+       cmp -s /etc/krb5.conf /var/lib/samba/private/krb5.conf; then
+        samba_krb5_matches=1
+    fi
+
+    if restore_earliest_assistant_backup /etc/hostname; then
+        restored_hostname=1
+        local new_hostname=""
+        new_hostname="$(head -n1 /etc/hostname 2>/dev/null | tr -d '[:space:]' || true)"
+        if [[ -n "$new_hostname" ]]; then
+            hostnamectl set-hostname "$new_hostname" >/dev/null 2>&1 || true
+        fi
+    else
+        msg_warn "No pre-assistant hostname snapshot found; current hostname will be retained."
+    fi
+
+    restore_earliest_assistant_backup /etc/hosts || remove_assistant_hosts_block
+
+    if ! restore_earliest_assistant_backup /etc/krb5.conf; then
+        if (( samba_krb5_matches == 1 )); then
+            rm -f /etc/krb5.conf
+            change APPLIED "Removed Samba-generated /etc/krb5.conf (no earlier snapshot available)"
+        else
+            msg_warn "No pre-assistant krb5.conf snapshot found; custom/current Kerberos config retained."
+        fi
+    fi
+
+    if ! restore_earliest_assistant_backup /etc/samba/smb.conf; then
+        rm -f /etc/samba/smb.conf
+        change APPLIED "Removed AD/DC smb.conf (no earlier snapshot available)"
+    fi
+
+    restore_resolver_after_domain_reset || true
+
+    (( restored_hostname == 1 )) &&
+        result INFO "Hostname restore" "$(hostname -s 2>/dev/null || true)" "earliest assistant snapshot"
+}
+
+remove_assistant_managed_host_files() {
+    local p source=""
+
+    # Boot/network guard.
+    for p in \
+        /usr/local/libexec/debian-ad-wait-network \
+        /etc/systemd/system/debian-ad-network-ready.service \
+        /etc/systemd/system/samba-ad-dc.service.d/20-debian-ad-network.conf
+    do
+        if ! restore_earliest_assistant_backup "$p"; then
+            rm -f -- "$p"
+        fi
+    done
+    rmdir /etc/systemd/system/samba-ad-dc.service.d >/dev/null 2>&1 || true
+
+    # Chrony fragments.
+    for p in \
+        /etc/chrony/conf.d/90-debian-ad.conf \
+        /etc/chrony/conf.d/91-samba-ad-signed-time.conf
+    do
+        if ! restore_earliest_assistant_backup "$p"; then
+            rm -f -- "$p"
+        fi
+    done
+    remove_assistant_chrony_include_block || true
+
+    # Fail2ban fragment.
+    p="/etc/fail2ban/jail.d/90-debian-ad-assistant.conf"
+    if ! restore_earliest_assistant_backup "$p"; then
+        rm -f -- "$p"
+    fi
+
+    # sysctl fragment.
+    p="/etc/sysctl.d/99-debian-ad-hardening.conf"
+    if ! restore_earliest_assistant_backup "$p"; then
+        rm -f -- "$p"
+    fi
+
+    systemctl daemon-reload
+
+    if command_exists chronyd && chrony_validate_config "post-reset" yes; then
+        local cu=""
+        cu="$(chrony_service_unit 2>/dev/null || true)"
+        [[ -n "$cu" ]] && systemctl restart "$cu" >/dev/null 2>&1 || true
+    fi
+
+    if systemctl list-unit-files fail2ban.service --no-legend 2>/dev/null |
+        grep -q '^fail2ban\.service'; then
+        systemctl restart fail2ban >/dev/null 2>&1 || true
+    fi
+}
+
+optional_reset_ufw_after_domain_reset() {
+    command_exists ufw || return 0
+    ufw status 2>/dev/null | grep -q '^Status: active' || return 0
+
+    printf '\n'
+    msg_warn "UFW rules are not tagged by older assistant versions, so individual AD rules cannot be proven to be assistant-owned."
+    printf 'A full UFW reset would remove ALL current firewall rules, including custom rules.\n'
+
+    if (( REMOTE_SESSION == 1 )); then
+        msg_warn "Remote SSH session detected. Automatic UFW reset is disabled to protect management access."
+        return 0
+    fi
+
+    if confirm "Reset ALL UFW rules to UFW defaults and disable UFW?" N; then
+        if confirm_exact_text "This removes every UFW rule on the host." "RESET UFW"; then
+            ufw --force reset >/dev/null
+            change APPLIED "Reset all UFW policy by explicit operator authorization"
+        else
+            msg_warn "UFW reset cancelled."
+        fi
+    fi
+}
+
+remove_assistant_cli_and_state() {
+    local target="/usr/local/libexec/debian-ad-assistant"
+    local bindir="/usr/local/sbin"
+    local name title description path resolved
+
+    while IFS='|' read -r name title description; do
+        [[ -n "$name" ]] || continue
+        path="${bindir}/${name}"
+        if [[ -L "$path" ]]; then
+            resolved="$(readlink -f "$path" 2>/dev/null || true)"
+            [[ "$resolved" == "$target" ]] && rm -f "$path"
+        fi
+    done < <(cli_command_catalog)
+
+    rm -f "$target"
+
+    # Preserve the active log in the recovery bundle before removing runtime state.
+    if [[ -n "$RESET_RECOVERY_DIR" ]]; then
+        cp -a "$LOG_FILE" "${RESET_RECOVERY_DIR}/evidence/assistant-reset.log" 2>/dev/null || true
+    fi
+
+    rm -rf "$STATE_DIR" "$LOG_DIR"
+}
+
+wipe_local_samba_ad_state() {
+    systemctl stop samba-ad-dc >/dev/null 2>&1 || true
+    systemctl disable samba-ad-dc >/dev/null 2>&1 || true
+
+    rm -rf /var/lib/samba /var/cache/samba /run/samba
+    mkdir -p /var/lib/samba /var/cache/samba /run/samba
+    chmod 0755 /var/lib/samba /var/cache/samba /run/samba
+
+    systemctl unmask samba-ad-dc smbd nmbd winbind >/dev/null 2>&1 || true
+    systemctl disable smbd nmbd winbind >/dev/null 2>&1 || true
+
+    result PASS "Local Samba AD state" "removed" "no sam.ldb / no SYSVOL"
+}
+
+domain_factory_reset() {
+    section "FACTORY RESET LOCAL SAMBA AD/DC"
+
+    detect_samba_role
+    discover_network_topology
+    discover_existing_identity
+
+    [[ "$SAMBA_ROLE" == "ad-dc" || "$SAMBA_ROLE" == "ad-dc-config" ]] || {
+        msg_warn "No Samba AD/DC configuration is currently detected."
+        return 1
+    }
+
+    local dc_count="" custom="" domain_label="${DOMAIN:-unknown}"
+    dc_count="$(local_domain_dc_count 2>/dev/null || true)"
+    custom="$(custom_samba_shares 2>/dev/null || true)"
+
+    if [[ "$dc_count" =~ ^[0-9]+$ ]] && (( dc_count > 1 )); then
+        msg_error "Factory reset refused: $dc_count Domain Controller objects are present in the directory."
+        printf 'This DC must be gracefully demoted from a surviving domain before local state is wiped.\n'
+        printf 'Use: samba-tool domain demote --help\n'
+        printf 'Samba documents domain demotion as the required path for removing a domain server.\n'
+        return 1
+    fi
+
+    if [[ ! "$dc_count" =~ ^[0-9]+$ || "$dc_count" -eq 0 ]]; then
+        msg_warn "DC topology could not be proven from the local directory."
+        confirm_exact_text \
+            "Proceed only if you accept possible stale metadata in another surviving DC." \
+            "FORCE RESET UNKNOWN TOPOLOGY" || {
+                msg_warn "Reset cancelled."
+                return 1
+            }
+    fi
+
+    printf '\n%bTHIS OPERATION DESTROYS THE LOCAL DOMAIN DATABASE.%b\n' "$C_RED" "$C_RESET"
+    printf 'If this is the only DC, the domain %b%s%b will cease to exist.\n' \
+        "$C_BOLD" "$domain_label" "$C_RESET"
+    printf 'Domain-joined clients will NOT automatically become workgroup machines.\n'
+    printf 'Installed packages and the host IP/Netplan configuration are intentionally retained.\n'
+
+    if [[ -n "$custom" ]]; then
+        printf '\n%bAdditional Samba shares are configured:%b\n' "$C_YELLOW" "$C_RESET"
+        printf '%s\n' "$custom" | sed 's/^/  - /'
+        printf 'Share data paths are not deleted, but Samba configuration/state will be reset.\n'
+    fi
+
+    confirm_exact_text \
+        "Confirm the AD DNS domain that will be destroyed." \
+        "$domain_label" || {
+            msg_warn "Domain confirmation mismatch. Reset cancelled."
+            return 1
+        }
+
+    confirm_exact_text \
+        "Final authorization. This cannot be undone without the recovery bundle." \
+        "ERASE DOMAIN ${domain_label}" || {
+            msg_warn "Reset cancelled."
+            return 1
+        }
+
+    RESET_RECOVERY_DIR="${RESET_RECOVERY_ROOT}/domain-reset-${TIMESTAMP}"
+    mkdir -p "$RESET_RECOVERY_ROOT"
+    chmod 700 "$RESET_RECOVERY_ROOT"
+
+    create_domain_reset_recovery_bundle "$RESET_RECOVERY_DIR"
+
+    # Stop Samba before the offline domain backup and raw state archive.
+    systemctl stop samba-ad-dc >/dev/null 2>&1 || true
+
+    local backup_rc=0
+    create_offline_reset_domain_backup "$RESET_RECOVERY_DIR" || backup_rc=$?
+
+    if (( backup_rc == 1 )); then
+        if ! confirm_exact_text \
+            "Official Samba offline backup failed. A raw state archive will still be created." \
+            "RESET WITHOUT SAMBA BACKUP"; then
+            systemctl start samba-ad-dc >/dev/null 2>&1 || true
+            msg_warn "Reset aborted; Samba start was requested again."
+            return 1
+        fi
+    fi
+
+    archive_local_samba_state_for_reset "$RESET_RECOVERY_DIR"
+
+    {
+        printf 'Reset authorized: %s\n' "$(date -Is)"
+        printf 'Domain: %s\n' "$domain_label"
+        printf 'Original DC count: %s\n' "${dc_count:-unknown}"
+        printf 'Official offline backup status: %s\n' "$backup_rc"
+        printf 'Packages retained: yes\n'
+        printf 'Network/IP configuration retained: yes\n'
+        printf 'Reboot required: yes\n'
+    } >"${RESET_RECOVERY_DIR}/RESET-MANIFEST.txt"
+    chmod 600 "${RESET_RECOVERY_DIR}/RESET-MANIFEST.txt"
+
+    # Restore host-level files while Samba's generated krb5.conf is still present
+    # so we can identify whether /etc/krb5.conf was an assistant-installed copy.
+    restore_core_host_identity_after_reset
+    remove_assistant_managed_host_files
+
+    wipe_local_samba_ad_state
+    optional_reset_ufw_after_domain_reset
+
+    systemctl daemon-reload
+
+    # Validation before deleting assistant state.
+    detect_samba_role
+    if [[ "$SAMBA_ROLE" == "ad-dc" || -f /var/lib/samba/private/sam.ldb ]]; then
+        msg_error "Reset validation failed: AD/DC state is still detected."
+        printf 'Recovery bundle: %s\n' "$RESET_RECOVERY_DIR"
+        return 1
+    fi
+
+    if systemctl is-active --quiet samba-ad-dc; then
+        msg_error "Reset validation failed: samba-ad-dc is still active."
+        return 1
+    fi
+
+    result PASS "Domain reset" "$domain_label removed from local host" "AD/DC state absent"
+    result INFO "Recovery bundle" "$RESET_RECOVERY_DIR" "retain until reset/rebuild is verified"
+    result WARN "Reboot required" "kernel/sysctl/runtime caches may retain previous values until reboot" "reboot before reuse"
+
+    # Last operation: remove the assistant's installed control plane and state.
+    # The currently running shell already has the script parsed in memory.
+    remove_assistant_cli_and_state
+
+    RESET_COMPLETED=1
+
+    printf '\n'
+    ui_rule
+    printf '%b%b  DOMAIN RESET COMPLETE%b\n' "$C_BOLD" "$C_GREEN" "$C_RESET"
+    printf '  Domain removed locally : %s\n' "$domain_label"
+    printf '  Recovery bundle        : %s\n' "$RESET_RECOVERY_DIR"
+    printf '  Samba AD service       : stopped / disabled\n'
+    printf '  Assistant CLI/state    : removed\n'
+    printf '  Packages               : retained\n'
+    printf '  Network/IP             : retained\n'
+    printf '  Next action            : reboot\n'
+    printf '\n'
+    printf 'After reboot, this host can be configured as a normal server or bootstrapped into a new domain.\n'
+    printf 'Keep the recovery bundle until you have verified the new state.\n'
+    ui_rule
+}
+
+domain_reset_menu() {
+    while true; do
+        (( RESET_COMPLETED )) && return 0
+        (( MENU_MAIN_REQUESTED )) && return 0
+
+        ui_menu_screen "DOMAIN DECOMMISSION / RESET" \
+            "Destructive local AD/DC removal with external recovery bundle and host cleanup"
+        ui_menu_item "1" "Reset assessment" \
+            "Show topology, scope, custom shares and exactly what would be changed"
+        ui_menu_item "2" "Factory reset local AD/DC" \
+            "Destroy local domain state and remove assistant-managed AD configuration" "$C_RED"
+        ui_menu_item "3" "Samba demotion guidance" \
+            "Required path when other Domain Controllers survive"
+        ui_menu_exit
+        ui_rule
+
+        local choice
+        choice="$(ask 'Select reset operation' '1')"
+        case "$choice" in
+            1) domain_reset_assessment; ui_pause ;;
+            2)
+                if domain_factory_reset; then
+                    (( RESET_COMPLETED )) && return 0
+                fi
+                ui_pause
+                ;;
+            3)
+                section "GRACEFUL DEMOTION GUIDANCE"
+                printf 'For a multi-DC domain, do not wipe local Samba state first.\n'
+                printf 'Samba provides:\n\n'
+                printf '  samba-tool domain demote --help\n\n'
+                printf 'After successful demotion and replication/metadata validation on surviving DCs,\n'
+                printf 'this reset center can be used for local host cleanup if necessary.\n'
+                ui_pause
+                ;;
+            H|h) MENU_MAIN_REQUESTED=1; return 0 ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid reset operation."; ui_pause ;;
+        esac
+    done
+}
+
 cli_command_catalog() {
     cat <<'EOF'
 adctl|Main control plane|Open the full AD/DC Main Control Plane: maintenance, operations, security, backup and migration.
@@ -6824,6 +7742,8 @@ ad-security|Host security|Boot ordering, UFW, Fail2ban, sysctl, delegated-admin 
 ad-samba|Samba security|Samba transport/authentication hardening, signed time and Kerberos crypto posture.
 ad-kerberos|Kerberos security|Kerberos config integrity, encryption readiness, AES-only enforcement and rollback.
 ad-migrate|Domain migration|Assess domain changes, inventory scope and generate client migration packages.
+ad-reset|Domain reset|Destructive local Samba AD/DC decommission/reset with external recovery bundle.
+ad-deps|Dependencies|Audit/install/update the minimal official distribution package set used by the control plane.
 ad-audit|Audit|Run a read-only inventory and security evidence review.
 ad-validate|Validation|Run functional Samba AD/DC DNS, Kerberos, LDAP, SMB, DB and SYSVOL checks.
 ad-status|Status|Show a compact current-state and AD/DC health report.
@@ -7189,6 +8109,8 @@ manage_menu() {
         ui_menu_item "15" "Repair local resolver" "Fix /etc/resolv.conf stub/symlink and validate AD DC discovery"
         ui_menu_item "16" "Domain migration center" "Assess domain changes and prepare coexistence/client migration"
         ui_menu_item "17" "Samba & Kerberos security" "LDAP/SMB hardening, KDC crypto, krb5 integrity and signed time" "$C_GREEN"
+        ui_menu_item "18" "Domain decommission / reset" "Destroy local AD/DC state and remove assistant-managed configuration" "$C_RED"
+        ui_menu_item "19" "Dependencies & packages" "Minimal required packages, repair missing tools and scoped updates" "$C_GREEN"
         ui_menu_root_exit
         ui_rule
         local choice
@@ -7217,6 +8139,8 @@ manage_menu() {
             15) set_progress_plan 1; repair_local_resolver_only; ui_pause ;;
             16) domain_migration_menu ;;
             17) samba_kerberos_security_menu ;;
+            18) domain_reset_menu; (( RESET_COMPLETED )) && return 0 ;;
+            19) dependency_menu ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -7230,6 +8154,7 @@ prepare_existing_ad_context() {
     load_config || true
     discover_network_topology
     discover_existing_identity
+    ensure_existing_dependency_preflight
     [[ -n "$ADMIN_USER" ]] || ADMIN_USER="$(ask 'AD admin account' 'Administrator')"
 }
 
@@ -7237,7 +8162,7 @@ manage_mode() {
     prepare_existing_ad_context
     snapshot_system
     manage_menu
-    save_config
+    (( RESET_COMPLETED )) || save_config
 }
 
 audit_mode() {
@@ -7324,16 +8249,26 @@ main() {
         samba-security) prepare_existing_ad_context; samba_kerberos_security_menu; save_config ;;
         kerberos-security) prepare_existing_ad_context; kerberos_security_menu; save_config ;;
         migration) prepare_existing_ad_context; domain_migration_menu; save_config ;;
+        reset-domain) prepare_existing_ad_context; domain_reset_menu ;;
+        dependencies) detect_samba_role; load_config || true; dependency_menu ;;
         install-cli) install_cli_commands ;;
         cli-info) show_cli_commands ;;
         interactive) interactive_mode ;;
         *) die "Unknown mode: $MODE" ;;
     esac
 
+    if (( RESET_COMPLETED )); then
+        return 0
+    fi
+
     if (( MENU_MAIN_REQUESTED )); then
         MENU_MAIN_REQUESTED=0
         manage_menu
-        save_config
+        (( RESET_COMPLETED )) || save_config
+    fi
+
+    if (( RESET_COMPLETED )); then
+        return 0
     fi
 
     write_report

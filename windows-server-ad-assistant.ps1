@@ -1,7 +1,7 @@
 ﻿#requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Windows Server AD Control Plane - v1.2.0-migration-nav
+    Windows Server AD Control Plane - v1.5.0-lifecycle-dependencies
 
 .DESCRIPTION
     Professional, audit-first assistant for Windows Server and Active Directory.
@@ -35,18 +35,20 @@
       Provision    Guided NEW forest provisioning
       Migration    Domain migration assessment and tooling
       DirectorySecurity  Kerberos/LDAP/SMB protocol security center
+      Dependencies       Official Windows feature/module dependency center
+      Reset              Supported AD DS demotion + post-reboot cleanup
 
 .EXAMPLE
-    .\windows-server-ad-v1.3.0-directory-security-hardening.ps1
+    .\windows-server-ad-v1.5.0-lifecycle-dependencies.ps1
 
 .EXAMPLE
-    .\windows-server-ad-v1.3.0-directory-security-hardening.ps1 -Mode Audit
+    .\windows-server-ad-v1.5.0-lifecycle-dependencies.ps1 -Mode Audit
 
 .EXAMPLE
-    .\windows-server-ad-v1.3.0-directory-security-hardening.ps1 -Mode ADAdmin
+    .\windows-server-ad-v1.5.0-lifecycle-dependencies.ps1 -Mode ADAdmin
 
 .EXAMPLE
-    .\windows-server-ad-v1.3.0-directory-security-hardening.ps1 -Mode Validate
+    .\windows-server-ad-v1.5.0-lifecycle-dependencies.ps1 -Mode Validate
 
 .NOTES
     Validate in a lab before production deployment.
@@ -54,7 +56,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Audit','Validate','Harden','Backup','ADAdmin','Provision','Migration','DirectorySecurity')]
+    [ValidateSet('Interactive','Audit','Validate','Harden','Backup','ADAdmin','Provision','Migration','DirectorySecurity','Dependencies','Reset')]
     [string]$Mode = 'Interactive',
 
     [string]$ExportPath = "$env:ProgramData\WindowsADControlPlane",
@@ -74,7 +76,7 @@ $ErrorActionPreference = 'Stop'
 # ===========================================================================
 
 $script:ProductName = 'Windows Server AD Control Plane'
-$script:Version = '1.2.0-migration-nav'
+$script:Version = '1.5.0-lifecycle-dependencies'
 $script:Started = Get-Date
 
 $script:Results = New-Object 'System.Collections.Generic.List[object]'
@@ -98,6 +100,9 @@ $script:PowerShellMajor = $PSVersionTable.PSVersion.Major
 $script:DomainInfo = $null
 $script:ForestInfo = $null
 $script:MainMenuRequested = $false
+$script:ResetCompleted = $false
+$script:ResetRecoveryRoot = Join-Path $env:SystemDrive 'WindowsAD-ControlPlane-Recovery'
+$script:PreProvisionStateFile = Join-Path $ExportPath 'pre-provisioning-state.json'
 
 $script:UiWidth = 96
 
@@ -522,6 +527,21 @@ function Confirm-Action {
     return ($answer -eq 'Y')
 }
 
+
+function Confirm-ExactText {
+    param(
+        [Parameter(Mandatory=$true)][string]$Prompt,
+        [Parameter(Mandatory=$true)][string]$Expected
+    )
+
+    Write-Console ''
+    Write-Rule
+    Write-Console $Prompt Red
+    Write-Console ("Type exactly: {0}" -f $Expected) White
+    $answer = Read-Host '>'
+    return ($answer -ceq $Expected)
+}
+
 function Invoke-Change {
     param(
         [Parameter(Mandatory=$true)][string]$Name,
@@ -690,7 +710,272 @@ function Assert-DomainController {
     }
 
     if (-not (Import-ADModules)) {
-        throw 'The ActiveDirectory PowerShell module is required.'
+        [void](Ensure-WindowsServerFeature `
+            -Name 'RSAT-AD-Tools' `
+            -Purpose 'Active Directory PowerShell administration' `
+            -Required)
+
+        if (-not (Import-ADModules)) {
+            throw 'The ActiveDirectory PowerShell module is required and could not be repaired.'
+        }
+    }
+}
+
+
+# ===========================================================================
+# Official Windows Server dependencies / servicing
+# ===========================================================================
+
+function Get-ServerFeatureSafe {
+    param([Parameter(Mandatory=$true)][string]$Name)
+
+    if (-not (Test-Command 'Get-WindowsFeature')) { return $null }
+    try { return Get-WindowsFeature -Name $Name -ErrorAction Stop }
+    catch { return $null }
+}
+
+function Test-ServerFeatureInstalled {
+    param([Parameter(Mandatory=$true)][string]$Name)
+
+    $feature = Get-ServerFeatureSafe -Name $Name
+    return [bool]($feature -and $feature.Installed)
+}
+
+function Ensure-WindowsServerFeature {
+    param(
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][string]$Purpose,
+        [switch]$IncludeManagementTools,
+        [switch]$Required,
+        [switch]$NoPrompt
+    )
+
+    if (Test-ServerFeatureInstalled -Name $Name) { return $true }
+
+    if (-not (Test-Command 'Install-WindowsFeature')) {
+        if ($Required) {
+            Write-Console ("Required Windows feature '{0}' is missing and ServerManager is unavailable." -f $Name) Red
+        }
+        return $false
+    }
+
+    $feature = Get-ServerFeatureSafe -Name $Name
+    if (-not $feature) {
+        if ($Required) {
+            Write-Console ("Required Windows feature '{0}' is not available on this OS image." -f $Name) Red
+        }
+        return $false
+    }
+
+    $install = $NoPrompt
+    if (-not $NoPrompt) {
+        $install = Read-BooleanChoice `
+            -Prompt ("Install official Windows feature '{0}' for {1}?" -f $Name, $Purpose) `
+            -Default $true
+    }
+
+    if (-not $install) { return $false }
+
+    $params = @{
+        Name        = $Name
+        ErrorAction = 'Stop'
+    }
+    if ($IncludeManagementTools) {
+        $params.IncludeManagementTools = $true
+    }
+
+    try {
+        Write-Console ("Installing Windows feature: {0}" -f $Name) Cyan
+        $result = Install-WindowsFeature @params
+        $result | Out-Host
+
+        if (-not (Test-ServerFeatureInstalled -Name $Name)) {
+            Write-Console ("Feature installation did not leave '{0}' installed." -f $Name) Red
+            return $false
+        }
+
+        if ($result.RestartNeeded -eq 'Yes') {
+            Add-Warning ("Windows feature '{0}' requests a reboot." -f $Name)
+        }
+
+        Write-Log ("Installed official Windows feature: {0}" -f $Name) CHANGE
+        return $true
+    }
+    catch {
+        Write-Console ("Feature installation failed for {0}: {1}" -f $Name, $_.Exception.Message) Red
+        Write-Log ("Feature installation failed for {0}: {1}" -f $Name, $_.Exception.Message) ERROR
+        return $false
+    }
+}
+
+function Get-WindowsDependencyInventory {
+    $items = @(
+        [pscustomobject]@{ Name='AD-Domain-Services'; Kind='Windows feature'; Purpose='Domain Controller role / provisioning'; RequiredOnDC=$true },
+        [pscustomobject]@{ Name='RSAT-AD-Tools'; Kind='Windows feature'; Purpose='ActiveDirectory module and AD DS administration'; RequiredOnDC=$true },
+        [pscustomobject]@{ Name='GPMC'; Kind='Windows feature'; Purpose='GroupPolicy module / GPO management'; RequiredOnDC=$true },
+        [pscustomobject]@{ Name='RSAT-DNS-Server'; Kind='Windows feature'; Purpose='DnsServer module / AD DNS administration'; RequiredOnDC=$false },
+        [pscustomobject]@{ Name='Windows-Server-Backup'; Kind='Windows feature'; Purpose='wbadmin system-state backup'; RequiredOnDC=$false }
+    )
+
+    foreach ($item in $items) {
+        $feature = Get-ServerFeatureSafe -Name $item.Name
+        [pscustomobject]@{
+            Name         = $item.Name
+            Kind         = $item.Kind
+            Installed    = [bool]($feature -and $feature.Installed)
+            Available    = [bool]$feature
+            InstallState = $(if ($feature) { [string]$feature.InstallState } else { 'Unavailable' })
+            Purpose      = $item.Purpose
+            RequiredNow  = [bool]($script:IsDomainController -and $item.RequiredOnDC)
+            Origin       = 'Windows Server / Microsoft component store'
+        }
+    }
+}
+
+function Show-WindowsDependencyAudit {
+    Write-Section 'Official dependency inventory'
+
+    $inventory = @(Get-WindowsDependencyInventory)
+    $inventory |
+        Select-Object Name, Installed, Available, RequiredNow, Purpose |
+        Format-Table -AutoSize
+
+    Write-Console ''
+    Write-Console 'PowerShell/module requirements:' Cyan
+
+    $modules = @(
+        @{ Name='ActiveDirectory'; Purpose='AD users/groups/computers/domain operations' },
+        @{ Name='GroupPolicy'; Purpose='GPO operations' },
+        @{ Name='DnsServer'; Purpose='DNS zones/records' },
+        @{ Name='ADDSDeployment'; Purpose='DC promotion/demotion' },
+        @{ Name='ServerManager'; Purpose='Windows role/feature installation' },
+        @{ Name='NetSecurity'; Purpose='Windows Firewall' }
+    )
+
+    foreach ($m in $modules) {
+        $available = [bool](Get-Module -ListAvailable -Name $m.Name)
+        $status = if ($available) { 'AVAILABLE' } else { 'MISSING/NOT APPLICABLE' }
+        Write-Console ('  {0,-20} {1,-24} {2}' -f $m.Name, $status, $m.Purpose) $(if ($available) { 'Green' } else { 'Yellow' })
+    }
+
+    Write-Console ''
+    Write-Console 'External package managers/modules required by this assistant: NONE' Green
+    Write-Console '  No Chocolatey, winget, NuGet or PowerShell Gallery dependency is required.' Gray
+    Write-Console '  Windows roles/modules are serviced through Windows Update / WSUS according to organization policy.' Gray
+}
+
+function Repair-WindowsDependencies {
+    param(
+        [ValidateSet('ExistingDC','Provisioning')]
+        [string]$Profile = 'ExistingDC'
+    )
+
+    if ($Profile -eq 'Provisioning') {
+        if (-not (Ensure-WindowsServerFeature `
+            -Name 'AD-Domain-Services' `
+            -Purpose 'new forest provisioning' `
+            -IncludeManagementTools `
+            -Required `
+            -NoPrompt)) {
+            throw 'AD-Domain-Services could not be installed.'
+        }
+
+        # These are management surfaces used by the control plane after the
+        # promotion reboot. Install only when available and currently missing.
+        [void](Ensure-WindowsServerFeature -Name 'GPMC' -Purpose 'Group Policy administration' -NoPrompt)
+        [void](Ensure-WindowsServerFeature -Name 'RSAT-DNS-Server' -Purpose 'DNS administration' -NoPrompt)
+        return
+    }
+
+    if (-not $script:IsDomainController) {
+        Write-Console 'ExistingDC profile is only applicable to a Domain Controller.' Yellow
+        return
+    }
+
+    [void](Ensure-WindowsServerFeature `
+        -Name 'RSAT-AD-Tools' `
+        -Purpose 'Active Directory administration' `
+        -Required)
+
+    [void](Ensure-WindowsServerFeature `
+        -Name 'GPMC' `
+        -Purpose 'Group Policy administration' `
+        -Required)
+
+    if (Test-ServerFeatureInstalled -Name 'DNS') {
+        [void](Ensure-WindowsServerFeature `
+            -Name 'RSAT-DNS-Server' `
+            -Purpose 'DNS administration')
+    }
+}
+
+function Show-WindowsServicingStatus {
+    Write-Section 'Windows servicing status'
+
+    try {
+        $wu = Get-Service -Name wuauserv -ErrorAction Stop
+        Add-Result 'Dependencies' 'Windows Update service' 'INFO' `
+            ("{0}; StartType={1}" -f $wu.Status, $wu.StartType) `
+            'Managed by organizational Windows Update/WSUS policy'
+    }
+    catch {
+        Add-Result 'Dependencies' 'Windows Update service' 'WARN' 'wuauserv unavailable' 'Available'
+    }
+
+    $hotfixes = @()
+    try {
+        $hotfixes = @(Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 10)
+    }
+    catch {}
+
+    if ($hotfixes.Count -gt 0) {
+        $hotfixes | Select-Object HotFixID, Description, InstalledOn | Format-Table -AutoSize
+    }
+
+    $rebootPending = $false
+    foreach ($path in @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending',
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'
+    )) {
+        if (Test-Path $path) { $rebootPending = $true }
+    }
+
+    Add-Result 'Dependencies' 'Pending reboot' `
+        $(if ($rebootPending) { 'WARN' } else { 'PASS' }) `
+        $(if ($rebootPending) { 'YES' } else { 'NO' }) `
+        'No pending reboot before AD DS role/configuration changes'
+
+    Write-Console ''
+    Write-Console 'The control plane intentionally does not install a third-party Windows Update module.' Gray
+    Write-Console 'OS component updates remain under the normal Windows Update / WSUS / enterprise servicing workflow.' Gray
+}
+
+function Show-DependencyMenu {
+    while ($true) {
+        if ($script:MainMenuRequested) { return }
+
+        Write-MenuHeader 'DEPENDENCIES & SERVICING' 'Official Windows Server features only; no third-party package manager'
+        Write-MenuItem '1' 'Dependency audit' 'Roles, RSAT features and PowerShell modules used by the control plane'
+        Write-MenuItem '2' 'Repair DC management tools' 'Install only missing RSAT/GPMC/DNS tools' Good
+        Write-MenuItem '3' 'Windows Server Backup' 'Install optional Windows-Server-Backup feature for wbadmin'
+        Write-MenuItem '4' 'Servicing status' 'Windows Update service, latest hotfixes and pending reboot'
+        Write-MenuNavigation
+        Write-Rule
+
+        switch (Read-MenuChoice -Default '1') {
+            '1' { Show-WindowsDependencyAudit; Pause-ControlPlane }
+            '2' { Repair-WindowsDependencies -Profile ExistingDC; Pause-ControlPlane }
+            '3' {
+                [void](Ensure-WindowsServerFeature `
+                    -Name 'Windows-Server-Backup' `
+                    -Purpose 'system-state backup')
+                Pause-ControlPlane
+            }
+            '4' { Show-WindowsServicingStatus; Pause-ControlPlane }
+            'H' { $script:MainMenuRequested = $true; return }
+            '0' { return }
+            default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
+        }
     }
 }
 
@@ -860,39 +1145,54 @@ function Invoke-ConfigurationBackup {
 }
 
 function Invoke-SystemStateBackup {
+    param([string]$Target = '')
+
     Assert-DomainController
 
     if (-not (Test-Command 'wbadmin.exe')) {
-        Add-Result 'Recovery' 'System-state backup' 'ERROR' 'wbadmin.exe unavailable' 'Windows Server Backup available'
-        return
+        [void](Ensure-WindowsServerFeature `
+            -Name 'Windows-Server-Backup' `
+            -Purpose 'Domain Controller system-state backup')
+
+        if (-not (Test-Command 'wbadmin.exe')) {
+            Add-Result 'Recovery' 'System-state backup' 'ERROR' `
+                'wbadmin.exe unavailable' `
+                'Windows-Server-Backup feature installed'
+            return $false
+        }
     }
 
-    $target = Read-Host 'Backup target (example F: or \\server\share)'
-    if ([string]::IsNullOrWhiteSpace($target)) {
+    if ([string]::IsNullOrWhiteSpace($Target)) {
+        $Target = Read-Host 'Backup target (example F: or \\server\share)'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Target)) {
         Write-Console 'Backup cancelled: target is required.' Yellow
-        return
+        return $false
     }
 
     if (-not (Confirm-Action `
-        -Action ("Create Domain Controller system-state backup at {0}" -f $target) `
+        -Action ("Create Domain Controller system-state backup at {0}" -f $Target) `
         -Reason 'Create recovery-grade backup of AD DS/SYSVOL/system state.' `
         -Impact LOW)) {
-        return
+        return $false
     }
 
     Write-Console ''
     Write-Console 'Starting wbadmin system-state backup...' Cyan
 
-    & wbadmin.exe start systemstatebackup "-backupTarget:$target" -quiet
+    & wbadmin.exe start systemstatebackup "-backupTarget:$Target" -quiet
 
     if ($LASTEXITCODE -eq 0) {
-        Add-Result 'Recovery' 'System-state backup' 'PASS' $target 'Completed'
+        Add-Result 'Recovery' 'System-state backup' 'PASS' $Target 'Completed'
+        return $true
     }
-    else {
-        Add-Result 'Recovery' 'System-state backup' 'FAIL' ("wbadmin exit={0}" -f $LASTEXITCODE) 'Completed'
-    }
-}
 
+    Add-Result 'Recovery' 'System-state backup' 'FAIL' `
+        ("wbadmin exit={0}" -f $LASTEXITCODE) `
+        'Completed'
+    return $false
+}
 # ===========================================================================
 # Registry helpers
 # ===========================================================================
@@ -3325,13 +3625,20 @@ function Remove-AdOrganizationalUnitInteractive {
 
 function Import-GroupPolicyModule {
     if (-not (Test-Command 'Get-GPO')) {
+        if (-not (Get-Module -ListAvailable -Name GroupPolicy)) {
+            [void](Ensure-WindowsServerFeature `
+                -Name 'GPMC' `
+                -Purpose 'Group Policy administration' `
+                -Required)
+        }
+
         $previousProgress = $ProgressPreference
         try {
             $ProgressPreference = 'SilentlyContinue'
             Import-Module GroupPolicy -ErrorAction Stop -DisableNameChecking
         }
         catch {
-            throw ("GroupPolicy module unavailable: {0}" -f $_.Exception.Message)
+            throw ("GroupPolicy module unavailable after dependency repair: {0}" -f $_.Exception.Message)
         }
         finally {
             $ProgressPreference = $previousProgress
@@ -3923,11 +4230,18 @@ function Export-GpoReportInteractive {
 
 function Assert-DnsServerModule {
     if (-not (Test-Command 'Get-DnsServerZone')) {
+        if (-not (Get-Module -ListAvailable -Name DnsServer)) {
+            [void](Ensure-WindowsServerFeature `
+                -Name 'RSAT-DNS-Server' `
+                -Purpose 'DNS Server administration' `
+                -Required)
+        }
+
         try {
             Import-Module DnsServer -ErrorAction Stop
         }
         catch {
-            throw ("DnsServer module unavailable: {0}" -f $_.Exception.Message)
+            throw ("DnsServer module unavailable after dependency repair: {0}" -f $_.Exception.Message)
         }
     }
 }
@@ -4029,6 +4343,35 @@ function Test-StaticIpv4 {
     }
 }
 
+
+function Save-PreProvisionState {
+    $features = @()
+    if (Test-Command 'Get-WindowsFeature') {
+        $features = @(Get-WindowsFeature |
+            Where-Object Installed |
+            Select-Object Name, DisplayName, InstallState)
+    }
+
+    $network = @()
+    try {
+        $network = @(Get-NetIPConfiguration |
+            Select-Object InterfaceAlias, InterfaceIndex, IPv4Address, IPv4DefaultGateway, DnsServer)
+    }
+    catch {}
+
+    [pscustomobject]@{
+        CapturedAt   = Get-Date
+        ComputerName = $env:COMPUTERNAME
+        PartOfDomain = [bool]$script:ServerInfo.PartOfDomain
+        Domain       = $script:ServerInfo.Domain
+        Features     = $features
+        Network      = $network
+    } | ConvertTo-Json -Depth 10 |
+        Set-Content -LiteralPath $script:PreProvisionStateFile -Encoding UTF8
+
+    Write-Log ("Saved pre-provisioning state: {0}" -f $script:PreProvisionStateFile) OK
+}
+
 function Invoke-NewForestProvisioning {
     if ($script:IsDomainController) {
         Write-Console 'This server is already a Domain Controller. Provisioning is blocked.' Red
@@ -4092,15 +4435,8 @@ function Invoke-NewForestProvisioning {
 
     New-ChangeSet
 
-    if (-not (Test-Command 'Install-WindowsFeature')) {
-        throw 'Install-WindowsFeature is unavailable.'
-    }
-
-    $feature = Get-WindowsFeature -Name AD-Domain-Services
-    if (-not $feature.Installed) {
-        Write-Console 'Installing AD DS role and management tools...' Cyan
-        Install-WindowsFeature AD-Domain-Services -IncludeManagementTools | Out-Host
-    }
+    Save-PreProvisionState
+    Repair-WindowsDependencies -Profile Provisioning
 
     Import-Module ADDSDeployment -ErrorAction Stop
 
@@ -4527,6 +4863,571 @@ function Show-DomainMigrationMenu {
 }
 
 
+
+# ===========================================================================
+# Supported AD DS decommission / reset
+# ===========================================================================
+
+function Get-DomainResetContext {
+    $cs = Get-CimInstance Win32_ComputerSystem
+    $domainName = if ($script:DomainInfo) { $script:DomainInfo.DNSRoot } else { [string]$cs.Domain }
+    $forestName = if ($script:ForestInfo) { $script:ForestInfo.Name } else { '' }
+
+    $dcs = @()
+    $roles = @()
+    $forestDomains = @()
+
+    if ($script:IsDomainController -and (Import-ADModules)) {
+        try { $dcs = @(Get-ADDomainController -Filter * -ErrorAction Stop) } catch {}
+        try {
+            $localDc = Get-ADDomainController -Identity $env:COMPUTERNAME -ErrorAction Stop
+            $roles = @($localDc.OperationMasterRoles)
+        }
+        catch {}
+        try { $forestDomains = @(Get-ADForest -ErrorAction Stop).Domains } catch {}
+    }
+
+    [pscustomobject]@{
+        ComputerName       = $env:COMPUTERNAME
+        IsDomainController = [bool]$script:IsDomainController
+        PartOfDomain       = [bool]$cs.PartOfDomain
+        DomainName         = $domainName
+        ForestName         = $forestName
+        DomainDcCount      = $dcs.Count
+        OtherDCs           = @($dcs | Where-Object HostName -ne $env:COMPUTERNAME)
+        IsLastDcInDomain   = [bool]($script:IsDomainController -and $dcs.Count -eq 1)
+        IsLastDomainForest = [bool]($forestDomains.Count -eq 1)
+        OperationMasterRoles = $roles
+        AdDsInstalled      = Test-ServerFeatureInstalled -Name 'AD-Domain-Services'
+        DnsInstalled       = Test-ServerFeatureInstalled -Name 'DNS'
+        GpmcInstalled      = Test-ServerFeatureInstalled -Name 'GPMC'
+        BackupInstalled    = Test-ServerFeatureInstalled -Name 'Windows-Server-Backup'
+        RecoveryRoot       = $script:ResetRecoveryRoot
+    }
+}
+
+function Show-DomainResetAssessment {
+    Write-Section 'Domain decommission / reset assessment'
+    $ctx = Get-DomainResetContext
+
+    $ctx |
+        Select-Object ComputerName, IsDomainController, PartOfDomain, DomainName, ForestName,
+            DomainDcCount, IsLastDcInDomain, IsLastDomainForest, AdDsInstalled, DnsInstalled,
+            GpmcInstalled, BackupInstalled |
+        Format-List
+
+    Write-Console 'Operation master roles on this DC:' Cyan
+    if ($ctx.OperationMasterRoles.Count -gt 0) {
+        $ctx.OperationMasterRoles | ForEach-Object { Write-Console ("  - {0}" -f $_) Yellow }
+    }
+    else {
+        Write-Console '  none detected'
+    }
+
+    Write-Console ''
+    if ($ctx.IsDomainController) {
+        if ($ctx.IsLastDcInDomain) {
+            Write-Console 'This is the LAST DC in the domain.' Red
+            if ($ctx.IsLastDomainForest) {
+                Write-Console 'Removing it removes the final domain and therefore the forest.' Red
+            }
+        }
+        else {
+            Write-Console ("{0} other DC(s) exist. Supported graceful demotion is required." -f $ctx.OtherDCs.Count) Green
+        }
+    }
+    else {
+        Write-Console 'This host is not currently a Domain Controller.' Yellow
+        if ($ctx.PartOfDomain) {
+            Write-Console 'It is still joined to a domain and can be moved to WORKGROUP during final cleanup.' Yellow
+        }
+    }
+
+    Write-Console ''
+    Write-Console 'Reset model:' Cyan
+    Write-Console '  Phase 1  recovery bundle + optional system-state backup'
+    Write-Console '  Phase 2  supported Uninstall-ADDSDomainController demotion + reboot'
+    Write-Console '  Phase 3  post-reboot AD DS role cleanup / optional DNS-workgroup cleanup'
+    Write-Console ''
+    Write-Console 'The assistant never deletes NTDS.dit/SYSVOL manually and never uses DISM to remove AD DS from a live DC.' Green
+}
+
+function New-DomainResetRecoveryBundle {
+    param([Parameter(Mandatory=$true)]$Context)
+
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $root = Join-Path $script:ResetRecoveryRoot ("domain-reset-{0}" -f $stamp)
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $root 'evidence') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $root 'gpo') -Force | Out-Null
+
+    New-ChangeSet
+    Copy-Item -LiteralPath $script:BackupPath `
+        -Destination (Join-Path $root 'control-plane-backup') `
+        -Recurse -Force
+
+    # Preserve the complete assistant state outside ExportPath so the final
+    # cleanup can remove ProgramData\WindowsADControlPlane without losing
+    # historical evidence.
+    if (Test-Path -LiteralPath $ExportPath) {
+        Copy-Item -LiteralPath $ExportPath `
+            -Destination (Join-Path $root 'control-plane-state') `
+            -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $Context | ConvertTo-Json -Depth 10 |
+        Set-Content -LiteralPath (Join-Path $root 'reset-context.json') -Encoding UTF8
+
+    if (Test-Path $script:PreProvisionStateFile) {
+        Copy-Item -LiteralPath $script:PreProvisionStateFile `
+            -Destination (Join-Path $root 'pre-provisioning-state.json') -Force
+    }
+
+    if (Test-Command 'Get-WindowsFeature') {
+        Get-WindowsFeature |
+            Select-Object Name, DisplayName, Installed, InstallState |
+            Export-Csv -LiteralPath (Join-Path $root 'evidence\windows-features.csv') `
+                -NoTypeInformation -Encoding UTF8
+    }
+
+    try {
+        Get-NetIPConfiguration |
+            ConvertTo-Json -Depth 10 |
+            Set-Content -LiteralPath (Join-Path $root 'evidence\network.json') -Encoding UTF8
+    }
+    catch {}
+
+    if ($script:IsDomainController) {
+        if (Test-Command 'dcdiag.exe') {
+            & dcdiag.exe /v *> (Join-Path $root 'evidence\dcdiag.txt')
+        }
+        if (Test-Command 'repadmin.exe') {
+            & repadmin.exe /replsummary *> (Join-Path $root 'evidence\repadmin-replsummary.txt')
+            & repadmin.exe /showrepl *> (Join-Path $root 'evidence\repadmin-showrepl.txt')
+        }
+
+        try {
+            Import-GroupPolicyModule
+            $previousProgress = $ProgressPreference
+            $ProgressPreference = 'SilentlyContinue'
+            Backup-GPO -All -Path (Join-Path $root 'gpo') -ErrorAction Stop | Out-Null
+            $ProgressPreference = $previousProgress
+        }
+        catch {
+            Add-Warning ("GPO pre-reset backup failed: {0}" -f $_.Exception.Message)
+        }
+    }
+
+    $state = [pscustomobject]@{
+        Stage        = 'Prepared'
+        CreatedAt    = Get-Date
+        RecoveryPath = $root
+        Domain       = $Context.DomainName
+        ComputerName = $Context.ComputerName
+        LastDC       = $Context.IsLastDcInDomain
+        LastForestDomain = $Context.IsLastDomainForest
+    }
+    $state | ConvertTo-Json -Depth 6 |
+        Set-Content -LiteralPath (Join-Path $root 'reset-state.json') -Encoding UTF8
+
+    return $root
+}
+
+function Get-LatestPendingDomainReset {
+    if (-not (Test-Path $script:ResetRecoveryRoot)) { return $null }
+
+    $files = @(Get-ChildItem -Path $script:ResetRecoveryRoot `
+        -Filter reset-state.json -Recurse -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending)
+
+    foreach ($file in $files) {
+        try {
+            $state = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+            if ($state.Stage -notin @('Complete','Cancelled')) {
+                $state | Add-Member -NotePropertyName StateFile -NotePropertyValue $file.FullName -Force
+                return $state
+            }
+        }
+        catch {}
+    }
+
+    return $null
+}
+
+function Set-DomainResetStage {
+    param(
+        [Parameter(Mandatory=$true)]$State,
+        [Parameter(Mandatory=$true)][string]$Stage
+    )
+
+    $State.Stage = $Stage
+    $State | ConvertTo-Json -Depth 8 |
+        Set-Content -LiteralPath $State.StateFile -Encoding UTF8
+}
+
+function Select-DemotionTargetDC {
+    $dcs = @(Get-ADDomainController -Filter * -ErrorAction Stop |
+        Where-Object HostName -ne $env:COMPUTERNAME |
+        Sort-Object HostName)
+
+    if ($dcs.Count -eq 0) { return $null }
+
+    Write-Console ''
+    Write-Console 'Healthy target DC for FSMO transfer:' Cyan
+    for ($i = 0; $i -lt $dcs.Count; $i++) {
+        Write-Console ('  [{0,2}] {1,-40} {2}' -f ($i + 1), $dcs[$i].HostName, $dcs[$i].IPv4Address)
+    }
+    Write-Console '  [ 0] Cancel'
+
+    $choice = Read-MenuChoice -Prompt 'Select target DC' -Default '0'
+    $n = 0
+    if (-not [int]::TryParse($choice, [ref]$n)) { return $null }
+    if ($n -lt 1 -or $n -gt $dcs.Count) { return $null }
+    return $dcs[$n - 1]
+}
+
+function Move-FsmoRolesBeforeDemotion {
+    param([Parameter(Mandatory=$true)]$Context)
+
+    if ($Context.OperationMasterRoles.Count -eq 0 -or $Context.IsLastDcInDomain) {
+        return $true
+    }
+
+    Write-Console ''
+    Write-Console 'This DC owns FSMO role(s); transfer them before demotion:' Yellow
+    $Context.OperationMasterRoles | ForEach-Object { Write-Console ("  - {0}" -f $_) Yellow }
+
+    $target = Select-DemotionTargetDC
+    if (-not $target) {
+        Write-Console 'FSMO transfer cancelled.' Yellow
+        return $false
+    }
+
+    if (-not (Confirm-Action `
+        -Action ("Transfer FSMO roles to {0}" -f $target.HostName) `
+        -Reason 'A planned DC decommission should transfer operations-master roles before demotion.' `
+        -Impact HIGH)) {
+        return $false
+    }
+
+    try {
+        Move-ADDirectoryServerOperationMasterRole `
+            -Identity $target.HostName `
+            -OperationMasterRole $Context.OperationMasterRoles `
+            -Confirm:$false `
+            -ErrorAction Stop | Out-Host
+
+        $remaining = @(Get-ADDomainController -Identity $env:COMPUTERNAME `
+            -ErrorAction Stop).OperationMasterRoles
+
+        if ($remaining.Count -gt 0) {
+            Write-Console 'One or more FSMO roles are still reported on this DC.' Red
+            return $false
+        }
+
+        Write-Log ("Transferred FSMO roles to {0}" -f $target.HostName) CHANGE
+        return $true
+    }
+    catch {
+        Write-Console ("FSMO transfer failed: {0}" -f $_.Exception.Message) Red
+        return $false
+    }
+}
+
+function Start-SupportedDomainReset {
+    Assert-DomainController
+    Import-Module ADDSDeployment -ErrorAction Stop
+
+    $ctx = Get-DomainResetContext
+    Show-DomainResetAssessment
+
+    Write-Console ''
+    Write-Console 'This operation uses the Microsoft-supported AD DS demotion workflow.' Yellow
+    Write-Console 'A reboot is expected and the current PowerShell session will terminate.' Yellow
+
+    if (-not (Confirm-ExactText `
+        -Prompt 'Confirm the AD DNS domain being modified.' `
+        -Expected $ctx.DomainName)) {
+        Write-Console 'Domain confirmation mismatch. Reset cancelled.' Yellow
+        return
+    }
+
+    $finalText = if ($ctx.IsLastDcInDomain) {
+        "ERASE DOMAIN {0}" -f $ctx.DomainName
+    }
+    else {
+        "DEMOTE DC {0}" -f $env:COMPUTERNAME
+    }
+
+    if (-not (Confirm-ExactText `
+        -Prompt 'Final authorization for the irreversible demotion phase.' `
+        -Expected $finalText)) {
+        Write-Console 'Reset cancelled.' Yellow
+        return
+    }
+
+    $recovery = New-DomainResetRecoveryBundle -Context $ctx
+    Write-Console ("Recovery bundle: {0}" -f $recovery) Green
+
+    if (Read-BooleanChoice `
+        -Prompt 'Create a Windows Server system-state backup before demotion?' `
+        -Default $true) {
+
+        if (-not (Invoke-SystemStateBackup)) {
+            if (-not (Confirm-ExactText `
+                -Prompt 'System-state backup was not completed.' `
+                -Expected 'CONTINUE WITHOUT SYSTEM STATE')) {
+                Write-Console 'Reset cancelled before demotion.' Yellow
+                return
+            }
+        }
+    }
+    else {
+        if (-not (Confirm-ExactText `
+            -Prompt 'Skipping recovery-grade system state is a high-risk choice.' `
+            -Expected 'CONTINUE WITHOUT SYSTEM STATE')) {
+            Write-Console 'Reset cancelled before demotion.' Yellow
+            return
+        }
+    }
+
+    if (-not (Move-FsmoRolesBeforeDemotion -Context $ctx)) {
+        Write-Console 'Reset stopped before demotion because FSMO placement is unresolved.' Red
+        return
+    }
+
+    $localPassword = Read-Host `
+        'New local Administrator password after demotion' `
+        -AsSecureString
+    $credential = Get-Credential `
+        -Message 'Credential authorized to demote this Domain Controller'
+
+    $params = @{
+        LocalAdministratorPassword = $localPassword
+        Credential                 = $credential
+        ErrorAction                = 'Stop'
+    }
+
+    if ($ctx.IsLastDcInDomain) {
+        $params.LastDomainControllerInDomain = $true
+        $params.RemoveApplicationPartitions = $true
+    }
+
+    Write-Console ''
+    Write-Console 'Running Microsoft prerequisite checks for DC demotion...' Cyan
+    try {
+        Test-ADDSDomainControllerUninstallation @params | Out-Host
+    }
+    catch {
+        Write-Console ("Demotion prerequisite check failed: {0}" -f $_.Exception.Message) Red
+        return
+    }
+
+    $stateFile = Join-Path $recovery 'reset-state.json'
+    $state = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
+    $state | Add-Member -NotePropertyName StateFile -NotePropertyValue $stateFile -Force
+    Set-DomainResetStage -State $state -Stage 'DemotionStarted'
+
+    Write-Console ''
+    Write-Console 'Starting supported AD DS demotion. The server is expected to reboot.' Red
+    Uninstall-ADDSDomainController @params -Confirm:$false
+}
+
+function Reset-DnsClientAfterDomainRemoval {
+    Write-Console ''
+    Write-Console 'DNS client configuration after domain removal:' Cyan
+    Write-Console '  [1] Reset DNS server addresses to DHCP/interface defaults'
+    Write-Console '  [2] Set explicit DNS server addresses'
+    Write-Console '  [3] Keep current DNS client configuration'
+    Write-Console '  [0] Cancel cleanup'
+
+    $choice = Read-MenuChoice -Default '3'
+    switch ($choice) {
+        '1' {
+            Get-NetAdapter |
+                Where-Object Status -eq 'Up' |
+                ForEach-Object {
+                    Set-DnsClientServerAddress `
+                        -InterfaceIndex $_.InterfaceIndex `
+                        -ResetServerAddresses `
+                        -ErrorAction SilentlyContinue
+                }
+            Write-Log 'Reset DNS client addresses to interface defaults.' CHANGE
+        }
+        '2' {
+            $raw = Read-Host 'DNS server IPs separated by comma'
+            $servers = @($raw.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            if ($servers.Count -eq 0) {
+                Write-Console 'No DNS servers provided.' Yellow
+                return
+            }
+
+            $up = @(Get-NetAdapter | Where-Object Status -eq 'Up')
+            if ($up.Count -eq 0) {
+                Write-Console 'No active network adapter found.' Yellow
+                return
+            }
+
+            for ($i = 0; $i -lt $up.Count; $i++) {
+                Write-Console ('  [{0}] {1}' -f ($i + 1), $up[$i].Name)
+            }
+            $n = [int](Read-Host 'Interface number')
+            if ($n -lt 1 -or $n -gt $up.Count) { return }
+
+            Set-DnsClientServerAddress `
+                -InterfaceIndex $up[$n - 1].InterfaceIndex `
+                -ServerAddresses $servers `
+                -ErrorAction Stop
+            Write-Log ("Set DNS client servers: {0}" -f ($servers -join ',')) CHANGE
+        }
+        '3' { return }
+        default { return }
+    }
+}
+
+function Complete-PostDemotionReset {
+    if ($script:IsDomainController) {
+        Write-Console 'This server is still a Domain Controller; post-demotion cleanup is not available.' Red
+        return
+    }
+
+    $state = Get-LatestPendingDomainReset
+    if (-not $state) {
+        Write-Console 'No pending domain-reset recovery state was found.' Yellow
+        return
+    }
+
+    Write-Section 'Post-demotion cleanup'
+    Write-Console ("Recovery bundle : {0}" -f $state.RecoveryPath)
+    Write-Console ("Reset stage     : {0}" -f $state.Stage)
+    Write-Console ("Current domain  : {0}" -f (Get-CimInstance Win32_ComputerSystem).Domain)
+
+    $cs = Get-CimInstance Win32_ComputerSystem
+    if ($cs.PartOfDomain) {
+        Write-Console ''
+        Write-Console 'The demoted server is still a member of the surviving domain.' Yellow
+        if (Read-BooleanChoice -Prompt 'Move this server to WORKGROUP now?' -Default $true) {
+            $credential = Get-Credential -Message 'Domain credential authorized to unjoin this server'
+            Set-DomainResetStage -State $state -Stage 'WorkgroupPending'
+            Remove-Computer `
+                -UnjoinDomainCredential $credential `
+                -WorkgroupName 'WORKGROUP' `
+                -Force `
+                -Restart
+            return
+        }
+    }
+
+    if (Test-ServerFeatureInstalled -Name 'AD-Domain-Services') {
+        if (-not (Confirm-Action `
+            -Action 'Remove AD-Domain-Services role binaries' `
+            -Reason 'The host is no longer a DC; remove the AD DS role payload.' `
+            -Impact HIGH)) {
+            return
+        }
+
+        $result = Uninstall-WindowsFeature `
+            -Name 'AD-Domain-Services' `
+            -ErrorAction Stop
+        $result | Out-Host
+
+        if ($result.RestartNeeded -eq 'Yes') {
+            Add-Warning 'AD DS role removal requests another reboot.'
+        }
+    }
+
+    if (Test-ServerFeatureInstalled -Name 'DNS') {
+        Write-Console ''
+        Write-Console 'DNS Server role is still installed.' Yellow
+        Write-Console 'It may contain non-AD zones, so it is never removed automatically.' Gray
+
+        if (Read-BooleanChoice `
+            -Prompt 'Remove the DNS Server role as part of this decommission?' `
+            -Default $false) {
+
+            if (Confirm-ExactText `
+                -Prompt 'This removes the Windows DNS Server role.' `
+                -Expected 'REMOVE DNS ROLE') {
+
+                Uninstall-WindowsFeature -Name 'DNS' -ErrorAction Stop | Out-Host
+                Write-Log 'Removed DNS Server role by explicit operator authorization.' CHANGE
+            }
+        }
+    }
+
+    Reset-DnsClientAfterDomainRemoval
+
+    if (Test-Path $script:LogFile) {
+        Copy-Item -LiteralPath $script:LogFile `
+            -Destination (Join-Path $state.RecoveryPath 'control-plane-reset.log') `
+            -Force -ErrorAction SilentlyContinue
+    }
+
+    Set-DomainResetStage -State $state -Stage 'Complete'
+
+    Write-Console ''
+    Write-Console ("Assistant runtime state is stored under: {0}" -f $ExportPath) Gray
+    Write-Console 'A copy of that state is already preserved in the external recovery bundle.' Gray
+    if (Read-BooleanChoice -Prompt 'Remove WindowsADControlPlane runtime state from this host?' -Default $true) {
+        if (Test-Path -LiteralPath $script:LogFile) {
+            Copy-Item -LiteralPath $script:LogFile `
+                -Destination (Join-Path $state.RecoveryPath 'control-plane-final.log') `
+                -Force -ErrorAction SilentlyContinue
+        }
+
+        Remove-Item -LiteralPath $ExportPath -Recurse -Force -ErrorAction SilentlyContinue
+        $script:LogFile = $null
+        $script:ReportFile = $null
+    }
+
+    $script:ResetCompleted = $true
+
+    Write-Console ''
+    Write-Rule
+    Write-Console '  DOMAIN RESET COMPLETE' Green
+    Write-Console ("  Recovery bundle : {0}" -f $state.RecoveryPath)
+    Write-Console ("  Domain joined   : {0}" -f (Get-CimInstance Win32_ComputerSystem).PartOfDomain)
+    Write-Console ("  AD DS feature   : {0}" -f (Test-ServerFeatureInstalled -Name 'AD-Domain-Services'))
+    Write-Console '  Management tools: retained unless independently removed'
+    Write-Console '  Network/IP      : retained; DNS client reviewed interactively'
+    Write-Console '  Next action     : reboot if Windows reports one pending'
+    Write-Rule
+}
+
+function Show-DomainResetMenu {
+    while ($true) {
+        if ($script:MainMenuRequested) { return }
+
+        Write-MenuHeader 'DOMAIN DECOMMISSION / RESET' 'Supported AD DS demotion, recovery evidence and post-reboot host cleanup'
+        Write-MenuItem '1' 'Reset assessment' 'DC count, FSMO ownership, roles and reset scope'
+        if ($script:IsDomainController) {
+            Write-MenuItem '2' 'Start supported reset' 'Recovery bundle + optional system-state + graceful DC demotion' Danger
+        }
+        else {
+            Write-MenuItem '2' 'Start supported reset' 'Unavailable: host is not currently a Domain Controller' Warn
+        }
+        Write-MenuItem '3' 'Finalize after reboot' 'Remove AD DS role, optional domain membership/DNS cleanup' Good
+        Write-MenuItem '4' 'Dependency audit' 'Verify official Microsoft features needed by the reset workflow'
+        Write-MenuNavigation
+        Write-Rule
+
+        switch (Read-MenuChoice -Default '1') {
+            '1' { Show-DomainResetAssessment; Pause-ControlPlane }
+            '2' {
+                if ($script:IsDomainController) { Start-SupportedDomainReset }
+                else { Write-Console 'This server is not a Domain Controller.' Yellow; Pause-ControlPlane }
+            }
+            '3' { Complete-PostDemotionReset; if (-not $script:ResetCompleted) { Pause-ControlPlane } }
+            '4' { Show-WindowsDependencyAudit; Pause-ControlPlane }
+            'H' { $script:MainMenuRequested = $true; return }
+            '0' { return }
+            default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
+        }
+
+        if ($script:ResetCompleted) { return }
+    }
+}
+
 # ===========================================================================
 # Interactive menus
 # ===========================================================================
@@ -4798,6 +5699,8 @@ function Show-AdOperationsMenu {
         Write-MenuItem '8' 'Host security' 'Role-aware server hardening'
         Write-MenuItem '9' 'Domain migration' 'Assessment, inventory, trusts and migration packages' Warn
         Write-MenuItem '10' 'Directory protocol security' 'Kerberos/LDAP/SMB security posture for the Domain Controller' Good
+        Write-MenuItem '11' 'Dependencies' 'Repair missing official RSAT/GPMC/DNS/backup features'
+        Write-MenuItem '12' 'Domain decommission / reset' 'Supported demotion and host cleanup' Danger
         Write-MenuNavigation
         Write-Rule
 
@@ -4812,6 +5715,8 @@ function Show-AdOperationsMenu {
             '8' { Show-SecurityMenu }
             '9' { Show-DomainMigrationMenu }
             '10' { Show-DirectorySecurityMenu }
+            '11' { Show-DependencyMenu }
+            '12' { Show-DomainResetMenu }
             'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
@@ -4844,6 +5749,8 @@ function Show-MainMenu {
         if ($script:IsDomainController) {
             Write-MenuItem '9' 'Directory protocol security' 'Kerberos AES/RC4, LDAP signing/channel binding and strict SMB' Good
         }
+        Write-MenuItem '10' 'Dependencies & servicing' 'Official Windows features, modules and servicing status'
+        Write-MenuItem '11' 'Domain decommission / reset' 'Supported DC demotion and post-reboot cleanup' Danger
         Write-MenuItem '0' 'Exit' 'Close control plane' Danger
         Write-Rule
 
@@ -4889,6 +5796,8 @@ function Show-MainMenu {
                 if ($script:IsDomainController) { Show-DirectorySecurityMenu }
                 else { Write-Console 'Directory protocol security requires a Domain Controller.' Yellow; Pause-ControlPlane }
             }
+            '10' { Show-DependencyMenu }
+            '11' { Show-DomainResetMenu }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
         }
@@ -5038,6 +5947,14 @@ try {
             }
         }
 
+        'Dependencies' {
+            Show-DependencyMenu
+        }
+
+        'Reset' {
+            Show-DomainResetMenu
+        }
+
         default {
             $script:Results.Clear()
             Invoke-HostAudit
@@ -5055,8 +5972,10 @@ try {
         Show-MainMenu
     }
 
-    Write-Report
-    Show-Summary
+    if (-not $script:ResetCompleted) {
+        Write-Report
+        Show-Summary
+    }
 }
 catch {
     if ($script:LogFile) {
