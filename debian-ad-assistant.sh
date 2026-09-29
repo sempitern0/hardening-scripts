@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 4.1.0-professional-ui
+# Version 4.2.1-cli-discovery
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -40,7 +40,7 @@ IFS=$'\n\t'
 umask 077
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="4.1.0-professional-ui"
+SCRIPT_VERSION="4.2.1-cli-discovery"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -380,12 +380,13 @@ Usage:
   sudo bash $0 --gpo
   sudo bash $0 --security
   sudo bash $0 --install-cli
+  sudo bash $0 --cli-info
   sudo bash $0 --no-color
   sudo bash $0 --help
 
 Convenience commands installed by --install-cli:
   adctl, ad-users, ad-groups, ad-computers, ad-permissions,
-  ad-gpo, ad-security, ad-audit, ad-validate, ad-backup
+  ad-gpo, ad-security, ad-audit, ad-validate, ad-status, ad-backup, ad-tools
 
 Safety:
   - Existing sam.ldb is never reprovisioned.
@@ -408,6 +409,8 @@ detect_invocation_alias() {
         ad-audit) MODE="audit" ;;
         ad-validate) MODE="validate" ;;
         ad-backup) MODE="backup" ;;
+        ad-status) MODE="status" ;;
+        ad-tools) MODE="cli-info" ;;
     esac
 }
 
@@ -428,6 +431,7 @@ parse_args() {
             --gpo) MODE="gpo" ;;
             --security) MODE="security" ;;
             --install-cli) MODE="install-cli" ;;
+            --cli-info|--tools) MODE="cli-info" ;;
             --no-color) FORCE_NO_COLOR=1 ;;
             --help|-h) usage; exit 0 ;;
             *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
@@ -1566,6 +1570,9 @@ manage_gpos() {
     machine_guid="$(ensure_gpo 'DC - Computer Baseline')"
     base_dn="$(domain_dn "$DOMAIN")"
 
+    backup_gpo_safe "$user_guid" || true
+    backup_gpo_safe "$machine_guid" || true
+
     samba-tool gpo load "$user_guid" --content="${GPO_DIR}/user-baseline.json" --use-kerberos=required >/dev/null
     samba-tool gpo load "$machine_guid" --content="${GPO_DIR}/machine-baseline.json" --use-kerberos=required >/dev/null
     samba-tool gpo setlink "$base_dn" "$user_guid" --use-kerberos=required >/dev/null
@@ -1826,53 +1833,682 @@ list_domain_computers_status() {
     done < <(samba-tool computer list 2>/dev/null | sort)
 }
 
-user_admin_menu() {
+
+# ---------------------------------------------------------------------------
+# Indexed directory/GPO selectors and richer account workflows
+# ---------------------------------------------------------------------------
+
+samba_tool_option_supported() {
+    local area="$1" action="$2" option="$3"
+    samba-tool "$area" "$action" --help 2>&1 | grep -Fq -- "$option"
+}
+
+list_domain_groups_indexed() {
+    local -a groups=()
+    mapfile -t groups < <(samba-tool group list 2>/dev/null | sort)
+    local i
+    printf '\n' >&2
+    ui_rule >&2
+    printf '%b%b  DOMAIN GROUPS%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET" >&2
+    ui_rule >&2
+    for i in "${!groups[@]}"; do
+        printf '  %b[%2d]%b  %s\n' "$C_DIM" "$((i+1))" "$C_RESET" "${groups[$i]}" >&2
+    done
+    printf '  %b[N ]%b  Create a new group\n' "$C_GREEN" "$C_RESET" >&2
+    printf '  %b[M ]%b  Enter group name manually\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[0 ]%b  Cancel\n' "$C_RED" "$C_RESET" >&2
+    ui_rule >&2
+}
+
+create_group_selector_item() {
+    local group
+    group="$(ask 'New group name')"
+    [[ -n "$group" ]] || return 1
+
+    if samba-tool group show "$group" >/dev/null 2>&1; then
+        msg_warn "Group '$group' already exists."
+        printf '%s' "$group"
+        return 0
+    fi
+
+    # Keep group creation portable across Samba versions; advanced group
+    # attributes remain available through the group editor afterwards.
+    samba-tool group add "$group" >&2
+    change APPLIED "Created AD group=$group"
+    printf '%s' "$group"
+}
+
+select_domain_group() {
+    local -a groups=()
+    mapfile -t groups < <(samba-tool group list 2>/dev/null | sort)
+    list_domain_groups_indexed
+
+    local choice
+    choice="$(ask 'Select group' '0')"
+    case "${choice^^}" in
+        0|"") return 1 ;;
+        N) create_group_selector_item ;;
+        M)
+            local manual
+            manual="$(ask 'Group name')"
+            [[ -n "$manual" ]] || return 1
+            samba-tool group show "$manual" >/dev/null 2>&1 || {
+                msg_warn "Group '$manual' does not exist."
+                return 1
+            }
+            printf '%s' "$manual"
+            ;;
+        *)
+            [[ "$choice" =~ ^[0-9]+$ ]] || { msg_warn "Invalid group selection."; return 1; }
+            (( choice >= 1 && choice <= ${#groups[@]} )) || { msg_warn "Group selection out of range."; return 1; }
+            printf '%s' "${groups[$((choice-1))]}"
+            ;;
+    esac
+}
+
+list_user_groups_indexed() {
+    local user="$1"
+    local -a groups=()
+    mapfile -t groups < <(samba-tool user getgroups "$user" 2>/dev/null | sort)
+    local i
+    printf '\n' >&2
+    ui_rule >&2
+    printf '%b%b  CURRENT MEMBERSHIPS: %s%b\n' "$C_BOLD" "$C_WHITE" "$user" "$C_RESET" >&2
+    ui_rule >&2
+    for i in "${!groups[@]}"; do
+        printf '  %b[%2d]%b  %s\n' "$C_DIM" "$((i+1))" "$C_RESET" "${groups[$i]}" >&2
+    done
+    printf '  %b[0 ]%b  Cancel\n' "$C_RED" "$C_RESET" >&2
+    ui_rule >&2
+}
+
+select_user_group_membership() {
+    local user="$1"
+    local -a groups=()
+    mapfile -t groups < <(samba-tool user getgroups "$user" 2>/dev/null | sort)
+    ((${#groups[@]})) || { msg_warn "No direct group memberships returned."; return 1; }
+    list_user_groups_indexed "$user"
+    local choice
+    choice="$(ask 'Select membership' '0')"
+    [[ "$choice" =~ ^[0-9]+$ ]] || return 1
+    (( choice >= 1 && choice <= ${#groups[@]} )) || return 1
+    printf '%s' "${groups[$((choice-1))]}"
+}
+
+manage_user_memberships() {
+    local user="$1" choice group
     while true; do
-        ui_menu_screen "USER DIRECTORY" "Account lifecycle, credentials and direct memberships"
-        ui_menu_item "1" "List users" "Inventory all domain user accounts"
-        ui_menu_item "2" "Inspect user" "Show directory attributes for one account"
-        ui_menu_item "3" "Create user" "Create a new domain identity" "$C_GREEN"
-        ui_menu_item "4" "Edit user" "Open Samba's object editor"
-        ui_menu_item "5" "Reset password" "Set a new domain password"
-        ui_menu_item "6" "Enable user" "Re-enable a disabled identity" "$C_GREEN"
-        ui_menu_item "7" "Disable user" "Block interactive authentication" "$C_YELLOW"
-        ui_menu_item "8" "Unlock user" "Clear supported lockout state"
-        ui_menu_item "9" "Group memberships" "List direct groups for an account"
-        ui_menu_item "10" "Delete user" "Permanently remove an identity" "$C_RED"
+        ui_menu_screen "USER GROUP MEMBERSHIPS" "Manage direct group memberships for $user"
+        ui_menu_item "1" "Show memberships" "List the user's current direct groups"
+        ui_menu_item "2" "Add to group" "Select an existing group or create a new one" "$C_GREEN"
+        ui_menu_item "3" "Remove from group" "Select one current membership to revoke" "$C_YELLOW"
+        ui_menu_item "4" "Set primary group" "Select an existing domain group"
         ui_menu_exit
         ui_rule
-        local choice user
+
         choice="$(ask 'Select operation' '1')"
         case "$choice" in
-            1) samba-tool user list | sort; ui_pause ;;
-            2) user="$(ask 'User')"; samba-tool user show "$user"; ui_pause ;;
-            3)
-                user="$(ask 'New user')"
-                is_valid_ad_username "$user" || { msg_warn "Invalid/reserved account."; ui_pause; continue; }
-                samba-tool user create "$user" <"$INPUT_FD"
+            1) samba-tool user getgroups "$user" | sort; ui_pause ;;
+            2)
+                if group="$(select_domain_group)"; then
+                    samba-tool group addmembers "$group" "$user"
+                    change APPLIED "Added $user to group=$group"
+                fi
                 ui_pause
                 ;;
-            4) user="$(ask 'User')"; samba-tool user edit "$user"; ui_pause ;;
-            5) user="$(ask 'User')"; samba-tool user setpassword "$user" <"$INPUT_FD"; ui_pause ;;
-            6) user="$(ask 'User')"; samba-tool user enable "$user"; ui_pause ;;
-            7)
-                user="$(ask 'User')"
+            3)
+                if group="$(select_user_group_membership "$user")"; then
+                    if [[ "${group,,}" == "domain users" ]]; then
+                        msg_warn "Domain Users is normally the primary group; removal is not offered here."
+                    elif confirm "Remove '$user' from '$group'?" N; then
+                        samba-tool group removemembers "$group" "$user"
+                        change APPLIED "Removed $user from group=$group"
+                    fi
+                fi
+                ui_pause
+                ;;
+            4)
+                if group="$(select_domain_group)"; then
+                    confirm "Set '$group' as primary group for '$user'?" N &&
+                        samba-tool user setprimarygroup "$user" "$group"
+                fi
+                ui_pause
+                ;;
+            0) break ;;
+            *) msg_warn "Invalid menu option."; ui_pause ;;
+        esac
+    done
+}
+
+list_ou_dns_indexed() {
+    local base_dn
+    base_dn="$(domain_dn "$DOMAIN")"
+    local -a ous=()
+    mapfile -t ous < <(
+        ldbsearch -H /var/lib/samba/private/sam.ldb -b "$base_dn" \
+            '(&(objectClass=organizationalUnit))' dn 2>/dev/null |
+        awk -F': ' '/^dn: /{print $2}' | sort
+    )
+    local i
+    printf '\n' >&2
+    ui_rule >&2
+    printf '%b%b  DIRECTORY TARGETS%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET" >&2
+    ui_rule >&2
+    printf '  %b[ 1]%b  %s  %b(domain root)%b\n' "$C_DIM" "$C_RESET" "$base_dn" "$C_DIM" "$C_RESET" >&2
+    for i in "${!ous[@]}"; do
+        printf '  %b[%2d]%b  %s\n' "$C_DIM" "$((i+2))" "$C_RESET" "${ous[$i]}" >&2
+    done
+    printf '  %b[M ]%b  Enter DN manually\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[0 ]%b  Cancel\n' "$C_RED" "$C_RESET" >&2
+    ui_rule >&2
+}
+
+select_directory_target_dn() {
+    local base_dn
+    base_dn="$(domain_dn "$DOMAIN")"
+    local -a ous=()
+    mapfile -t ous < <(
+        ldbsearch -H /var/lib/samba/private/sam.ldb -b "$base_dn" \
+            '(&(objectClass=organizationalUnit))' dn 2>/dev/null |
+        awk -F': ' '/^dn: /{print $2}' | sort
+    )
+    list_ou_dns_indexed
+    local choice
+    choice="$(ask 'Select directory target' '1')"
+    case "${choice^^}" in
+        0|"") return 1 ;;
+        M)
+            local manual
+            manual="$(ask 'Container/OU DN')"
+            [[ -n "$manual" ]] || return 1
+            printf '%s' "$manual"
+            ;;
+        *)
+            [[ "$choice" =~ ^[0-9]+$ ]] || { msg_warn "Invalid target selection."; return 1; }
+            if (( choice == 1 )); then
+                printf '%s' "$base_dn"
+            elif (( choice >= 2 && choice <= ${#ous[@]} + 1 )); then
+                printf '%s' "${ous[$((choice-2))]}"
+            else
+                msg_warn "Target selection out of range."
+                return 1
+            fi
+            ;;
+    esac
+}
+
+configure_user_profile_interactive() {
+    local user="$1"
+    local given surname display mail upn
+    given="$(ask 'Given name (blank=keep/skip)' '')"
+    surname="$(ask 'Surname (blank=keep/skip)' '')"
+    display="$(ask 'Display name (blank=keep/skip)' '')"
+    mail="$(ask 'Mail address (blank=keep/skip)' '')"
+    upn="$(ask 'UPN (blank=keep/skip)' '')"
+
+    local -a args=(user rename "$user")
+    [[ -n "$given" ]] && args+=("--given-name=$given")
+    [[ -n "$surname" ]] && args+=("--surname=$surname")
+    [[ -n "$display" ]] && args+=("--display-name=$display")
+    [[ -n "$mail" ]] && args+=("--mail-address=$mail")
+    [[ -n "$upn" ]] && args+=("--upn=$upn")
+
+    if ((${#args[@]} > 3)); then
+        samba-tool "${args[@]}"
+        change APPLIED "Updated profile attributes for user=$user"
+    else
+        result SKIP "User profile" "no profile fields supplied" "unchanged"
+    fi
+}
+
+create_user_interactive() {
+    local user must_change enabled target group
+    user="$(ask 'New user account')"
+    is_valid_ad_username "$user" || { msg_warn "Invalid/reserved account."; return 1; }
+
+    if samba-tool user show "$user" >/dev/null 2>&1; then
+        msg_warn "User '$user' already exists."
+        return 1
+    fi
+
+    must_change="yes"
+    confirm "Require password change at first domain logon?" Y || must_change="no"
+
+    local -a args=(user add "$user")
+    if [[ "$must_change" == "yes" ]] && samba_tool_option_supported user add "--must-change-at-next-login"; then
+        args+=(--must-change-at-next-login)
+    fi
+
+    printf '\nSamba will request the initial password for %s.\n' "$user"
+    samba-tool "${args[@]}" <"$INPUT_FD"
+    change APPLIED "Created AD user=$user"
+
+    if [[ "$must_change" == "yes" ]] && ! samba_tool_option_supported user add "--must-change-at-next-login"; then
+        msg_warn "This Samba build does not advertise --must-change-at-next-login on user add."
+        msg_warn "Use Reset password from the user menu to apply it if supported by setpassword."
+    fi
+
+    if confirm "Configure profile/name attributes now?" Y; then
+        configure_user_profile_interactive "$user"
+    fi
+
+    if confirm "Move user to a specific OU/container?" N; then
+        if target="$(select_directory_target_dn)"; then
+            samba-tool user move "$user" "$target"
+            change APPLIED "Moved user=$user to $target"
+        fi
+    fi
+
+    enabled="yes"
+    confirm "Leave account enabled?" Y || enabled="no"
+    [[ "$enabled" == "yes" ]] || samba-tool user disable "$user"
+
+    if confirm "Add '$user' to domain groups now?" Y; then
+        while true; do
+            group=""
+            if group="$(select_domain_group)"; then
+                samba-tool group addmembers "$group" "$user"
+                change APPLIED "Added $user to group=$group"
+            fi
+            confirm "Add '$user' to another group?" N || break
+        done
+    fi
+}
+
+reset_user_password_interactive() {
+    local user="$1" must_change="no"
+    confirm "Require password change at next logon?" Y && must_change="yes"
+
+    printf '\nSamba will request the new password for %s.\n' "$user"
+    if [[ "$must_change" == "yes" ]] && samba_tool_option_supported user setpassword "--must-change-at-next-login"; then
+        samba-tool user setpassword "$user" --must-change-at-next-login <"$INPUT_FD"
+    else
+        samba-tool user setpassword "$user" <"$INPUT_FD"
+        [[ "$must_change" == "yes" ]] &&
+            msg_warn "This Samba build does not advertise --must-change-at-next-login for setpassword."
+    fi
+}
+
+edit_user_interactive_menu() {
+    local user="$1" choice target
+    while true; do
+        ui_menu_screen "EDIT USER" "Structured account operations for $user"
+        ui_menu_item "1" "Profile / naming" "Given name, surname, display name, mail and UPN"
+        ui_menu_item "2" "Move to OU" "Select a directory target by index"
+        ui_menu_item "3" "Group memberships" "Add/remove memberships with indexed selectors"
+        ui_menu_item "4" "Reset password" "Optionally require change at next logon"
+        ui_menu_item "5" "Enable account" "Allow authentication" "$C_GREEN"
+        ui_menu_item "6" "Disable account" "Block authentication" "$C_YELLOW"
+        ui_menu_item "7" "Unlock account" "Clear supported lockout state"
+        ui_menu_item "8" "Advanced object editor" "Open Samba's raw AD object editor" "$C_YELLOW"
+        ui_menu_exit
+        ui_rule
+
+        choice="$(ask 'Select operation' '1')"
+        case "$choice" in
+            1) configure_user_profile_interactive "$user"; ui_pause ;;
+            2)
+                if target="$(select_directory_target_dn)"; then
+                    samba-tool user move "$user" "$target"
+                    change APPLIED "Moved user=$user to $target"
+                fi
+                ui_pause
+                ;;
+            3) manage_user_memberships "$user" ;;
+            4) reset_user_password_interactive "$user"; ui_pause ;;
+            5) samba-tool user enable "$user"; ui_pause ;;
+            6)
                 case "${user,,}" in administrator|krbtgt) msg_warn "Protected built-in account."; ui_pause; continue ;; esac
                 confirm_high_risk "Disable AD user '$user'" && samba-tool user disable "$user"
                 ui_pause
                 ;;
-            8)
-                user="$(ask 'User')"
+            7)
                 samba-tool user unlock --help >/dev/null 2>&1 \
                     && samba-tool user unlock "$user" \
                     || msg_warn "user unlock is unsupported by installed Samba."
                 ui_pause
                 ;;
+            8) samba-tool user edit "$user"; ui_pause ;;
+            0) break ;;
+            *) msg_warn "Invalid menu option."; ui_pause ;;
+        esac
+    done
+}
+
+gpo_inventory_tsv() {
+    samba-tool gpo listall --use-kerberos=required 2>/dev/null |
+        awk '
+            /^[[:space:]]*GPO[[:space:]]*:/ {
+                guid=$0
+                sub(/^[^:]*:[[:space:]]*/, "", guid)
+                next
+            }
+            /^[[:space:]]*display name[[:space:]]*:/ {
+                name=$0
+                sub(/^[^:]*:[[:space:]]*/, "", name)
+                if (guid != "") {
+                    printf "%s\t%s\n", guid, name
+                    guid=""
+                }
+            }'
+}
+
+show_gpo_inventory_indexed() {
+    local -a entries=()
+    mapfile -t entries < <(gpo_inventory_tsv)
+    local i guid name
+    printf '\n'
+    ui_rule
+    printf '%b%b  GROUP POLICY OBJECTS%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET"
+    ui_rule
+    if ((${#entries[@]} == 0)); then
+        printf '  %bNo GPOs returned.%b\n' "$C_YELLOW" "$C_RESET"
+    else
+        for i in "${!entries[@]}"; do
+            guid="${entries[$i]%%$'\t'*}"
+            name="${entries[$i]#*$'\t'}"
+            printf '  %b[%2d]%b  %-42s %s\n' "$C_DIM" "$((i+1))" "$C_RESET" "$name" "$guid"
+        done
+    fi
+    ui_rule
+}
+
+select_gpo_guid() {
+    local -a entries=()
+    mapfile -t entries < <(gpo_inventory_tsv)
+    local i guid name
+    printf '\n' >&2
+    ui_rule >&2
+    printf '%b%b  SELECT GROUP POLICY OBJECT%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET" >&2
+    ui_rule >&2
+    for i in "${!entries[@]}"; do
+        guid="${entries[$i]%%$'\t'*}"
+        name="${entries[$i]#*$'\t'}"
+        printf '  %b[%2d]%b  %-38s %s\n' "$C_DIM" "$((i+1))" "$C_RESET" "$name" "$guid" >&2
+    done
+    printf '  %b[M ]%b  Enter GUID manually\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[0 ]%b  Cancel\n' "$C_RED" "$C_RESET" >&2
+    ui_rule >&2
+
+    local choice manual
+    choice="$(ask 'Select GPO' '0')"
+    case "${choice^^}" in
+        0|"") return 1 ;;
+        M)
+            manual="$(ask 'GPO GUID')"
+            [[ -n "$manual" ]] || return 1
+            printf '%s' "$manual"
+            ;;
+        *)
+            [[ "$choice" =~ ^[0-9]+$ ]] || { msg_warn "Invalid GPO selection."; return 1; }
+            (( choice >= 1 && choice <= ${#entries[@]} )) || { msg_warn "GPO selection out of range."; return 1; }
+            printf '%s' "${entries[$((choice-1))]%%$'\t'*}"
+            ;;
+    esac
+}
+
+backup_gpo_safe() {
+    local guid="$1"
+    if samba-tool gpo backup --help >/dev/null 2>&1; then
+        local dir="${RUN_ROOT}/gpo-backup"
+        mkdir -p "$dir"
+        samba-tool gpo backup "$guid" --tmpdir="$dir" --use-kerberos=required >/dev/null 2>&1 || {
+            msg_warn "GPO backup failed for $guid; continuing only if operator authorizes later operation."
+            return 1
+        }
+        result PASS "GPO backup" "$guid -> $dir" "completed"
+    else
+        result WARN "GPO backup" "unsupported by installed Samba" "manual/domain backup recommended"
+        return 1
+    fi
+}
+
+write_security_gpo_catalog_sources() {
+    mkdir -p "$GPO_DIR"
+
+    cat >"${GPO_DIR}/sec-powershell-logging.json" <<'EOF'
+[
+  {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging","valuename":"EnableScriptBlockLogging","class":"MACHINE","type":"REG_DWORD","data":1},
+  {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ModuleLogging","valuename":"EnableModuleLogging","class":"MACHINE","type":"REG_DWORD","data":1},
+  {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ModuleLogging\\ModuleNames","valuename":"*","class":"MACHINE","type":"REG_SZ","data":"*"}
+]
+EOF
+
+    cat >"${GPO_DIR}/sec-disable-llmnr.json" <<'EOF'
+[
+  {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient","valuename":"EnableMulticast","class":"MACHINE","type":"REG_DWORD","data":0}
+]
+EOF
+
+    cat >"${GPO_DIR}/sec-smb-guest.json" <<'EOF'
+[
+  {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation","valuename":"AllowInsecureGuestAuth","class":"MACHINE","type":"REG_DWORD","data":0}
+]
+EOF
+
+    cat >"${GPO_DIR}/sec-rdp-nla.json" <<'EOF'
+[
+  {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows NT\\Terminal Services","valuename":"UserAuthentication","class":"MACHINE","type":"REG_DWORD","data":1}
+]
+EOF
+
+    cat >"${GPO_DIR}/sec-screen-lock.json" <<'EOF'
+[
+  {"keyname":"Software\\Policies\\Microsoft\\Windows\\Control Panel\\Desktop","valuename":"ScreenSaveActive","class":"USER","type":"REG_SZ","data":"1"},
+  {"keyname":"Software\\Policies\\Microsoft\\Windows\\Control Panel\\Desktop","valuename":"ScreenSaveTimeOut","class":"USER","type":"REG_SZ","data":"600"},
+  {"keyname":"Software\\Policies\\Microsoft\\Windows\\Control Panel\\Desktop","valuename":"ScreenSaverIsSecure","class":"USER","type":"REG_SZ","data":"1"}
+]
+EOF
+
+    cat >"${GPO_DIR}/sec-disable-alwaysinstallelevated.json" <<'EOF'
+[
+  {"keyname":"SOFTWARE\\Policies\\Microsoft\\Windows\\Installer","valuename":"AlwaysInstallElevated","class":"MACHINE","type":"REG_DWORD","data":0},
+  {"keyname":"Software\\Policies\\Microsoft\\Windows\\Installer","valuename":"AlwaysInstallElevated","class":"USER","type":"REG_DWORD","data":0}
+]
+EOF
+
+    cat >"${GPO_DIR}/sec-legal-notice.json" <<EOF
+[
+  {"keyname":"SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Policies\\\\System","valuename":"LegalNoticeCaption","class":"MACHINE","type":"REG_SZ","data":"${DOMAIN}"},
+  {"keyname":"SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Policies\\\\System","valuename":"LegalNoticeText","class":"MACHINE","type":"REG_SZ","data":"Sistema perteneciente al dominio ${DOMAIN}. Acceso restringido a usuarios autorizados."}
+]
+EOF
+
+    chmod 600 "${GPO_DIR}"/sec-*.json
+    local f
+    for f in "${GPO_DIR}"/sec-*.json; do
+        python3 -m json.tool "$f" >/dev/null
+    done
+}
+
+deploy_security_gpo_template() {
+    local id="$1" target_dn="$2"
+    local name file guid impact="MEDIUM"
+
+    case "$id" in
+        1) name="SEC - PowerShell Logging"; file="${GPO_DIR}/sec-powershell-logging.json" ;;
+        2) name="SEC - Disable LLMNR"; file="${GPO_DIR}/sec-disable-llmnr.json" ;;
+        3) name="SEC - SMB Guest Hardening"; file="${GPO_DIR}/sec-smb-guest.json" ;;
+        4) name="SEC - RDP Network Level Authentication"; file="${GPO_DIR}/sec-rdp-nla.json" ;;
+        5) name="SEC - Secure Screen Lock"; file="${GPO_DIR}/sec-screen-lock.json" ;;
+        6) name="SEC - Disable AlwaysInstallElevated"; file="${GPO_DIR}/sec-disable-alwaysinstallelevated.json" ;;
+        7) name="SEC - Authorized Use Notice"; file="${GPO_DIR}/sec-legal-notice.json"; impact="LOW" ;;
+        *) msg_warn "Unknown security GPO template: $id"; return 1 ;;
+    esac
+
+    guid="$(find_gpo_guid "$name")"
+    if [[ -n "$guid" ]]; then
+        backup_gpo_safe "$guid" || true
+    else
+        guid="$(ensure_gpo "$name")"
+    fi
+    [[ -n "$guid" ]] || { msg_warn "Unable to create/find GPO '$name'."; return 1; }
+
+    samba-tool gpo load "$guid" --content="$file" --use-kerberos=required >/dev/null
+    samba-tool gpo setlink "$target_dn" "$guid" --use-kerberos=required >/dev/null
+
+    change APPLIED "Security GPO '$name' guid=$guid target=$target_dn"
+    result PASS "$name" "$guid linked to $target_dn" "deployed"
+}
+
+security_gpo_catalog_menu() {
+    ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"
+    samba-tool gpo load --help >/dev/null 2>&1 ||
+        { msg_warn "Installed Samba does not support gpo load."; return 1; }
+
+    write_security_gpo_catalog_sources
+
+    while true; do
+        ui_menu_screen "SECURITY GPO CATALOG" "Curated registry-based policies for common domain hardening"
+        ui_menu_item "1" "PowerShell Logging" "Script Block + Module Logging"
+        ui_menu_item "2" "Disable LLMNR" "Reduce multicast name-resolution poisoning exposure"
+        ui_menu_item "3" "SMB Guest Hardening" "Disable insecure guest authentication"
+        ui_menu_item "4" "RDP NLA" "Require Network Level Authentication"
+        ui_menu_item "5" "Secure Screen Lock" "10-minute secure screensaver for users"
+        ui_menu_item "6" "Disable AlwaysInstallElevated" "Disable elevated MSI policy for machine + user"
+        ui_menu_item "7" "Authorized Use Notice" "Domain legal/authorized-use banner"
+        ui_menu_item "A" "Recommended starter pack" "Deploy 1,2,3,4,5,6"
+        ui_menu_item "D" "Domain password policy" "Review/configure Samba complexity + lockout settings"
+        ui_menu_exit
+        ui_rule
+
+        local choice target id
+        choice="$(ask 'Select policy' '0')"
+        case "${choice^^}" in
+            0) break ;;
+            A)
+                if target="$(select_directory_target_dn)"; then
+                    for id in 1 2 3 4 5 6; do
+                        deploy_security_gpo_template "$id" "$target"
+                    done
+                    samba-tool ntacl sysvolcheck >/dev/null 2>&1 || msg_warn "SYSVOL ACL differences detected after GPO deployment."
+                fi
+                ui_pause
+                ;;
+            D)
+                domain_password_policy_menu
+                ;;
+            1|2|3|4|5|6|7)
+                if target="$(select_directory_target_dn)"; then
+                    deploy_security_gpo_template "$choice" "$target"
+                    samba-tool ntacl sysvolcheck >/dev/null 2>&1 || msg_warn "SYSVOL ACL differences detected."
+                fi
+                ui_pause
+                ;;
+            *) msg_warn "Invalid catalog selection."; ui_pause ;;
+        esac
+    done
+}
+
+domain_password_policy_menu() {
+    while true; do
+        ui_menu_screen "DOMAIN PASSWORD & LOCKOUT POLICY" "Samba domain-wide password policy; separate from registry-based GPO templates"
+        ui_menu_item "1" "Show current policy" "Display complexity, history, ages and lockout configuration"
+        ui_menu_item "2" "Starter baseline" "Complexity on, history 24, length 12, lockout 5/30/30; review organizational policy" "$C_YELLOW"
+        ui_menu_item "3" "Custom values" "Enter supported samba-tool passwordsettings values"
+        ui_menu_exit
+        ui_rule
+
+        local choice
+        choice="$(ask 'Select operation' '1')"
+        case "$choice" in
+            1) samba-tool domain passwordsettings show; ui_pause ;;
+            2)
+                if confirm_high_risk "Apply starter domain password baseline: complexity=on, history=24, min-length=12, lockout threshold=5, duration/reset=30"; then
+                    samba-tool domain passwordsettings set \
+                        --complexity=on \
+                        --history-length=24 \
+                        --min-pwd-length=12 \
+                        --account-lockout-threshold=5 \
+                        --account-lockout-duration=30 \
+                        --reset-account-lockout-after=30
+                    change APPLIED "Applied recommended domain password/lockout policy"
+                fi
+                ui_pause
+                ;;
+            3)
+                local complexity history minlen minage maxage threshold duration reset
+                complexity="$(ask 'Complexity [on/off/default]' 'on')"
+                history="$(ask 'History length' '24')"
+                minlen="$(ask 'Minimum password length' '12')"
+                minage="$(ask 'Minimum password age (days)' '1')"
+                maxage="$(ask 'Maximum password age (days)' '90')"
+                threshold="$(ask 'Lockout threshold' '5')"
+                duration="$(ask 'Lockout duration (minutes)' '30')"
+                reset="$(ask 'Reset bad-attempt counter after (minutes)' '30')"
+
+                printf '\nProposed domain password policy:\n'
+                printf '  complexity=%s history=%s minlen=%s minage=%s maxage=%s\n' "$complexity" "$history" "$minlen" "$minage" "$maxage"
+                printf '  lockout threshold=%s duration=%s reset=%s\n' "$threshold" "$duration" "$reset"
+                if confirm_high_risk "Apply custom domain password/lockout policy"; then
+                    samba-tool domain passwordsettings set \
+                        "--complexity=$complexity" \
+                        "--history-length=$history" \
+                        "--min-pwd-length=$minlen" \
+                        "--min-pwd-age=$minage" \
+                        "--max-pwd-age=$maxage" \
+                        "--account-lockout-threshold=$threshold" \
+                        "--account-lockout-duration=$duration" \
+                        "--reset-account-lockout-after=$reset"
+                    change APPLIED "Applied custom domain password/lockout policy"
+                fi
+                ui_pause
+                ;;
+            0) break ;;
+            *) msg_warn "Invalid menu option."; ui_pause ;;
+        esac
+    done
+}
+
+user_admin_menu() {
+    while true; do
+        ui_menu_screen "USER DIRECTORY" "Structured account lifecycle, profile, password and group operations"
+        ui_menu_item "1" "List users" "Inventory all domain user accounts"
+        ui_menu_item "2" "Inspect user" "Show directory attributes for one account"
+        ui_menu_item "3" "Create user" "Guided creation with first-logon password and groups" "$C_GREEN"
+        ui_menu_item "4" "Edit user" "Profile, OU, groups, password and account state"
+        ui_menu_item "5" "Reset password" "Optionally require password change at next logon"
+        ui_menu_item "6" "Group memberships" "Indexed add/remove membership workflow"
+        ui_menu_item "7" "Enable user" "Re-enable a disabled identity" "$C_GREEN"
+        ui_menu_item "8" "Disable user" "Block interactive authentication" "$C_YELLOW"
+        ui_menu_item "9" "Unlock user" "Clear supported lockout state"
+        ui_menu_item "10" "Delete user" "Permanently remove an identity" "$C_RED"
+        ui_menu_exit
+        ui_rule
+
+        local choice user
+        choice="$(ask 'Select operation' '1')"
+        case "$choice" in
+            1) samba-tool user list | sort; ui_pause ;;
+            2) user="$(ask 'User')"; samba-tool user show "$user"; ui_pause ;;
+            3) create_user_interactive; ui_pause ;;
+            4)
+                user="$(ask 'User')"
+                samba-tool user show "$user" >/dev/null 2>&1 \
+                    && edit_user_interactive_menu "$user" \
+                    || { msg_warn "User '$user' not found."; ui_pause; }
+                ;;
+            5)
+                user="$(ask 'User')"
+                reset_user_password_interactive "$user"
+                ui_pause
+                ;;
+            6)
+                user="$(ask 'User')"
+                manage_user_memberships "$user"
+                ;;
+            7) user="$(ask 'User')"; samba-tool user enable "$user"; ui_pause ;;
+            8)
+                user="$(ask 'User')"
+                case "${user,,}" in administrator|krbtgt) msg_warn "Protected built-in account."; ui_pause; continue ;; esac
+                confirm_high_risk "Disable AD user '$user'" && samba-tool user disable "$user"
+                ui_pause
+                ;;
             9)
                 user="$(ask 'User')"
-                samba-tool user getgroups --help >/dev/null 2>&1 \
-                    && samba-tool user getgroups "$user" \
-                    || msg_warn "user getgroups is unsupported."
+                samba-tool user unlock --help >/dev/null 2>&1 \
+                    && samba-tool user unlock "$user" \
+                    || msg_warn "user unlock is unsupported by installed Samba."
                 ui_pause
                 ;;
             10)
@@ -1889,35 +2525,54 @@ user_admin_menu() {
 
 group_admin_menu() {
     while true; do
-        ui_menu_screen "GROUP DIRECTORY" "Role groups, membership management and delegation"
-        ui_menu_item "1" "List groups" "Inventory domain security/distribution groups"
-        ui_menu_item "2" "Inspect group" "Show one group's directory attributes"
+        ui_menu_screen "GROUP DIRECTORY" "Indexed group selection, membership management and delegation"
+        ui_menu_item "1" "List groups" "Indexed inventory of domain groups"
+        ui_menu_item "2" "Inspect group" "Select a group then show its directory object"
         ui_menu_item "3" "Create group" "Create a new domain group" "$C_GREEN"
-        ui_menu_item "4" "Edit group" "Open Samba's group object editor"
-        ui_menu_item "5" "List members" "Display current membership"
-        ui_menu_item "6" "Add member" "Grant group membership" "$C_GREEN"
-        ui_menu_item "7" "Remove member" "Revoke group membership" "$C_YELLOW"
-        ui_menu_item "8" "Delete group" "Permanently remove a non-protected group" "$C_RED"
+        ui_menu_item "4" "Edit group" "Select group then open Samba object editor"
+        ui_menu_item "5" "List members" "Select group then display membership"
+        ui_menu_item "6" "Add member" "Select group, then specify account" "$C_GREEN"
+        ui_menu_item "7" "Remove member" "Select group, then revoke account membership" "$C_YELLOW"
+        ui_menu_item "8" "Delete group" "Select and permanently delete non-core group" "$C_RED"
         ui_menu_exit
         ui_rule
+
         local choice group member
         choice="$(ask 'Select operation' '1')"
         case "$choice" in
-            1) samba-tool group list | sort; ui_pause ;;
-            2) group="$(ask 'Group')"; samba-tool group show "$group"; ui_pause ;;
-            3) group="$(ask 'New group')"; samba-tool group add "$group"; ui_pause ;;
-            4) group="$(ask 'Group')"; samba-tool group edit "$group"; ui_pause ;;
-            5) group="$(ask 'Group')"; samba-tool group listmembers "$group"; ui_pause ;;
-            6) group="$(ask 'Group')"; member="$(ask 'Account')"; samba-tool group addmembers "$group" "$member"; ui_pause ;;
+            1) list_domain_groups_indexed; ui_pause ;;
+            2)
+                group="$(select_domain_group)" || { ui_pause; continue; }
+                samba-tool group show "$group"
+                ui_pause
+                ;;
+            3) create_group_selector_item >/dev/null; ui_pause ;;
+            4)
+                group="$(select_domain_group)" || { ui_pause; continue; }
+                samba-tool group edit "$group"
+                ui_pause
+                ;;
+            5)
+                group="$(select_domain_group)" || { ui_pause; continue; }
+                samba-tool group listmembers "$group"
+                ui_pause
+                ;;
+            6)
+                group="$(select_domain_group)" || { ui_pause; continue; }
+                member="$(ask 'User/group/computer account')"
+                samba-tool group addmembers "$group" "$member"
+                ui_pause
+                ;;
             7)
-                group="$(ask 'Group')"; member="$(ask 'Account')"
+                group="$(select_domain_group)" || { ui_pause; continue; }
+                member="$(ask 'User/group/computer account')"
                 confirm "Remove '$member' from '$group'?" N && samba-tool group removemembers "$group" "$member"
                 ui_pause
                 ;;
             8)
-                group="$(ask 'Group')"
+                group="$(select_domain_group)" || { ui_pause; continue; }
                 case "${group,,}" in
-                    "domain admins"|"domain users"|"domain controllers"|"enterprise admins"|"schema admins")
+                    "domain admins"|"domain users"|"domain controllers"|"enterprise admins"|"schema admins"|"administrators")
                         msg_warn "Protected domain group."; ui_pause; continue ;;
                 esac
                 confirm_high_risk "PERMANENTLY delete group '$group'" && samba-tool group delete "$group"
@@ -1965,35 +2620,48 @@ computer_admin_menu() {
 
 permissions_admin_menu() {
     while true; do
-        ui_menu_screen "ACCESS & DELEGATION" "Group memberships and advanced directory-service ACL operations"
+        ui_menu_screen "ACCESS & DELEGATION" "Indexed memberships plus advanced directory-service ACL operations"
         ui_menu_item "1" "User groups" "Show direct group memberships for a user"
-        ui_menu_item "2" "Group members" "Enumerate principals assigned to a group"
-        ui_menu_item "3" "Grant membership" "Add an account to a group" "$C_GREEN"
-        ui_menu_item "4" "Revoke membership" "Remove an account from a group" "$C_YELLOW"
-        ui_menu_item "5" "Inspect DS ACL" "Read access-control entries on a directory object"
-        ui_menu_item "6" "Add DS ACL ACE" "Advanced: apply a raw SDDL ACE" "$C_YELLOW"
-        ui_menu_item "7" "Delete DS ACL ACE" "Advanced: remove raw SDDL ACE when supported" "$C_RED"
+        ui_menu_item "2" "Group members" "Select group then enumerate principals"
+        ui_menu_item "3" "Grant membership" "Select group, then add account" "$C_GREEN"
+        ui_menu_item "4" "Revoke membership" "Select group, then remove account" "$C_YELLOW"
+        ui_menu_item "5" "Manage user groups" "Full indexed user membership workflow"
+        ui_menu_item "6" "Inspect DS ACL" "Read access-control entries on a directory object"
+        ui_menu_item "7" "Add DS ACL ACE" "Advanced: apply a raw SDDL ACE" "$C_YELLOW"
+        ui_menu_item "8" "Delete DS ACL ACE" "Advanced: remove raw SDDL ACE when supported" "$C_RED"
         ui_menu_exit
         ui_rule
+
         local choice user group member dn sddl
         choice="$(ask 'Select operation' '1')"
         case "$choice" in
             1) user="$(ask 'User')"; samba-tool user getgroups "$user"; ui_pause ;;
-            2) group="$(ask 'Group')"; samba-tool group listmembers "$group"; ui_pause ;;
-            3) group="$(ask 'Group')"; member="$(ask 'Account')"; samba-tool group addmembers "$group" "$member"; ui_pause ;;
+            2)
+                group="$(select_domain_group)" || { ui_pause; continue; }
+                samba-tool group listmembers "$group"
+                ui_pause
+                ;;
+            3)
+                group="$(select_domain_group)" || { ui_pause; continue; }
+                member="$(ask 'Account')"
+                samba-tool group addmembers "$group" "$member"
+                ui_pause
+                ;;
             4)
-                group="$(ask 'Group')"; member="$(ask 'Account')"
+                group="$(select_domain_group)" || { ui_pause; continue; }
+                member="$(ask 'Account')"
                 confirm "Remove '$member' from '$group'?" N && samba-tool group removemembers "$group" "$member"
                 ui_pause
                 ;;
-            5) dn="$(ask 'Object DN')"; samba-tool dsacl get --objectdn="$dn"; ui_pause ;;
-            6)
+            5) user="$(ask 'User')"; manage_user_memberships "$user" ;;
+            6) dn="$(ask 'Object DN')"; samba-tool dsacl get --objectdn="$dn"; ui_pause ;;
+            7)
                 dn="$(ask 'Object DN')"; sddl="$(ask 'ACE SDDL')"
                 confirm_high_risk "Add raw DS ACL ACE to '$dn'" &&
                     samba-tool dsacl set --objectdn="$dn" --sddl="$sddl"
                 ui_pause
                 ;;
-            7)
+            8)
                 dn="$(ask 'Object DN')"; sddl="$(ask 'ACE SDDL')"
                 samba-tool dsacl delete --help >/dev/null 2>&1 \
                     && { confirm_high_risk "Delete DS ACL ACE from '$dn'" &&
@@ -2009,71 +2677,179 @@ permissions_admin_menu() {
 
 gpo_admin_menu() {
     ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"
+
     while true; do
-        ui_menu_screen "GROUP POLICY CONTROL" "Create, inspect, link, update, back up and remove domain GPOs"
-        ui_menu_item "1" "List GPOs" "Inventory every Group Policy Object"
-        ui_menu_item "2" "Inspect GPO" "Display metadata for a GUID"
-        ui_menu_item "3" "Create GPO" "Create a new empty policy object" "$C_GREEN"
-        ui_menu_item "4" "Load JSON policy" "Merge registry policy payload into a GPO"
-        ui_menu_item "5" "List containers" "Show containers currently linked to a GPO"
-        ui_menu_item "6" "Link / update" "Attach a GPO to a domain/OU container" "$C_GREEN"
-        ui_menu_item "7" "Remove link" "Detach a GPO from a container" "$C_YELLOW"
-        ui_menu_item "8" "Backup GPO" "Export one GPO when supported"
-        ui_menu_item "9" "Delete GPO" "Permanently remove a policy object" "$C_RED"
-        ui_menu_item "10" "Baseline policies" "Create/update the assistant-managed secure baselines"
+        ui_menu_screen "GROUP POLICY CONTROL" "Indexed GPO lifecycle, curated security templates, scope and backup"
+        ui_menu_item "1" "List GPOs + GUIDs" "Indexed inventory; no manual GUID lookup required"
+        ui_menu_item "2" "Inspect GPO" "Select an existing GPO by index"
+        ui_menu_item "3" "Create GPO" "Create an empty policy and optionally link it" "$C_GREEN"
+        ui_menu_item "4" "Security GPO catalog" "Deploy common curated domain hardening policies" "$C_GREEN"
+        ui_menu_item "5" "Load JSON policy" "Select GPO then merge registry policy payload"
+        ui_menu_item "6" "List containers" "Select GPO then show linked containers"
+        ui_menu_item "7" "Link / update" "Select GPO and domain/OU target" "$C_GREEN"
+        ui_menu_item "8" "Remove link" "Select GPO and domain/OU target" "$C_YELLOW"
+        ui_menu_item "9" "Backup GPO" "Select and export one GPO"
+        ui_menu_item "10" "Delete GPO" "Backup/domain-backup then permanently delete" "$C_RED"
+        ui_menu_item "11" "Legacy baseline pair" "Create/update original assistant user+machine baselines"
         ui_menu_exit
         ui_rule
-        local choice guid name file dn dir
+
+        local choice guid name file dn output
         choice="$(ask 'Select operation' '1')"
         case "$choice" in
-            1) samba-tool gpo listall --use-kerberos=required; ui_pause ;;
-            2) guid="$(ask 'GPO GUID')"; samba-tool gpo show "$guid" --use-kerberos=required; ui_pause ;;
-            3) name="$(ask 'GPO display name')"; samba-tool gpo create "$name" --use-kerberos=required; ui_pause ;;
-            4)
-                guid="$(ask 'GPO GUID')"; file="$(ask 'JSON policy file')"
-                [[ -f "$file" ]] || { msg_warn "File not found."; ui_pause; continue; }
-                python3 -m json.tool "$file" >/dev/null || { msg_warn "Invalid JSON."; ui_pause; continue; }
-                samba-tool gpo load --help >/dev/null 2>&1 \
-                    && samba-tool gpo load "$guid" --content="$file" --use-kerberos=required \
-                    || msg_warn "gpo load is unsupported."
+            1) show_gpo_inventory_indexed; ui_pause ;;
+            2)
+                guid="$(select_gpo_guid)" || { ui_pause; continue; }
+                samba-tool gpo show "$guid" --use-kerberos=required
                 ui_pause
                 ;;
-            5) guid="$(ask 'GPO GUID')"; samba-tool gpo listcontainers "$guid" --use-kerberos=required; ui_pause ;;
+            3)
+                name="$(ask 'GPO display name')"
+                [[ -n "$name" ]] || { msg_warn "GPO name is required."; ui_pause; continue; }
+                output="$(samba-tool gpo create "$name" --use-kerberos=required 2>&1)"
+                printf '%s\n' "$output"
+                guid="$(grep -oE '\{[0-9A-Fa-f-]{36}\}' <<<"$output" | head -n1 || true)"
+                [[ -n "$guid" ]] && printf '\nCreated GUID: %s\n' "$guid"
+                if [[ -n "$guid" ]] && confirm "Link this GPO now?" Y; then
+                    if dn="$(select_directory_target_dn)"; then
+                        samba-tool gpo setlink "$dn" "$guid" --use-kerberos=required
+                    fi
+                fi
+                ui_pause
+                ;;
+            4) security_gpo_catalog_menu ;;
+            5)
+                guid="$(select_gpo_guid)" || { ui_pause; continue; }
+                file="$(ask 'JSON policy file')"
+                [[ -f "$file" ]] || { msg_warn "File not found."; ui_pause; continue; }
+                python3 -m json.tool "$file" >/dev/null || { msg_warn "Invalid JSON."; ui_pause; continue; }
+                backup_gpo_safe "$guid" || true
+                samba-tool gpo load "$guid" --content="$file" --use-kerberos=required
+                ui_pause
+                ;;
             6)
-                dn="$(ask 'Container DN')"; guid="$(ask 'GPO GUID')"
-                samba-tool gpo setlink "$dn" "$guid" --use-kerberos=required
+                guid="$(select_gpo_guid)" || { ui_pause; continue; }
+                samba-tool gpo listcontainers "$guid" --use-kerberos=required
                 ui_pause
                 ;;
             7)
-                dn="$(ask 'Container DN')"; guid="$(ask 'GPO GUID')"
+                guid="$(select_gpo_guid)" || { ui_pause; continue; }
+                dn="$(select_directory_target_dn)" || { ui_pause; continue; }
+                samba-tool gpo setlink "$dn" "$guid" --use-kerberos=required
+                ui_pause
+                ;;
+            8)
+                guid="$(select_gpo_guid)" || { ui_pause; continue; }
+                dn="$(select_directory_target_dn)" || { ui_pause; continue; }
                 confirm "Remove link $guid from $dn?" N &&
                     samba-tool gpo dellink "$dn" "$guid" --use-kerberos=required
                 ui_pause
                 ;;
-            8)
-                guid="$(ask 'GPO GUID')"
-                if samba-tool gpo backup --help >/dev/null 2>&1; then
-                    dir="${RUN_ROOT}/gpo-backup"
-                    mkdir -p "$dir"
-                    samba-tool gpo backup "$guid" --tmpdir="$dir" --use-kerberos=required
-                else
-                    msg_warn "gpo backup is unsupported."
-                fi
+            9)
+                guid="$(select_gpo_guid)" || { ui_pause; continue; }
+                backup_gpo_safe "$guid" || true
                 ui_pause
                 ;;
-            9)
-                guid="$(ask 'GPO GUID')"
-                printf 'A domain backup is recommended before deleting a GPO.\n'
+            10)
+                guid="$(select_gpo_guid)" || { ui_pause; continue; }
+                printf 'A domain backup is strongly recommended before deleting a GPO.\n'
                 confirm "Create domain backup first?" Y && create_domain_backup no
+                backup_gpo_safe "$guid" || true
                 confirm_high_risk "PERMANENTLY delete GPO $guid" &&
                     samba-tool gpo del "$guid" --use-kerberos=required
                 ui_pause
                 ;;
-            10) set_progress_plan 1; manage_gpos; ui_pause ;;
+            11) set_progress_plan 1; manage_gpos; ui_pause ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
     done
+}
+
+
+cli_command_catalog() {
+    cat <<'EOF'
+adctl|Main control plane|Open the full AD/DC operations console.
+ad-users|Users|Create, inspect, edit, enable/disable, reset passwords and manage group memberships.
+ad-groups|Groups|Create, inspect and manage domain groups and their members.
+ad-computers|Computers|List/inspect domain computer accounts and show best-effort network presence.
+ad-permissions|Access & delegation|Manage memberships and advanced directory-service ACL operations.
+ad-gpo|Group Policy|List/select/create/link/backup/delete GPOs and deploy curated security policies.
+ad-security|Security & resilience|Boot ordering, UFW, Fail2ban, sysctl and delegated-admin hardening.
+ad-audit|Audit|Run a read-only inventory and security evidence review.
+ad-validate|Validation|Run functional Samba AD/DC DNS, Kerberos, LDAP, SMB, DB and SYSVOL checks.
+ad-status|Status|Show a compact current-state and AD/DC health report.
+ad-backup|Backup|Create an online Samba domain backup.
+ad-tools|CLI help|Show this command catalog and which shortcuts are installed.
+EOF
+}
+
+show_cli_commands() {
+    local bindir="/usr/local/sbin"
+    local target="/usr/local/libexec/debian-ad-assistant"
+    local installed_version="not installed"
+    local name title description path state target_path
+    local installed=0 missing=0
+
+    if [[ -r "$target" ]]; then
+        installed_version="$(
+            awk -F= '/^SCRIPT_VERSION=/{gsub(/"/,"",$2); print $2; exit}' "$target" 2>/dev/null || true
+        )"
+        [[ -n "$installed_version" ]] || installed_version="unknown"
+    fi
+
+    ui_menu_screen "INSTALLED TERMINAL COMMANDS" "Shortcut inventory, purpose and installation state"
+    printf '  %-17s %s\n' "Installed build" "$installed_version"
+    printf '  %-17s %s\n' "Command directory" "$bindir"
+    printf '  %-17s %s\n' "Assistant target" "$target"
+    printf '\n'
+    printf '  %-16s %-11s %-25s %s\n' "COMMAND" "STATE" "MODULE" "PURPOSE"
+    ui_rule
+
+    while IFS='|' read -r name title description; do
+        [[ -n "$name" ]] || continue
+        path="${bindir}/${name}"
+        state="MISSING"
+        target_path="-"
+
+        if [[ -L "$path" ]]; then
+            target_path="$(readlink -f "$path" 2>/dev/null || readlink "$path" 2>/dev/null || true)"
+            if [[ "$target_path" == "$target" && -x "$target" ]]; then
+                state="INSTALLED"
+                installed=$((installed + 1))
+            else
+                state="STALE"
+                missing=$((missing + 1))
+            fi
+        elif [[ -x "$path" ]]; then
+            state="CUSTOM"
+            target_path="$path"
+            installed=$((installed + 1))
+        else
+            missing=$((missing + 1))
+        fi
+
+        case "$state" in
+            INSTALLED) printf '  %b%-16s%b %b%-11s%b %-25s %s\n' \
+                "$C_CYAN" "$name" "$C_RESET" "$C_GREEN" "$state" "$C_RESET" "$title" "$description" ;;
+            CUSTOM) printf '  %b%-16s%b %b%-11s%b %-25s %s\n' \
+                "$C_CYAN" "$name" "$C_RESET" "$C_YELLOW" "$state" "$C_RESET" "$title" "$description" ;;
+            *) printf '  %b%-16s%b %b%-11s%b %-25s %s\n' \
+                "$C_CYAN" "$name" "$C_RESET" "$C_RED" "$state" "$C_RESET" "$title" "$description" ;;
+        esac
+    done < <(cli_command_catalog)
+
+    printf '\n'
+    printf '  %bInstalled/usable:%b %d    %bMissing/stale:%b %d\n' \
+        "$C_GREEN" "$C_RESET" "$installed" "$C_YELLOW" "$C_RESET" "$missing"
+    printf '\n'
+    printf '  Examples:\n'
+    printf '    sudo adctl        %b# main operations console%b\n' "$C_DIM" "$C_RESET"
+    printf '    sudo ad-users     %b# user administration%b\n' "$C_DIM" "$C_RESET"
+    printf '    sudo ad-gpo       %b# Group Policy console%b\n' "$C_DIM" "$C_RESET"
+    printf '    sudo ad-validate  %b# full functional validation%b\n' "$C_DIM" "$C_RESET"
+    printf '    sudo ad-tools     %b# show this catalog again%b\n' "$C_DIM" "$C_RESET"
+    ui_rule
 }
 
 install_cli_commands() {
@@ -2087,12 +2863,20 @@ install_cli_commands() {
     mkdir -p "$target_dir" "$bindir"
     install -m 0755 "$source_path" "$target"
 
-    local name
-    for name in adctl ad-users ad-groups ad-computers ad-permissions ad-gpo ad-security ad-audit ad-validate ad-backup; do
+    local name title description
+    while IFS='|' read -r name title description; do
+        [[ -n "$name" ]] || continue
         ln -sfn "$target" "${bindir}/${name}"
-    done
+    done < <(cli_command_catalog)
 
-    result PASS "AD CLI shortcuts" "installed in $bindir" "adctl/ad-users/..."
+    result PASS "AD CLI shortcuts" "installed/refreshed in $bindir" "terminal administration commands"
+
+    printf '\n'
+    printf '%b%bCLI installation complete.%b\n' "$C_BOLD" "$C_GREEN" "$C_RESET"
+    printf 'The following commands are now available from the terminal:\n\n'
+    show_cli_commands
+    printf '\n%bTip:%b run %bsudo ad-tools%b at any time to display this catalog again.\n' \
+        "$C_CYAN" "$C_RESET" "$C_BOLD" "$C_RESET"
 }
 
 security_hardening_menu() {
@@ -2132,9 +2916,10 @@ domain_admin_console() {
         ui_menu_item "4" "Access & delegation" "Memberships and advanced DS ACL operations"
         ui_menu_item "5" "Group Policy" "Lifecycle and linking of GPOs"
         ui_menu_item "6" "Security & resilience" "Firewall, Fail2ban, boot ordering and admin hardening"
-        ui_menu_item "7" "Install CLI commands" "Deploy adctl/ad-users/ad-gpo/... shortcuts"
-        ui_menu_item "8" "Validate controller" "Run complete AD/DC functional health checks"
-        ui_menu_item "9" "Domain backup" "Create an online Samba domain backup"
+        ui_menu_item "7" "Install CLI commands" "Deploy/refresh adctl, ad-users, ad-gpo and related shortcuts"
+        ui_menu_item "8" "Installed CLI commands" "Show shortcut status and what every terminal command does"
+        ui_menu_item "9" "Validate controller" "Run complete AD/DC functional health checks"
+        ui_menu_item "10" "Domain backup" "Create an online Samba domain backup"
         ui_menu_exit
         ui_rule
         local choice
@@ -2147,8 +2932,9 @@ domain_admin_console() {
             5) gpo_admin_menu ;;
             6) security_hardening_menu ;;
             7) install_cli_commands; ui_pause ;;
-            8) set_progress_plan 1; validate_ad; ui_pause ;;
-            9) set_progress_plan 1; create_domain_backup; ui_pause ;;
+            8) show_cli_commands; ui_pause ;;
+            9) set_progress_plan 1; validate_ad; ui_pause ;;
+            10) set_progress_plan 1; create_domain_backup; ui_pause ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -2325,7 +3111,8 @@ manage_menu() {
         ui_menu_item "10" "Post-install checklist" "Regenerate production-readiness checklist"
         ui_menu_item "11" "Operations console" "Users, groups, computers, permissions and GPOs" "$C_GREEN"
         ui_menu_item "12" "Boot ordering" "Repair Samba startup dependency on network readiness"
-        ui_menu_item "13" "Install CLI commands" "Deploy adctl and direct administrative shortcuts"
+        ui_menu_item "13" "Install CLI commands" "Deploy/refresh adctl and direct administrative shortcuts"
+        ui_menu_item "14" "Installed CLI commands" "Show shortcut status and a description of every command"
         ui_menu_exit
         ui_rule
         local choice
@@ -2344,6 +3131,7 @@ manage_menu() {
             11) domain_admin_console ;;
             12) configure_samba_boot_ordering; ui_pause ;;
             13) install_cli_commands; ui_pause ;;
+            14) show_cli_commands; ui_pause ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -2449,6 +3237,7 @@ main() {
         gpo) prepare_existing_ad_context; gpo_admin_menu; save_config ;;
         security) prepare_existing_ad_context; security_hardening_menu; save_config ;;
         install-cli) install_cli_commands ;;
+        cli-info) show_cli_commands ;;
         interactive) interactive_mode ;;
         *) die "Unknown mode: $MODE" ;;
     esac

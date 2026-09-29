@@ -1,7 +1,7 @@
 ﻿#requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Windows Server AD Control Plane - v1.0.0-professional
+    Windows Server AD Control Plane - v1.1.0-professional
 
 .DESCRIPTION
     Professional, audit-first assistant for Windows Server and Active Directory.
@@ -35,16 +35,16 @@
       Provision    Guided NEW forest provisioning
 
 .EXAMPLE
-    .\windows-server-ad-v1.0.0-professional.ps1
+    .\windows-server-ad-v1.1.0-professional.ps1
 
 .EXAMPLE
-    .\windows-server-ad-v1.0.0-professional.ps1 -Mode Audit
+    .\windows-server-ad-v1.1.0-professional.ps1 -Mode Audit
 
 .EXAMPLE
-    .\windows-server-ad-v1.0.0-professional.ps1 -Mode ADAdmin
+    .\windows-server-ad-v1.1.0-professional.ps1 -Mode ADAdmin
 
 .EXAMPLE
-    .\windows-server-ad-v1.0.0-professional.ps1 -Mode Validate
+    .\windows-server-ad-v1.1.0-professional.ps1 -Mode Validate
 
 .NOTES
     Validate in a lab before production deployment.
@@ -72,7 +72,7 @@ $ErrorActionPreference = 'Stop'
 # ===========================================================================
 
 $script:ProductName = 'Windows Server AD Control Plane'
-$script:Version = '1.0.0-professional'
+$script:Version = '1.1.0-professional'
 $script:Started = Get-Date
 
 $script:Results = New-Object 'System.Collections.Generic.List[object]'
@@ -273,6 +273,36 @@ function Read-MenuChoice {
     }
 
     return (Read-Host $Prompt).Trim()
+}
+
+
+function Read-BooleanChoice {
+    param(
+        [Parameter(Mandatory=$true)][string]$Prompt,
+        [bool]$Default = $false
+    )
+
+    $suffix = if ($Default) { '[Y/n]' } else { '[y/N]' }
+
+    while ($true) {
+        $answer = (Read-Host ("{0} {1}" -f $Prompt, $suffix)).Trim().ToUpperInvariant()
+        if ([string]::IsNullOrWhiteSpace($answer)) { return $Default }
+        if ($answer -in @('Y','YES','S','SI','SÍ')) { return $true }
+        if ($answer -in @('N','NO')) { return $false }
+        Write-Console 'Please answer yes or no.' Yellow
+    }
+}
+
+function Read-OptionalBooleanChoice {
+    param([Parameter(Mandatory=$true)][string]$Prompt)
+
+    while ($true) {
+        $answer = (Read-Host ("{0} [K/y/n]" -f $Prompt)).Trim().ToUpperInvariant()
+        if ([string]::IsNullOrWhiteSpace($answer) -or $answer -eq 'K') { return $null }
+        if ($answer -in @('Y','YES','S','SI','SÍ')) { return $true }
+        if ($answer -in @('N','NO')) { return $false }
+        Write-Console 'Use K to keep, Y for yes, or N for no.' Yellow
+    }
 }
 
 function Pause-ControlPlane {
@@ -741,6 +771,8 @@ function New-ChangeSet {
 
         if (Test-Command 'Get-GPO') {
             try {
+                $previousProgress = $ProgressPreference
+                $ProgressPreference = 'SilentlyContinue'
                 Get-GPO -All |
                     Select-Object DisplayName, Id, GpoStatus, CreationTime, ModificationTime |
                     ConvertTo-Json -Depth 5 |
@@ -748,6 +780,9 @@ function New-ChangeSet {
             }
             catch {
                 Add-Warning ("GPO inventory snapshot failed: {0}" -f $_.Exception.Message)
+            }
+            finally {
+                $ProgressPreference = $previousProgress
             }
         }
 
@@ -1639,17 +1674,269 @@ function Show-AdUserDetail {
         Format-List
 }
 
+
+function Select-AdOuPathInteractive {
+    Assert-DomainController
+
+    $domain = Get-ADDomain
+    $ous = @(Get-ADOrganizationalUnit -Filter * | Sort-Object DistinguishedName)
+
+    Write-Console ''
+    Write-Console 'Available user containers / OUs:' Cyan
+    Write-Console ('  [1] {0}  (default Users container)' -f $domain.UsersContainer)
+
+    for ($i = 0; $i -lt $ous.Count; $i++) {
+        Write-Console ('  [{0}] {1}' -f ($i + 2), $ous[$i].DistinguishedName)
+    }
+
+    Write-Console '  [M] Enter distinguished name manually' Gray
+    Write-Console '  [0] Cancel' Gray
+
+    while ($true) {
+        $choice = (Read-Host 'Select target container [1]').Trim()
+        if ([string]::IsNullOrWhiteSpace($choice)) { return $domain.UsersContainer }
+        if ($choice -eq '0') { return $null }
+        if ($choice.ToUpperInvariant() -eq 'M') {
+            $manual = (Read-Host 'Container distinguished name').Trim()
+            if ($manual) { return $manual }
+            continue
+        }
+
+        $number = 0
+        if ([int]::TryParse($choice, [ref]$number)) {
+            if ($number -eq 1) { return $domain.UsersContainer }
+            $ouIndex = $number - 2
+            if ($ouIndex -ge 0 -and $ouIndex -lt $ous.Count) {
+                return $ous[$ouIndex].DistinguishedName
+            }
+        }
+
+        Write-Console 'Invalid container selection.' Yellow
+    }
+}
+
+function New-AdGroupForSelector {
+    Assert-DomainController
+
+    $name = (Read-Host 'New group name').Trim()
+    if ([string]::IsNullOrWhiteSpace($name)) { return $null }
+
+    $scope = (Read-Host 'Scope [Global/Universal/DomainLocal] (Global)').Trim()
+    if ([string]::IsNullOrWhiteSpace($scope)) { $scope = 'Global' }
+
+    $category = (Read-Host 'Category [Security/Distribution] (Security)').Trim()
+    if ([string]::IsNullOrWhiteSpace($category)) { $category = 'Security' }
+
+    $path = (Read-Host 'Target OU distinguished name (blank = default)').Trim()
+
+    if (-not (Confirm-Action `
+        -Action ("Create AD group '{0}'" -f $name) `
+        -Reason 'Create a group requested during user membership assignment.' `
+        -Impact LOW)) {
+        return $null
+    }
+
+    New-ChangeSet
+
+    $params = @{
+        Name          = $name
+        GroupScope    = $scope
+        GroupCategory = $category
+        PassThru      = $true
+    }
+    if ($path) { $params.Path = $path }
+
+    try {
+        return (New-ADGroup @params)
+    }
+    catch {
+        Write-Console ("Group creation failed: {0}" -f $_.Exception.Message) Red
+        return $null
+    }
+}
+
+function Select-AdGroupsInteractive {
+    param([switch]$AllowCreate)
+
+    Assert-DomainController
+    $selected = New-Object 'System.Collections.Generic.List[object]'
+
+    while ($true) {
+        $filterText = (Read-Host 'Filter group names (blank = all)').Trim()
+        $groups = @(Get-ADGroup -Filter * | Sort-Object Name)
+
+        if ($filterText) {
+            $groups = @($groups | Where-Object { $_.Name -like ("*{0}*" -f $filterText) })
+        }
+
+        if ($groups.Count -eq 0) {
+            Write-Console 'No groups matched the filter.' Yellow
+        }
+        else {
+            Write-Console ''
+            Write-Console 'Available groups:' Cyan
+            for ($i = 0; $i -lt $groups.Count; $i++) {
+                Write-Console ('  [{0,3}] {1,-38} {2}/{3}' -f ($i + 1), $groups[$i].Name, $groups[$i].GroupScope, $groups[$i].GroupCategory)
+            }
+        }
+
+        Write-Console ''
+        Write-Console 'Enter one or more indexes separated by commas.' Gray
+        Write-Console '  [S] Search/filter again' Gray
+        Write-Console '  [M] Add an existing group by name/GUID/DN manually' Gray
+        if ($AllowCreate) { Write-Console '  [N] Create a new group and select it' Green }
+        Write-Console '  [0] Finish selection' Gray
+
+        $choice = (Read-Host 'Group selection').Trim()
+        if ([string]::IsNullOrWhiteSpace($choice) -or $choice -eq '0') { break }
+
+        switch ($choice.ToUpperInvariant()) {
+            'S' { continue }
+            'M' {
+                $manual = (Read-Host 'Existing group identity').Trim()
+                if ($manual) {
+                    try {
+                        $group = Get-ADGroup -Identity $manual -ErrorAction Stop
+                        if (-not ($selected | Where-Object { $_.DistinguishedName -eq $group.DistinguishedName })) {
+                            [void]$selected.Add($group)
+                        }
+                    }
+                    catch { Write-Console $_.Exception.Message Red }
+                }
+                continue
+            }
+            'N' {
+                if (-not $AllowCreate) {
+                    Write-Console 'Group creation is disabled in this selector.' Yellow
+                    continue
+                }
+                $group = New-AdGroupForSelector
+                if ($group -and -not ($selected | Where-Object { $_.DistinguishedName -eq $group.DistinguishedName })) {
+                    [void]$selected.Add($group)
+                }
+                continue
+            }
+        }
+
+        foreach ($part in ($choice -split ',')) {
+            $number = 0
+            if ([int]::TryParse($part.Trim(), [ref]$number)) {
+                $index = $number - 1
+                if ($index -ge 0 -and $index -lt $groups.Count) {
+                    $group = $groups[$index]
+                    if (-not ($selected | Where-Object { $_.DistinguishedName -eq $group.DistinguishedName })) {
+                        [void]$selected.Add($group)
+                    }
+                }
+                else {
+                    Write-Console ("Index out of range: {0}" -f $number) Yellow
+                }
+            }
+            else {
+                Write-Console ("Invalid group index: {0}" -f $part) Yellow
+            }
+        }
+
+        if ($selected.Count -gt 0) {
+            Write-Console ''
+            Write-Console ('Selected groups: {0}' -f (($selected | ForEach-Object { $_.Name }) -join ', ')) Green
+        }
+
+        if (-not (Read-BooleanChoice -Prompt 'Add more groups?' -Default $false)) { break }
+    }
+
+    return @($selected)
+}
+
+function Manage-AdUserGroupsInteractive {
+    param([string]$Identity)
+
+    Assert-DomainController
+
+    if ([string]::IsNullOrWhiteSpace($Identity)) {
+        $Identity = (Read-Host 'User identity / sAMAccountName').Trim()
+    }
+    if ([string]::IsNullOrWhiteSpace($Identity)) { return }
+
+    $user = Get-ADUser -Identity $Identity -ErrorAction Stop
+
+    while ($true) {
+        $current = @(Get-ADPrincipalGroupMembership -Identity $user | Sort-Object Name)
+
+        Write-MenuHeader 'USER GROUP MEMBERSHIP' ("Account: {0}" -f $user.SamAccountName)
+        if ($current.Count -eq 0) {
+            Write-Console '  No direct group memberships returned.' Yellow
+        }
+        else {
+            for ($i = 0; $i -lt $current.Count; $i++) {
+                Write-Console ('  [{0,3}] {1,-42} {2}' -f ($i + 1), $current[$i].Name, $current[$i].GroupScope)
+            }
+        }
+        Write-Console ''
+        Write-MenuItem 'A' 'Add memberships' 'Choose existing groups or create a new one' Good
+        Write-MenuItem 'R' 'Remove memberships' 'Choose one or more current memberships' Warn
+        Write-MenuItem '0' 'Back' 'Return to user directory' Danger
+        Write-Rule
+
+        $choice = (Read-Host 'Select operation').Trim().ToUpperInvariant()
+        switch ($choice) {
+            'A' {
+                $groups = @(Select-AdGroupsInteractive -AllowCreate)
+                foreach ($group in $groups) {
+                    if (-not (Confirm-Action `
+                        -Action ("Add '{0}' to group '{1}'" -f $user.SamAccountName, $group.Name) `
+                        -Reason 'Grant domain group membership.' `
+                        -Impact MEDIUM)) { continue }
+
+                    New-ChangeSet
+                    Add-ADGroupMember -Identity $group -Members $user
+                    Write-Log ("Added {0} to group {1}" -f $user.SamAccountName, $group.Name) CHANGE
+                }
+            }
+            'R' {
+                if ($current.Count -eq 0) {
+                    Write-Console 'No memberships are available to remove.' Yellow
+                    Pause-ControlPlane
+                    continue
+                }
+
+                $raw = (Read-Host 'Indexes to remove (comma-separated)').Trim()
+                foreach ($part in ($raw -split ',')) {
+                    $number = 0
+                    if (-not [int]::TryParse($part.Trim(), [ref]$number)) { continue }
+                    $index = $number - 1
+                    if ($index -lt 0 -or $index -ge $current.Count) { continue }
+                    $group = $current[$index]
+
+                    if (Confirm-Action `
+                        -Action ("Remove '{0}' from group '{1}'" -f $user.SamAccountName, $group.Name) `
+                        -Reason 'Revoke domain group membership.' `
+                        -Impact MEDIUM) {
+
+                        New-ChangeSet
+                        Remove-ADGroupMember -Identity $group -Members $user -Confirm:$false
+                        Write-Log ("Removed {0} from group {1}" -f $user.SamAccountName, $group.Name) CHANGE
+                    }
+                }
+            }
+            '0' { return }
+            default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
+        }
+    }
+}
+
 function New-AdUserInteractive {
     Assert-DomainController
 
     $sam = (Read-Host 'sAMAccountName').Trim()
     if ([string]::IsNullOrWhiteSpace($sam)) { return }
 
-    if (Get-ADUser -Filter "SamAccountName -eq '$sam'" -ErrorAction SilentlyContinue) {
+    if (Get-ADUser -Identity $sam -ErrorAction SilentlyContinue) {
         Write-Console 'User already exists.' Yellow
         return
     }
 
+    $domain = Get-ADDomain
     $given = Read-Host 'Given name'
     $surname = Read-Host 'Surname'
     $display = Read-Host 'Display name'
@@ -1657,12 +1944,47 @@ function New-AdUserInteractive {
         $display = ("{0} {1}" -f $given, $surname).Trim()
     }
 
-    $path = Read-Host 'Target OU distinguished name (blank = default Users container)'
+    $defaultUpn = "{0}@{1}" -f $sam, $domain.DNSRoot
+    $upn = (Read-Host ("User principal name [{0}]" -f $defaultUpn)).Trim()
+    if ([string]::IsNullOrWhiteSpace($upn)) { $upn = $defaultUpn }
+
+    $description = Read-Host 'Description / purpose'
+    $mail = Read-Host 'Email address'
+    $department = Read-Host 'Department'
+    $title = Read-Host 'Title / role'
+    $company = Read-Host 'Company'
+    $office = Read-Host 'Office'
+    $phone = Read-Host 'Office phone'
+
+    $path = Select-AdOuPathInteractive
+    if (-not $path) { return }
+
     $password = Read-Host 'Initial password' -AsSecureString
 
+    $enabled = Read-BooleanChoice -Prompt 'Enable account immediately?' -Default $true
+    $changeAtLogon = Read-BooleanChoice -Prompt 'Require password change at first logon?' -Default $true
+    $passwordNeverExpires = Read-BooleanChoice -Prompt 'Password never expires?' -Default $false
+    $cannotChangePassword = Read-BooleanChoice -Prompt 'Prevent user from changing password?' -Default $false
+
+    if ($passwordNeverExpires -and $changeAtLogon) {
+        Write-Console 'PasswordNeverExpires conflicts with ChangePasswordAtLogon; first-logon change has been disabled.' Yellow
+        $changeAtLogon = $false
+    }
+
+    Write-Console ''
+    Write-Console 'User creation plan:' Cyan
+    Write-Console ("  Account       : {0}" -f $sam)
+    Write-Console ("  UPN           : {0}" -f $upn)
+    Write-Console ("  Display name  : {0}" -f $display)
+    Write-Console ("  Container     : {0}" -f $path)
+    Write-Console ("  Enabled       : {0}" -f $enabled)
+    Write-Console ("  Change @ logon: {0}" -f $changeAtLogon)
+    Write-Console ("  Never expires : {0}" -f $passwordNeverExpires)
+    Write-Console ("  Cannot change : {0}" -f $cannotChangePassword)
+
     if (-not (Confirm-Action `
-        -Action ("Create enabled AD user '{0}'" -f $sam) `
-        -Reason 'Create a new domain identity.' `
+        -Action ("Create AD user '{0}'" -f $sam) `
+        -Reason 'Create the configured domain identity.' `
         -Impact LOW)) {
         return
     }
@@ -1671,39 +1993,79 @@ function New-AdUserInteractive {
 
     $params = @{
         SamAccountName        = $sam
+        UserPrincipalName     = $upn
         Name                  = $display
         DisplayName           = $display
         GivenName             = $given
         Surname               = $surname
-        Enabled               = $true
+        Enabled               = $enabled
         AccountPassword       = $password
-        ChangePasswordAtLogon = $true
+        ChangePasswordAtLogon = $changeAtLogon
+        PasswordNeverExpires  = $passwordNeverExpires
+        CannotChangePassword  = $cannotChangePassword
+        Path                  = $path
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($path)) {
-        $params.Path = $path
-    }
+    if ($description) { $params.Description = $description }
+    if ($mail) { $params.EmailAddress = $mail }
+    if ($department) { $params.Department = $department }
+    if ($title) { $params.Title = $title }
+    if ($company) { $params.Company = $company }
+    if ($office) { $params.Office = $office }
+    if ($phone) { $params.OfficePhone = $phone }
 
     New-ADUser @params
     Write-Log ("Created AD user: {0}" -f $sam) CHANGE
+
+    if (Read-BooleanChoice -Prompt 'Assign domain group memberships now?' -Default $true) {
+        $groups = @(Select-AdGroupsInteractive -AllowCreate)
+        foreach ($group in $groups) {
+            try {
+                Add-ADGroupMember -Identity $group -Members $sam
+                Write-Log ("Added {0} to group {1}" -f $sam, $group.Name) CHANGE
+            }
+            catch {
+                Write-Console ("Could not add {0} to {1}: {2}" -f $sam, $group.Name, $_.Exception.Message) Red
+            }
+        }
+    }
 }
 
 function Edit-AdUserInteractive {
     Assert-DomainController
 
-    $identity = Read-Host 'User identity / sAMAccountName'
-    $user = Get-ADUser -Identity $identity -Properties DisplayName, Mail, Department, Title
+    $identity = (Read-Host 'User identity / sAMAccountName').Trim()
+    if ([string]::IsNullOrWhiteSpace($identity)) { return }
 
-    Write-Console 'Leave a value blank to keep the existing value.' Gray
+    $user = Get-ADUser -Identity $identity -Properties DisplayName, Mail, Department, Title, Company,
+        Office, OfficePhone, Description, UserPrincipalName, PasswordNeverExpires, CannotChangePassword, Enabled
+
+    Write-Console 'Leave text values blank to keep the current value.' Gray
+    Write-Console 'For boolean options use K=keep, Y=yes, N=no.' Gray
 
     $display = Read-Host ("Display name [{0}]" -f $user.DisplayName)
+    $upn = Read-Host ("User principal name [{0}]" -f $user.UserPrincipalName)
     $mail = Read-Host ("Email [{0}]" -f $user.Mail)
+    $description = Read-Host ("Description [{0}]" -f $user.Description)
     $department = Read-Host ("Department [{0}]" -f $user.Department)
     $title = Read-Host ("Title [{0}]" -f $user.Title)
+    $company = Read-Host ("Company [{0}]" -f $user.Company)
+    $office = Read-Host ("Office [{0}]" -f $user.Office)
+    $phone = Read-Host ("Office phone [{0}]" -f $user.OfficePhone)
+
+    $changeAtLogon = Read-OptionalBooleanChoice -Prompt 'Require password change at next logon?'
+    $passwordNeverExpires = Read-OptionalBooleanChoice -Prompt 'Password never expires?'
+    $cannotChangePassword = Read-OptionalBooleanChoice -Prompt 'Prevent user from changing password?'
+    $enabled = Read-OptionalBooleanChoice -Prompt ("Account enabled? (currently {0})" -f $user.Enabled)
+
+    if ($passwordNeverExpires -eq $true -and $changeAtLogon -eq $true) {
+        Write-Console 'PasswordNeverExpires conflicts with ChangePasswordAtLogon; first-logon change will be disabled.' Yellow
+        $changeAtLogon = $false
+    }
 
     if (-not (Confirm-Action `
         -Action ("Update AD user '{0}'" -f $identity) `
-        -Reason 'Modify selected directory attributes.' `
+        -Reason 'Modify selected directory attributes and account controls.' `
         -Impact LOW)) {
         return
     }
@@ -1712,13 +2074,30 @@ function Edit-AdUserInteractive {
 
     $params = @{ Identity = $identity }
     if ($display) { $params.DisplayName = $display }
+    if ($upn) { $params.UserPrincipalName = $upn }
     if ($mail) { $params.EmailAddress = $mail }
+    if ($description) { $params.Description = $description }
     if ($department) { $params.Department = $department }
     if ($title) { $params.Title = $title }
+    if ($company) { $params.Company = $company }
+    if ($office) { $params.Office = $office }
+    if ($phone) { $params.OfficePhone = $phone }
+    if ($null -ne $changeAtLogon) { $params.ChangePasswordAtLogon = [bool]$changeAtLogon }
+    if ($null -ne $passwordNeverExpires) { $params.PasswordNeverExpires = [bool]$passwordNeverExpires }
+    if ($null -ne $cannotChangePassword) { $params.CannotChangePassword = [bool]$cannotChangePassword }
 
     if ($params.Count -gt 1) {
         Set-ADUser @params
         Write-Log ("Updated AD user: {0}" -f $identity) CHANGE
+    }
+
+    if ($null -ne $enabled) {
+        if ([bool]$enabled) { Enable-ADAccount -Identity $identity }
+        else { Disable-ADAccount -Identity $identity }
+    }
+
+    if (Read-BooleanChoice -Prompt 'Manage this user''s group memberships now?' -Default $false) {
+        Manage-AdUserGroupsInteractive -Identity $identity
     }
 }
 
@@ -2051,47 +2430,403 @@ function Remove-AdOrganizationalUnitInteractive {
 
 function Import-GroupPolicyModule {
     if (-not (Test-Command 'Get-GPO')) {
+        $previousProgress = $ProgressPreference
         try {
-            Import-Module GroupPolicy -ErrorAction Stop
+            $ProgressPreference = 'SilentlyContinue'
+            Import-Module GroupPolicy -ErrorAction Stop -DisableNameChecking
         }
         catch {
             throw ("GroupPolicy module unavailable: {0}" -f $_.Exception.Message)
         }
+        finally {
+            $ProgressPreference = $previousProgress
+        }
     }
+}
+
+
+function Get-GpoInventory {
+    Assert-DomainController
+    Import-GroupPolicyModule
+
+    $previousProgress = $ProgressPreference
+    try {
+        # GroupPolicy cmdlets can render a progress UI that behaves badly in
+        # redirected/embedded consoles. Inventory is intentionally quiet.
+        $ProgressPreference = 'SilentlyContinue'
+        return @(Get-GPO -All -ErrorAction Stop | Sort-Object DisplayName)
+    }
+    finally {
+        $ProgressPreference = $previousProgress
+    }
+}
+
+function Show-GpoInventoryIndexed {
+    $gpos = @(Get-GpoInventory)
+
+    Write-Console ''
+    Write-Console 'Existing GPOs:' Cyan
+    if ($gpos.Count -eq 0) {
+        Write-Console '  No GPOs returned.' Yellow
+        return @()
+    }
+
+    for ($i = 0; $i -lt $gpos.Count; $i++) {
+        Write-Console ('  [{0,3}] {1,-38} {2}  {3}' -f `
+            ($i + 1), $gpos[$i].DisplayName, $gpos[$i].Id, $gpos[$i].GpoStatus)
+    }
+
+    return $gpos
+}
+
+function Select-GpoInteractive {
+    param([string]$Prompt = 'Select GPO')
+
+    $gpos = @(Show-GpoInventoryIndexed)
+    Write-Console ''
+    Write-Console '  [M] Enter a GPO name or GUID manually' Gray
+    Write-Console '  [0] Cancel' Gray
+
+    while ($true) {
+        $choice = (Read-Host $Prompt).Trim()
+        if ($choice -eq '0' -or [string]::IsNullOrWhiteSpace($choice)) { return $null }
+
+        if ($choice.ToUpperInvariant() -eq 'M') {
+            $manual = (Read-Host 'GPO display name or GUID').Trim()
+            if (-not $manual) { continue }
+
+            try {
+                $parsed = [guid]::Empty
+                if ([guid]::TryParse($manual, [ref]$parsed)) {
+                    return (Get-GPO -Guid $parsed -ErrorAction Stop)
+                }
+                return (Get-GPO -Name $manual -ErrorAction Stop)
+            }
+            catch {
+                Write-Console ("GPO not found: {0}" -f $_.Exception.Message) Red
+                continue
+            }
+        }
+
+        $number = 0
+        if ([int]::TryParse($choice, [ref]$number)) {
+            $index = $number - 1
+            if ($index -ge 0 -and $index -lt $gpos.Count) {
+                return $gpos[$index]
+            }
+        }
+
+        Write-Console 'Invalid GPO selection.' Yellow
+    }
+}
+
+function Select-GpoTargetInteractive {
+    Assert-DomainController
+
+    $domain = Get-ADDomain
+    $ous = @(Get-ADOrganizationalUnit -Filter * | Sort-Object DistinguishedName)
+
+    Write-Console ''
+    Write-Console 'GPO link targets:' Cyan
+    Write-Console ('  [1] DOMAIN ROOT  {0}' -f $domain.DistinguishedName) Green
+
+    for ($i = 0; $i -lt $ous.Count; $i++) {
+        Write-Console ('  [{0,3}] OU  {1}' -f ($i + 2), $ous[$i].DistinguishedName)
+    }
+
+    Write-Console '  [M] Enter target distinguished name manually' Gray
+    Write-Console '  [0] Cancel' Gray
+
+    while ($true) {
+        $choice = (Read-Host 'Select GPO target [1]').Trim()
+        if ([string]::IsNullOrWhiteSpace($choice)) { return $domain.DistinguishedName }
+        if ($choice -eq '0') { return $null }
+        if ($choice.ToUpperInvariant() -eq 'M') {
+            $manual = (Read-Host 'Target distinguished name').Trim()
+            if ($manual) { return $manual }
+            continue
+        }
+
+        $number = 0
+        if ([int]::TryParse($choice, [ref]$number)) {
+            if ($number -eq 1) { return $domain.DistinguishedName }
+            $index = $number - 2
+            if ($index -ge 0 -and $index -lt $ous.Count) {
+                return $ous[$index].DistinguishedName
+            }
+        }
+
+        Write-Console 'Invalid target selection.' Yellow
+    }
+}
+
+function Get-SecurityGpoCatalog {
+    return @(
+        [pscustomobject]@{
+            Key='1'; Name='SEC - PowerShell Logging'; Impact='LOW'; Scope='Computer';
+            Description='Script block and module logging for administrative visibility.';
+            Settings=@(
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'; ValueName='EnableScriptBlockLogging'; Type='DWord'; Value=1 },
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging'; ValueName='EnableModuleLogging'; Type='DWord'; Value=1 },
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging\ModuleNames'; ValueName='*'; Type='String'; Value='*' }
+            )
+        },
+        [pscustomobject]@{
+            Key='2'; Name='SEC - Disable LLMNR'; Impact='MEDIUM'; Scope='Computer';
+            Description='Disable multicast name resolution; prefer AD DNS.';
+            Settings=@(
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'; ValueName='EnableMulticast'; Type='DWord'; Value=0 }
+            )
+        },
+        [pscustomobject]@{
+            Key='3'; Name='SEC - SMB Guest Hardening'; Impact='MEDIUM'; Scope='Computer';
+            Description='Reject insecure unauthenticated SMB guest logons.';
+            Settings=@(
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\Windows\LanmanWorkstation'; ValueName='AllowInsecureGuestAuth'; Type='DWord'; Value=0 }
+            )
+        },
+        [pscustomobject]@{
+            Key='4'; Name='SEC - RDP Network Level Authentication'; Impact='MEDIUM'; Scope='Computer';
+            Description='Require NLA for Remote Desktop Session Host connections.';
+            Settings=@(
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'; ValueName='UserAuthentication'; Type='DWord'; Value=1 }
+            )
+        },
+        [pscustomobject]@{
+            Key='5'; Name='SEC - Microsoft Defender Core'; Impact='MEDIUM'; Scope='Computer';
+            Description='Enable PUA protection and core Defender realtime policy values; review third-party EDR coexistence first.';
+            Settings=@(
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\Windows Defender'; ValueName='PUAProtection'; Type='DWord'; Value=1 },
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'; ValueName='DisableRealtimeMonitoring'; Type='DWord'; Value=0 },
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'; ValueName='DisableBehaviorMonitoring'; Type='DWord'; Value=0 },
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'; ValueName='DisableIOAVProtection'; Type='DWord'; Value=0 },
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'; ValueName='DisableScriptScanning'; Type='DWord'; Value=0 }
+            )
+        },
+        [pscustomobject]@{
+            Key='6'; Name='SEC - Windows Firewall Baseline'; Impact='HIGH'; Scope='Computer';
+            Description='Enable Domain/Private/Public firewalls; block inbound by default and allow outbound by default.';
+            Settings=@(
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile'; ValueName='EnableFirewall'; Type='DWord'; Value=1 },
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile'; ValueName='DefaultInboundAction'; Type='DWord'; Value=1 },
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile'; ValueName='DefaultOutboundAction'; Type='DWord'; Value=0 },
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\WindowsFirewall\PrivateProfile'; ValueName='EnableFirewall'; Type='DWord'; Value=1 },
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\WindowsFirewall\PrivateProfile'; ValueName='DefaultInboundAction'; Type='DWord'; Value=1 },
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\WindowsFirewall\PrivateProfile'; ValueName='DefaultOutboundAction'; Type='DWord'; Value=0 },
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\WindowsFirewall\PublicProfile'; ValueName='EnableFirewall'; Type='DWord'; Value=1 },
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\WindowsFirewall\PublicProfile'; ValueName='DefaultInboundAction'; Type='DWord'; Value=1 },
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\WindowsFirewall\PublicProfile'; ValueName='DefaultOutboundAction'; Type='DWord'; Value=0 }
+            )
+        },
+        [pscustomobject]@{
+            Key='7'; Name='SEC - Secure Screen Lock'; Impact='LOW'; Scope='User';
+            Description='Enable password-protected screen saver with a 15-minute timeout.';
+            Settings=@(
+                @{ Key='HKCU\Software\Policies\Microsoft\Windows\Control Panel\Desktop'; ValueName='ScreenSaveActive'; Type='String'; Value='1' },
+                @{ Key='HKCU\Software\Policies\Microsoft\Windows\Control Panel\Desktop'; ValueName='ScreenSaveTimeOut'; Type='String'; Value='900' },
+                @{ Key='HKCU\Software\Policies\Microsoft\Windows\Control Panel\Desktop'; ValueName='ScreenSaverIsSecure'; Type='String'; Value='1' }
+            )
+        },
+        [pscustomobject]@{
+            Key='8'; Name='SEC - Disable AlwaysInstallElevated'; Impact='LOW'; Scope='Computer + User';
+            Description='Explicitly disable the risky AlwaysInstallElevated Windows Installer policy in both scopes.';
+            Settings=@(
+                @{ Key='HKLM\SOFTWARE\Policies\Microsoft\Windows\Installer'; ValueName='AlwaysInstallElevated'; Type='DWord'; Value=0 },
+                @{ Key='HKCU\SOFTWARE\Policies\Microsoft\Windows\Installer'; ValueName='AlwaysInstallElevated'; Type='DWord'; Value=0 }
+            )
+        }
+    )
+}
+
+function Show-SecurityGpoCatalog {
+    $catalog = @(Get-SecurityGpoCatalog)
+
+    Write-Console ''
+    Write-Console 'Curated security GPO templates:' Cyan
+    foreach ($item in $catalog) {
+        $color = if ($item.Impact -eq 'HIGH') { 'Red' } elseif ($item.Impact -eq 'MEDIUM') { 'Yellow' } else { 'Green' }
+        Write-Console ('  [{0}] {1,-42} {2,-15} Impact={3}' -f $item.Key, $item.Name, $item.Scope, $item.Impact) $color
+        Write-Console ('      {0}' -f $item.Description) Gray
+    }
+
+    Write-Console ''
+    Write-Console '  [A] Recommended starter pack: 1,2,3,4,7,8' Green
+    Write-Console '  [M] Microsoft baseline guidance only (SCT / OSConfig; no automatic import)' Cyan
+    Write-Console '  [0] Cancel' Gray
+
+    return $catalog
+}
+
+function Apply-SecurityGpoTemplate {
+    param(
+        [Parameter(Mandatory=$true)]$Template,
+        [Parameter(Mandatory=$true)][string]$Target
+    )
+
+    Import-GroupPolicyModule
+    $previousProgress = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+
+    try {
+        $gpo = $null
+        try {
+            $gpo = Get-GPO -Name $Template.Name -ErrorAction Stop
+            Write-Console ("Updating existing GPO: {0} [{1}]" -f $gpo.DisplayName, $gpo.Id) Yellow
+
+            $backupPath = Join-Path $script:RunPath 'gpo-backups'
+            New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
+            Backup-GPO -Guid $gpo.Id -Path $backupPath -ErrorAction SilentlyContinue | Out-Null
+        }
+        catch {
+            $gpo = New-GPO -Name $Template.Name -Comment $Template.Description -ErrorAction Stop
+            Write-Console ("Created GPO: {0} [{1}]" -f $gpo.DisplayName, $gpo.Id) Green
+        }
+
+        foreach ($setting in $Template.Settings) {
+            Set-GPRegistryValue `
+                -Guid $gpo.Id `
+                -Key $setting.Key `
+                -ValueName $setting.ValueName `
+                -Type $setting.Type `
+                -Value $setting.Value `
+                -ErrorAction Stop | Out-Null
+        }
+
+        try {
+            New-GPLink -Guid $gpo.Id -Target $Target -LinkEnabled Yes -ErrorAction Stop | Out-Null
+        }
+        catch {
+            Set-GPLink -Guid $gpo.Id -Target $Target -LinkEnabled Yes -ErrorAction Stop | Out-Null
+        }
+
+        Write-Log ("Applied security GPO template: {0} -> {1}" -f $Template.Name, $Target) CHANGE
+        return $gpo
+    }
+    finally {
+        $ProgressPreference = $previousProgress
+    }
+}
+
+function Invoke-SecurityGpoWizard {
+    Assert-DomainController
+    Import-GroupPolicyModule
+
+    Write-MenuHeader 'SECURITY GPO CATALOG' 'Curated common domain GPOs; choose templates and target scope instead of typing GUIDs'
+    $catalog = @(Show-SecurityGpoCatalog)
+
+    $raw = (Read-Host 'Template selection (comma-separated)').Trim().ToUpperInvariant()
+    if ([string]::IsNullOrWhiteSpace($raw) -or $raw -eq '0') { return }
+
+    if ($raw -eq 'M') {
+        Write-Console ''
+        Write-Console 'For a complete vendor baseline, use Microsoft Security Compliance Toolkit (Server 2019/2022/2025)' Cyan
+        Write-Console 'or Windows Server 2025 OSConfig role-aware baselines. This assistant intentionally does not fabricate' Gray
+        Write-Console 'a complete Microsoft baseline from a handful of registry values.' Gray
+        Pause-ControlPlane
+        return
+    }
+
+    $keys = if ($raw -eq 'A') { @('1','2','3','4','7','8') } else { @($raw -split ',' | ForEach-Object { $_.Trim() }) }
+    $selected = @($catalog | Where-Object { $_.Key -in $keys })
+
+    if ($selected.Count -eq 0) {
+        Write-Console 'No valid templates selected.' Yellow
+        return
+    }
+
+    $target = Select-GpoTargetInteractive
+    if (-not $target) { return }
+
+    Write-Console ''
+    Write-Console 'GPO deployment plan:' Cyan
+    foreach ($template in $selected) {
+        Write-Console ('  - {0}  [Impact={1}]' -f $template.Name, $template.Impact)
+    }
+    Write-Console ("  Target: {0}" -f $target)
+
+    $impact = if (@($selected | Where-Object { $_.Impact -eq 'HIGH' }).Count -gt 0) { 'HIGH' } `
+        elseif (@($selected | Where-Object { $_.Impact -eq 'MEDIUM' }).Count -gt 0) { 'MEDIUM' } `
+        else { 'LOW' }
+
+    if (-not (Confirm-Action `
+        -Action ("Create/update {0} security GPO template(s) and link them to '{1}'" -f $selected.Count, $target) `
+        -Reason 'Deploy selected common domain security policies.' `
+        -Impact $impact)) {
+        return
+    }
+
+    New-ChangeSet
+
+    foreach ($template in $selected) {
+        try {
+            [void](Apply-SecurityGpoTemplate -Template $template -Target $target)
+        }
+        catch {
+            Write-Console ("Failed template '{0}': {1}" -f $template.Name, $_.Exception.Message) Red
+        }
+    }
+
+    Write-Console ''
+    Write-Console 'Security GPO deployment pass completed.' Green
+    Show-GpoInventoryIndexed | Out-Null
 }
 
 function Show-Gpos {
     Assert-DomainController
-    Import-GroupPolicyModule
-
-    Get-GPO -All |
-        Sort-Object DisplayName |
-        Select-Object DisplayName, Id, GpoStatus, CreationTime, ModificationTime |
-        Format-Table -AutoSize
+    [void](Show-GpoInventoryIndexed)
 }
 
 function Show-GpoDetail {
     Assert-DomainController
     Import-GroupPolicyModule
 
-    $name = Read-Host 'GPO display name'
-    Get-GPO -Name $name | Format-List *
+    $gpo = Select-GpoInteractive -Prompt 'Select GPO to inspect'
+    if (-not $gpo) { return }
+
+    $gpo | Format-List DisplayName, Id, DomainName, Owner, GpoStatus, CreationTime, ModificationTime, Description
 }
 
 function New-GpoInteractive {
     Assert-DomainController
     Import-GroupPolicyModule
 
-    $name = Read-Host 'New GPO display name'
+    $name = (Read-Host 'New GPO display name').Trim()
+    if ([string]::IsNullOrWhiteSpace($name)) { return }
+
     $comment = Read-Host 'Comment / purpose'
 
-    if (Confirm-Action `
+    if (-not (Confirm-Action `
         -Action ("Create GPO '{0}'" -f $name) `
         -Reason 'Create an empty Group Policy Object.' `
-        -Impact LOW) {
+        -Impact LOW)) {
+        return
+    }
 
-        New-ChangeSet
-        New-GPO -Name $name -Comment $comment | Format-List DisplayName, Id
+    New-ChangeSet
+
+    $previousProgress = $ProgressPreference
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        $gpo = New-GPO -Name $name -Comment $comment -ErrorAction Stop
+    }
+    finally {
+        $ProgressPreference = $previousProgress
+    }
+
+    Write-Console ("Created GPO: {0}" -f $gpo.DisplayName) Green
+    Write-Console ("GUID       : {0}" -f $gpo.Id) Cyan
+
+    if (Read-BooleanChoice -Prompt 'Link this GPO now?' -Default $true) {
+        $target = Select-GpoTargetInteractive
+        if ($target) {
+            try {
+                New-GPLink -Guid $gpo.Id -Target $target -LinkEnabled Yes -ErrorAction Stop | Out-Null
+                Write-Console ("Linked to: {0}" -f $target) Green
+            }
+            catch {
+                Write-Console ("GPO created but link failed: {0}" -f $_.Exception.Message) Yellow
+            }
+        }
     }
 }
 
@@ -2099,21 +2834,34 @@ function Backup-GpoInteractive {
     Assert-DomainController
     Import-GroupPolicyModule
 
-    $name = Read-Host 'GPO display name'
+    $gpo = Select-GpoInteractive -Prompt 'Select GPO to back up'
+    if (-not $gpo) { return }
+
     $path = Join-Path $script:RunPath 'gpo-backups'
     New-Item -ItemType Directory -Path $path -Force | Out-Null
 
-    Backup-GPO -Name $name -Path $path |
-        Format-List DisplayName, Id, BackupId, BackupDirectory
+    $previousProgress = $ProgressPreference
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        $backup = Backup-GPO -Guid $gpo.Id -Path $path -ErrorAction Stop
+    }
+    finally {
+        $ProgressPreference = $previousProgress
+    }
 
-    Write-Console ("Backup directory: {0}" -f $path) Green
+    Write-Console ("GPO        : {0}" -f $backup.DisplayName) Green
+    Write-Console ("GPO GUID   : {0}" -f $backup.Id) Cyan
+    Write-Console ("Backup GUID: {0}" -f $backup.BackupId) Cyan
+    Write-Console ("Directory  : {0}" -f $backup.BackupDirectory)
 }
 
 function Set-GpoRegistryValueInteractive {
     Assert-DomainController
     Import-GroupPolicyModule
 
-    $name = Read-Host 'GPO display name'
+    $gpo = Select-GpoInteractive -Prompt 'Select GPO to edit'
+    if (-not $gpo) { return }
+
     $key = Read-Host 'Registry key (example HKLM\Software\Policies\...)'
     $valueName = Read-Host 'Value name'
     $type = Read-Host 'Type [String/ExpandString/Binary/DWord/MultiString/QWord]'
@@ -2131,18 +2879,12 @@ function Set-GpoRegistryValueInteractive {
     }
 
     if (Confirm-Action `
-        -Action ("Set registry policy '{0}' in GPO '{1}'" -f $valueName, $name) `
+        -Action ("Set registry policy '{0}' in GPO '{1}' [{2}]" -f $valueName, $gpo.DisplayName, $gpo.Id) `
         -Reason 'Edit a registry-based Group Policy setting.' `
         -Impact MEDIUM) {
 
         New-ChangeSet
-
-        Set-GPRegistryValue `
-            -Name $name `
-            -Key $key `
-            -ValueName $valueName `
-            -Type $type `
-            -Value $value
+        Set-GPRegistryValue -Guid $gpo.Id -Key $key -ValueName $valueName -Type $type -Value $value | Out-Null
     }
 }
 
@@ -2150,21 +2892,24 @@ function Link-GpoInteractive {
     Assert-DomainController
     Import-GroupPolicyModule
 
-    $name = Read-Host 'GPO display name'
-    $target = Read-Host 'Target DN (domain or OU)'
+    $gpo = Select-GpoInteractive -Prompt 'Select GPO to link'
+    if (-not $gpo) { return }
+
+    $target = Select-GpoTargetInteractive
+    if (-not $target) { return }
 
     if (Confirm-Action `
-        -Action ("Link GPO '{0}' to '{1}'" -f $name, $target) `
+        -Action ("Link GPO '{0}' [{1}] to '{2}'" -f $gpo.DisplayName, $gpo.Id, $target) `
         -Reason 'Change Group Policy scope.' `
         -Impact MEDIUM) {
 
         New-ChangeSet
 
         try {
-            New-GPLink -Name $name -Target $target -LinkEnabled Yes -ErrorAction Stop | Out-Null
+            New-GPLink -Guid $gpo.Id -Target $target -LinkEnabled Yes -ErrorAction Stop | Out-Null
         }
         catch {
-            Set-GPLink -Name $name -Target $target -LinkEnabled Yes | Out-Null
+            Set-GPLink -Guid $gpo.Id -Target $target -LinkEnabled Yes | Out-Null
         }
     }
 }
@@ -2173,16 +2918,19 @@ function Unlink-GpoInteractive {
     Assert-DomainController
     Import-GroupPolicyModule
 
-    $name = Read-Host 'GPO display name'
-    $target = Read-Host 'Target DN'
+    $gpo = Select-GpoInteractive -Prompt 'Select GPO link to remove'
+    if (-not $gpo) { return }
+
+    $target = Select-GpoTargetInteractive
+    if (-not $target) { return }
 
     if (Confirm-Action `
-        -Action ("Remove link for GPO '{0}' from '{1}'" -f $name, $target) `
+        -Action ("Remove link for GPO '{0}' [{1}] from '{2}'" -f $gpo.DisplayName, $gpo.Id, $target) `
         -Reason 'Remove Group Policy scope from a container.' `
         -Impact MEDIUM) {
 
         New-ChangeSet
-        Remove-GPLink -Name $name -Target $target -Confirm:$false
+        Remove-GPLink -Guid $gpo.Id -Target $target -Confirm:$false
     }
 }
 
@@ -2190,22 +2938,53 @@ function Set-GpoPermissionInteractive {
     Assert-DomainController
     Import-GroupPolicyModule
 
-    $name = Read-Host 'GPO display name'
-    $principal = Read-Host 'Target user/group/computer'
-    $targetType = Read-Host 'Target type [User/Group/Computer]'
-    if ([string]::IsNullOrWhiteSpace($targetType)) { $targetType = 'Group' }
+    $gpo = Select-GpoInteractive -Prompt 'Select GPO for delegation/security filtering'
+    if (-not $gpo) { return }
+
+    Write-Console ''
+    Write-Console 'Choose the security principal.' Cyan
+    $principalType = (Read-Host 'Principal type [G=Group/U=User/C=Computer] (G)').Trim().ToUpperInvariant()
+    if ([string]::IsNullOrWhiteSpace($principalType)) { $principalType = 'G' }
+
+    $targetType = 'Group'
+    $principal = $null
+
+    switch ($principalType) {
+        'G' {
+            $groups = @(Select-AdGroupsInteractive)
+            if ($groups.Count -eq 0) { return }
+            if ($groups.Count -gt 1) {
+                Write-Console 'Select exactly one group for a GPO permission operation.' Yellow
+                return
+            }
+            $principal = $groups[0].SamAccountName
+            $targetType = 'Group'
+        }
+        'U' {
+            $principal = (Read-Host 'User identity').Trim()
+            $targetType = 'User'
+        }
+        'C' {
+            $principal = (Read-Host 'Computer identity').Trim()
+            $targetType = 'Computer'
+        }
+        default {
+            Write-Console 'Invalid principal type.' Yellow
+            return
+        }
+    }
 
     $permission = Read-Host 'Permission [GpoRead/GpoApply/GpoEdit/GpoEditDeleteModifySecurity/None]'
 
     if (Confirm-Action `
-        -Action ("Set GPO permission for '{0}' on '{1}'" -f $principal, $name) `
+        -Action ("Set GPO permission for '{0}' on '{1}' [{2}]" -f $principal, $gpo.DisplayName, $gpo.Id) `
         -Reason 'Modify GPO delegation/security filtering permissions.' `
         -Impact MEDIUM) {
 
         New-ChangeSet
 
         Set-GPPermission `
-            -Name $name `
+            -Guid $gpo.Id `
             -TargetName $principal `
             -TargetType $targetType `
             -PermissionLevel $permission `
@@ -2217,20 +2996,29 @@ function Remove-GpoInteractive {
     Assert-DomainController
     Import-GroupPolicyModule
 
-    $name = Read-Host 'GPO display name'
+    $gpo = Select-GpoInteractive -Prompt 'Select GPO to delete'
+    if (-not $gpo) { return }
 
-    Write-Console 'A backup will be created before deletion.' Yellow
+    Write-Console 'A best-effort backup will be created before deletion.' Yellow
     $gpoBackupPath = Join-Path $script:RunPath 'gpo-backups'
     New-Item -ItemType Directory -Path $gpoBackupPath -Force | Out-Null
-    Backup-GPO -Name $name -Path $gpoBackupPath -ErrorAction SilentlyContinue | Out-Null
+
+    $previousProgress = $ProgressPreference
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        Backup-GPO -Guid $gpo.Id -Path $gpoBackupPath -ErrorAction SilentlyContinue | Out-Null
+    }
+    finally {
+        $ProgressPreference = $previousProgress
+    }
 
     if (Confirm-Action `
-        -Action ("PERMANENTLY delete GPO '{0}'" -f $name) `
+        -Action ("PERMANENTLY delete GPO '{0}' [{1}]" -f $gpo.DisplayName, $gpo.Id) `
         -Reason 'Delete the Group Policy Object after creating a best-effort backup.' `
         -Impact HIGH) {
 
         New-ChangeSet
-        Remove-GPO -Name $name -Confirm:$false
+        Remove-GPO -Guid $gpo.Id -Confirm:$false
     }
 }
 
@@ -2238,11 +3026,21 @@ function Export-GpoReportInteractive {
     Assert-DomainController
     Import-GroupPolicyModule
 
-    $name = Read-Host 'GPO display name'
-    $safe = ($name -replace '[^A-Za-z0-9._-]', '_')
+    $gpo = Select-GpoInteractive -Prompt 'Select GPO for HTML report'
+    if (-not $gpo) { return }
+
+    $safe = ($gpo.DisplayName -replace '[^A-Za-z0-9._-]', '_')
     $path = Join-Path $script:RunPath ("gpo-{0}.html" -f $safe)
 
-    Get-GPOReport -Name $name -ReportType Html -Path $path
+    $previousProgress = $ProgressPreference
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        Get-GPOReport -Guid $gpo.Id -ReportType Html -Path $path
+    }
+    finally {
+        $ProgressPreference = $previousProgress
+    }
+
     Write-Console ("HTML report: {0}" -f $path) Green
 }
 
@@ -2481,16 +3279,17 @@ function Invoke-NewForestProvisioning {
 
 function Show-UserMenu {
     while ($true) {
-        Write-MenuHeader 'USER DIRECTORY' 'Identity lifecycle, credentials and account state'
+        Write-MenuHeader 'USER DIRECTORY' 'Identity lifecycle, credentials, attributes and group membership'
         Write-MenuItem '1' 'List users' 'Inventory users, state and recent logon metadata'
         Write-MenuItem '2' 'Inspect user' 'Show detailed attributes for one identity'
-        Write-MenuItem '3' 'Create user' 'Create enabled domain identity' Good
-        Write-MenuItem '4' 'Edit user' 'Update display/email/department/title'
-        Write-MenuItem '5' 'Reset password' 'Administrative reset + change at next logon' Warn
-        Write-MenuItem '6' 'Enable account' 'Restore authentication eligibility' Good
-        Write-MenuItem '7' 'Disable account' 'Block authentication without deleting identity' Warn
-        Write-MenuItem '8' 'Unlock account' 'Clear account lockout'
-        Write-MenuItem '9' 'Delete user' 'Permanently remove directory object' Danger
+        Write-MenuItem '3' 'Create user' 'Full user wizard + OU + password policy flags + groups' Good
+        Write-MenuItem '4' 'Edit user' 'Identity fields, password behavior and account state'
+        Write-MenuItem '5' 'Group memberships' 'List/add/remove groups with professional selectors' Good
+        Write-MenuItem '6' 'Reset password' 'Administrative reset + change at next logon' Warn
+        Write-MenuItem '7' 'Enable account' 'Restore authentication eligibility' Good
+        Write-MenuItem '8' 'Disable account' 'Block authentication without deleting identity' Warn
+        Write-MenuItem '9' 'Unlock account' 'Clear account lockout'
+        Write-MenuItem '10' 'Delete user' 'Permanently remove directory object' Danger
         Write-MenuItem '0' 'Back' 'Return to AD operations console' Danger
         Write-Rule
 
@@ -2499,11 +3298,12 @@ function Show-UserMenu {
             '2' { Show-AdUserDetail; Pause-ControlPlane }
             '3' { New-AdUserInteractive; Pause-ControlPlane }
             '4' { Edit-AdUserInteractive; Pause-ControlPlane }
-            '5' { Reset-AdUserPassword; Pause-ControlPlane }
-            '6' { Set-AdUserEnabledState -Enabled $true; Pause-ControlPlane }
-            '7' { Set-AdUserEnabledState -Enabled $false; Pause-ControlPlane }
-            '8' { Unlock-AdUserInteractive; Pause-ControlPlane }
-            '9' { Remove-AdUserInteractive; Pause-ControlPlane }
+            '5' { Manage-AdUserGroupsInteractive; Pause-ControlPlane }
+            '6' { Reset-AdUserPassword; Pause-ControlPlane }
+            '7' { Set-AdUserEnabledState -Enabled $true; Pause-ControlPlane }
+            '8' { Set-AdUserEnabledState -Enabled $false; Pause-ControlPlane }
+            '9' { Unlock-AdUserInteractive; Pause-ControlPlane }
+            '10' { Remove-AdUserInteractive; Pause-ControlPlane }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
         }
@@ -2570,17 +3370,18 @@ function Show-ComputerOuMenu {
 
 function Show-GpoMenu {
     while ($true) {
-        Write-MenuHeader 'GROUP POLICY CONTROL' 'Native GroupPolicy module: lifecycle, scope, registry settings and delegation'
-        Write-MenuItem '1' 'List GPOs' 'Inventory Group Policy Objects'
-        Write-MenuItem '2' 'Inspect GPO' 'Show metadata for one GPO'
-        Write-MenuItem '3' 'Create GPO' 'Create an empty GPO' Good
-        Write-MenuItem '4' 'Edit registry policy' 'Set a registry-based policy value' Warn
-        Write-MenuItem '5' 'Link GPO' 'Apply GPO to a domain/OU target' Good
-        Write-MenuItem '6' 'Remove link' 'Detach GPO from target' Warn
-        Write-MenuItem '7' 'GPO permission' 'Modify GPO delegation/security permissions' Warn
-        Write-MenuItem '8' 'Backup GPO' 'Export one GPO to run backup directory'
-        Write-MenuItem '9' 'HTML report' 'Export human-readable GPO report'
-        Write-MenuItem '10' 'Delete GPO' 'Backup best-effort then permanently delete GPO' Danger
+        Write-MenuHeader 'GROUP POLICY CONTROL' 'Selector-driven GPO lifecycle, common security templates, scope and delegation'
+        Write-MenuItem '1' 'List GPOs + GUIDs' 'Indexed inventory; no manual GUID lookup required'
+        Write-MenuItem '2' 'Inspect GPO' 'Select existing GPO by index or manual name/GUID'
+        Write-MenuItem '3' 'Create empty GPO' 'Create a custom Group Policy Object' Good
+        Write-MenuItem '4' 'Security GPO catalog' 'Deploy common curated security GPO templates' Good
+        Write-MenuItem '5' 'Edit registry policy' 'Select GPO then set registry-based policy value' Warn
+        Write-MenuItem '6' 'Link GPO' 'Select GPO and domain/OU target' Good
+        Write-MenuItem '7' 'Remove link' 'Select GPO and domain/OU target' Warn
+        Write-MenuItem '8' 'GPO permission' 'Select GPO and security principal' Warn
+        Write-MenuItem '9' 'Backup GPO' 'Select and export one GPO'
+        Write-MenuItem '10' 'HTML report' 'Select GPO and export human-readable report'
+        Write-MenuItem '11' 'Delete GPO' 'Backup best-effort then permanently delete selected GPO' Danger
         Write-MenuItem '0' 'Back' 'Return to AD operations console' Danger
         Write-Rule
 
@@ -2588,13 +3389,14 @@ function Show-GpoMenu {
             '1' { Show-Gpos; Pause-ControlPlane }
             '2' { Show-GpoDetail; Pause-ControlPlane }
             '3' { New-GpoInteractive; Pause-ControlPlane }
-            '4' { Set-GpoRegistryValueInteractive; Pause-ControlPlane }
-            '5' { Link-GpoInteractive; Pause-ControlPlane }
-            '6' { Unlink-GpoInteractive; Pause-ControlPlane }
-            '7' { Set-GpoPermissionInteractive; Pause-ControlPlane }
-            '8' { Backup-GpoInteractive; Pause-ControlPlane }
-            '9' { Export-GpoReportInteractive; Pause-ControlPlane }
-            '10' { Remove-GpoInteractive; Pause-ControlPlane }
+            '4' { Invoke-SecurityGpoWizard; Pause-ControlPlane }
+            '5' { Set-GpoRegistryValueInteractive; Pause-ControlPlane }
+            '6' { Link-GpoInteractive; Pause-ControlPlane }
+            '7' { Unlink-GpoInteractive; Pause-ControlPlane }
+            '8' { Set-GpoPermissionInteractive; Pause-ControlPlane }
+            '9' { Backup-GpoInteractive; Pause-ControlPlane }
+            '10' { Export-GpoReportInteractive; Pause-ControlPlane }
+            '11' { Remove-GpoInteractive; Pause-ControlPlane }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
         }
