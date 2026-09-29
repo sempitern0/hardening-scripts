@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 4.6.4-kerberos-audit-fix
+# Version 4.7.0-operator-selectors
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -43,7 +43,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="4.6.4-kerberos-audit-fix"
+SCRIPT_VERSION="4.7.0-operator-selectors"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -3734,26 +3734,18 @@ advanced_sysvol_repair() {
 }
 
 list_domain_computers_status() {
-    printf '\n%-24s %-36s %-16s %s\n' "COMPUTER" "DNS NAME" "IP" "NETWORK HINT"
-    printf '%s\n' "---------------------------------------------------------------------------------------------"
-    local account short dns ip hint
+    local -a rows=()
+    mapfile -t rows < <(domain_computer_inventory_tsv)
 
-    while IFS= read -r account; do
-        [[ -n "$account" ]] || continue
-        short="${account%\$}"
-        dns="$(samba-tool computer show "$account" --attributes=dNSHostName 2>/dev/null |
-            awk -F': ' '/dNSHostName:/{print $2;exit}' | tr -d '\r' || true)"
-        [[ -n "$dns" ]] || dns="${short,,}.${DOMAIN}"
-        ip="$(getent ahostsv4 "$dns" 2>/dev/null | awk 'NR==1{print $1}' || true)"
-        hint="no DNS address"
-        if [[ -n "$ip" ]]; then
-            hint="no :445 response"
-            if command_exists timeout && timeout 1 bash -c "</dev/tcp/${ip}/445" >/dev/null 2>&1; then
-                hint="SMB reachable"
-            fi
-        fi
-        printf '%-24s %-36s %-16s %s\n' "$account" "$dns" "${ip:--}" "$hint"
-    done < <(samba-tool computer list 2>/dev/null | sort)
+    printf '\n%-6s %-24s %-36s %-16s %s\n' "#" "COMPUTER" "DNS NAME" "IP" "NETWORK HINT"
+    printf '%s\n' "-----------------------------------------------------------------------------------------------------"
+
+    local i account dns ip hint
+    for i in "${!rows[@]}"; do
+        IFS=$'\t' read -r account dns ip hint <<<"${rows[$i]}"
+        printf '[%3d]  %-24s %-36s %-16s %s\n' \
+            "$((i+1))" "$account" "$dns" "$ip" "$hint"
+    done
 }
 
 
@@ -3825,6 +3817,366 @@ select_domain_group() {
             [[ "$choice" =~ ^[0-9]+$ ]] || { msg_warn "Invalid group selection."; return 1; }
             (( choice >= 1 && choice <= ${#groups[@]} )) || { msg_warn "Group selection out of range."; return 1; }
             printf '%s' "${groups[$((choice-1))]}"
+            ;;
+    esac
+}
+
+
+select_enum_value() {
+    local prompt="$1" default_index="$2"
+    shift 2
+    local -a entries=("$@")
+    local i value label choice
+
+    printf '\n' >&2
+    ui_rule >&2
+    printf '%b%b  %s%b\n' "$C_BOLD" "$C_WHITE" "$prompt" "$C_RESET" >&2
+    ui_rule >&2
+    for i in "${!entries[@]}"; do
+        value="${entries[$i]%%|*}"
+        label="${entries[$i]#*|}"
+        printf '  %b[%2d]%b  %-18s %s\n' "$C_DIM" "$((i+1))" "$C_RESET" "$value" "$label" >&2
+    done
+    printf '  %b[0 ]%b  Cancel\n' "$C_RED" "$C_RESET" >&2
+    ui_rule >&2
+
+    choice="$(ask 'Select value' "$default_index")"
+    [[ "$choice" =~ ^[0-9]+$ ]] || { msg_warn "Invalid selection."; return 1; }
+    (( choice >= 1 && choice <= ${#entries[@]} )) || return 1
+    printf '%s' "${entries[$((choice-1))]%%|*}"
+}
+
+list_domain_users_indexed() {
+    local filter="${1:-}"
+    local -a users=()
+    mapfile -t users < <(
+        samba-tool user list 2>/dev/null |
+        sort |
+        { if [[ -n "$filter" ]]; then grep -iF -- "$filter" || true; else cat; fi; }
+    )
+
+    local i
+    printf '\n' >&2
+    ui_rule >&2
+    printf '%b%b  DOMAIN USERS%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET" >&2
+    ui_rule >&2
+    if ((${#users[@]} == 0)); then
+        printf '  %bNo users matched.%b\n' "$C_YELLOW" "$C_RESET" >&2
+    else
+        for i in "${!users[@]}"; do
+            printf '  %b[%3d]%b  %s\n' "$C_DIM" "$((i+1))" "$C_RESET" "${users[$i]}" >&2
+        done
+    fi
+    printf '  %b[S  ]%b  Search/filter\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[M  ]%b  Enter user manually\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[0  ]%b  Cancel\n' "$C_RED" "$C_RESET" >&2
+    ui_rule >&2
+}
+
+select_domain_user() {
+    local filter="" choice manual
+    local -a users=()
+
+    while true; do
+        mapfile -t users < <(
+            samba-tool user list 2>/dev/null |
+            sort |
+            { if [[ -n "$filter" ]]; then grep -iF -- "$filter" || true; else cat; fi; }
+        )
+        list_domain_users_indexed "$filter"
+
+        choice="$(ask 'Select user' '0')"
+        case "${choice^^}" in
+            0|"") return 1 ;;
+            S)
+                filter="$(ask 'User filter' "$filter")"
+                ;;
+            M)
+                manual="$(ask 'User identity / sAMAccountName')"
+                [[ -n "$manual" ]] || return 1
+                samba-tool user show "$manual" >/dev/null 2>&1 || {
+                    msg_warn "User '$manual' does not exist."
+                    continue
+                }
+                printf '%s' "$manual"
+                return 0
+                ;;
+            *)
+                [[ "$choice" =~ ^[0-9]+$ ]] || { msg_warn "Invalid user selection."; continue; }
+                if (( choice >= 1 && choice <= ${#users[@]} )); then
+                    printf '%s' "${users[$((choice-1))]}"
+                    return 0
+                fi
+                msg_warn "User selection out of range."
+                ;;
+        esac
+    done
+}
+
+domain_computer_inventory_tsv() {
+    local account short dns ip hint
+    while IFS= read -r account; do
+        [[ -n "$account" ]] || continue
+        short="${account%\$}"
+        dns="$(
+            samba-tool computer show "$account" --attributes=dNSHostName 2>/dev/null |
+            awk -F': ' '/dNSHostName:/{print $2;exit}' |
+            tr -d '\r' || true
+        )"
+        [[ -n "$dns" ]] || dns="${short,,}.${DOMAIN}"
+        ip="$(getent ahostsv4 "$dns" 2>/dev/null | awk 'NR==1{print $1}' || true)"
+        hint="NO_DNS"
+        if [[ -n "$ip" ]]; then
+            hint="NO_445"
+            if command_exists timeout && timeout 1 bash -c "</dev/tcp/${ip}/445" >/dev/null 2>&1; then
+                hint="SMB_OK"
+            fi
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$account" "$dns" "${ip:--}" "$hint"
+    done < <(samba-tool computer list 2>/dev/null | sort)
+}
+
+list_domain_computers_indexed() {
+    local filter="${1:-}"
+    local -a rows=()
+    mapfile -t rows < <(
+        domain_computer_inventory_tsv |
+        { if [[ -n "$filter" ]]; then grep -iF -- "$filter" || true; else cat; fi; }
+    )
+
+    local i account dns ip hint
+    printf '\n' >&2
+    ui_rule >&2
+    printf '%b%b  DOMAIN COMPUTERS%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET" >&2
+    ui_rule >&2
+    printf '  %-6s %-24s %-34s %-16s %s\n' "#" "ACCOUNT" "DNS NAME" "IP" "NETWORK" >&2
+    for i in "${!rows[@]}"; do
+        IFS=$'\t' read -r account dns ip hint <<<"${rows[$i]}"
+        printf '  [%3d]  %-24s %-34s %-16s %s\n' "$((i+1))" "$account" "$dns" "$ip" "$hint" >&2
+    done
+    ((${#rows[@]})) || printf '  %bNo computers matched.%b\n' "$C_YELLOW" "$C_RESET" >&2
+    printf '  %b[S  ]%b  Search/filter\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[M  ]%b  Enter computer manually\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[0  ]%b  Cancel\n' "$C_RED" "$C_RESET" >&2
+    ui_rule >&2
+}
+
+select_domain_computer() {
+    local filter="" choice manual
+    local -a rows=()
+    while true; do
+        mapfile -t rows < <(
+            domain_computer_inventory_tsv |
+            { if [[ -n "$filter" ]]; then grep -iF -- "$filter" || true; else cat; fi; }
+        )
+        list_domain_computers_indexed "$filter"
+
+        choice="$(ask 'Select computer' '0')"
+        case "${choice^^}" in
+            0|"") return 1 ;;
+            S)
+                filter="$(ask 'Computer filter' "$filter")"
+                ;;
+            M)
+                manual="$(ask 'Computer account / name')"
+                [[ -n "$manual" ]] || return 1
+                samba-tool computer show "$manual" >/dev/null 2>&1 || {
+                    samba-tool computer show "${manual}\$" >/dev/null 2>&1 || {
+                        msg_warn "Computer '$manual' does not exist."
+                        continue
+                    }
+                    manual="${manual}\$"
+                }
+                printf '%s' "$manual"
+                return 0
+                ;;
+            *)
+                [[ "$choice" =~ ^[0-9]+$ ]] || { msg_warn "Invalid computer selection."; continue; }
+                if (( choice >= 1 && choice <= ${#rows[@]} )); then
+                    printf '%s' "${rows[$((choice-1))]%%$'\t'*}"
+                    return 0
+                fi
+                msg_warn "Computer selection out of range."
+                ;;
+        esac
+    done
+}
+
+select_domain_principal() {
+    local choice
+    printf '\n' >&2
+    ui_rule >&2
+    printf '%b%b  SELECT DOMAIN PRINCIPAL%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET" >&2
+    ui_rule >&2
+    printf '  %b[U]%b  User\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[G]%b  Group\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[C]%b  Computer\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[M]%b  Enter identity manually\n' "$C_DIM" "$C_RESET" >&2
+    printf '  %b[0]%b  Cancel\n' "$C_RED" "$C_RESET" >&2
+    ui_rule >&2
+
+    choice="$(ask 'Principal type' 'U')"
+    case "${choice^^}" in
+        U) select_domain_user ;;
+        G) select_domain_group ;;
+        C) select_domain_computer ;;
+        M)
+            local manual
+            manual="$(ask 'User/group/computer identity')"
+            [[ -n "$manual" ]] || return 1
+            printf '%s' "$manual"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+select_user_or_computer_account() {
+    local choice
+    printf '\n' >&2
+    ui_rule >&2
+    printf '%b%b  SELECT ACCOUNT%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET" >&2
+    ui_rule >&2
+    printf '  %b[U]%b  Domain user\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[C]%b  Domain computer\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[M]%b  Enter account manually\n' "$C_DIM" "$C_RESET" >&2
+    printf '  %b[0]%b  Cancel\n' "$C_RED" "$C_RESET" >&2
+    ui_rule >&2
+
+    choice="$(ask 'Account type' 'U')"
+    case "${choice^^}" in
+        U) select_domain_user ;;
+        C) select_domain_computer ;;
+        M)
+            local manual
+            manual="$(ask 'Domain user/computer account')"
+            [[ -n "$manual" ]] || return 1
+            printf '%s' "$manual"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+select_group_member() {
+    local group="$1" choice manual
+    local -a members=()
+    mapfile -t members < <(samba-tool group listmembers "$group" 2>/dev/null | sort)
+
+    printf '\n' >&2
+    ui_rule >&2
+    printf '%b%b  CURRENT MEMBERS: %s%b\n' "$C_BOLD" "$C_WHITE" "$group" "$C_RESET" >&2
+    ui_rule >&2
+
+    local i
+    for i in "${!members[@]}"; do
+        printf '  %b[%3d]%b  %s\n' "$C_DIM" "$((i+1))" "$C_RESET" "${members[$i]}" >&2
+    done
+    ((${#members[@]})) || printf '  %bNo direct members returned.%b\n' "$C_YELLOW" "$C_RESET" >&2
+    printf '  %b[M  ]%b  Enter member manually\n' "$C_DIM" "$C_RESET" >&2
+    printf '  %b[0  ]%b  Cancel\n' "$C_RED" "$C_RESET" >&2
+    ui_rule >&2
+
+    choice="$(ask 'Select member' '0')"
+    case "${choice^^}" in
+        0|"") return 1 ;;
+        M)
+            manual="$(ask 'Existing member identity')"
+            [[ -n "$manual" ]] || return 1
+            printf '%s' "$manual"
+            ;;
+        *)
+            [[ "$choice" =~ ^[0-9]+$ ]] || return 1
+            (( choice >= 1 && choice <= ${#members[@]} )) || return 1
+            printf '%s' "${members[$((choice-1))]}"
+            ;;
+    esac
+}
+
+directory_object_dn_from_samba() {
+    local area="$1" identity="$2"
+    samba-tool "$area" show "$identity" 2>/dev/null |
+        awk -F': ' '/^dn: /{print $2;exit}'
+}
+
+select_directory_object_dn() {
+    local choice identity dn
+    printf '\n' >&2
+    ui_rule >&2
+    printf '%b%b  SELECT DIRECTORY OBJECT%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET" >&2
+    ui_rule >&2
+    printf '  %b[U]%b  User\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[G]%b  Group\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[C]%b  Computer\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[O]%b  Domain root / Organizational Unit\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[M]%b  Enter distinguished name manually\n' "$C_DIM" "$C_RESET" >&2
+    printf '  %b[0]%b  Cancel\n' "$C_RED" "$C_RESET" >&2
+    ui_rule >&2
+
+    choice="$(ask 'Object type' 'O')"
+    case "${choice^^}" in
+        U)
+            identity="$(select_domain_user)" || return 1
+            dn="$(directory_object_dn_from_samba user "$identity")"
+            ;;
+        G)
+            identity="$(select_domain_group)" || return 1
+            dn="$(directory_object_dn_from_samba group "$identity")"
+            ;;
+        C)
+            identity="$(select_domain_computer)" || return 1
+            dn="$(directory_object_dn_from_samba computer "$identity")"
+            ;;
+        O) select_directory_target_dn; return ;;
+        M)
+            dn="$(ask 'Object DN')"
+            ;;
+        *) return 1 ;;
+    esac
+
+    [[ -n "$dn" ]] || {
+        msg_warn "Unable to resolve distinguished name for '$identity'."
+        return 1
+    }
+    printf '%s' "$dn"
+}
+
+trusted_domain_list() {
+    local base
+    base="$(domain_dn "$DOMAIN")"
+    ldbsearch -H /var/lib/samba/private/sam.ldb -b "CN=System,${base}" \
+        '(objectClass=trustedDomain)' trustPartner 2>/dev/null |
+        awk -F': ' '/^trustPartner: /{print $2}' |
+        sort -fu
+}
+
+select_trusted_domain() {
+    local -a trusts=()
+    mapfile -t trusts < <(trusted_domain_list)
+    local i choice manual
+
+    printf '\n' >&2
+    ui_rule >&2
+    printf '%b%b  DOMAIN TRUSTS%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET" >&2
+    ui_rule >&2
+    for i in "${!trusts[@]}"; do
+        printf '  %b[%2d]%b  %s\n' "$C_DIM" "$((i+1))" "$C_RESET" "${trusts[$i]}" >&2
+    done
+    ((${#trusts[@]})) || printf '  %bNo trust objects found.%b\n' "$C_YELLOW" "$C_RESET" >&2
+    printf '  %b[M ]%b  Enter trusted domain manually\n' "$C_DIM" "$C_RESET" >&2
+    printf '  %b[0 ]%b  Cancel\n' "$C_RED" "$C_RESET" >&2
+    ui_rule >&2
+
+    choice="$(ask 'Select trust' '0')"
+    case "${choice^^}" in
+        0|"") return 1 ;;
+        M)
+            manual="$(ask 'Trusted domain DNS name')"
+            [[ -n "$manual" ]] || return 1
+            printf '%s' "$manual"
+            ;;
+        *)
+            [[ "$choice" =~ ^[0-9]+$ ]] || return 1
+            (( choice >= 1 && choice <= ${#trusts[@]} )) || return 1
+            printf '%s' "${trusts[$((choice-1))]}"
             ;;
     esac
 }
@@ -4158,7 +4510,7 @@ edit_user_interactive_menu() {
                 if samba-tool user sensitive --help >/dev/null 2>&1; then
                     samba-tool user sensitive "$user" show || true
                     local sensitive_choice
-                    sensitive_choice="$(ask 'Set account as sensitive/not delegatable? [on/off]' 'on')"
+                    sensitive_choice="$(select_enum_value "ACCOUNT DELEGATION SENSITIVITY" 1                         "on|Mark account sensitive / not delegatable"                         "off|Allow delegation according to other policy")" || continue
                     case "$sensitive_choice" in
                         on|off) samba-tool user sensitive "$user" "$sensitive_choice" ;;
                         *) msg_warn "Expected on or off." ;;
@@ -4978,11 +5330,7 @@ apply_json_policy_interactive() {
     guid="$(select_or_create_gpo_guid)" || return 1
 
     printf '\n  JSON : %s\n  GPO  : %s\n' "$file" "$guid"
-    mode="$(ask 'Load mode [merge/replace]' 'merge')"
-    case "$mode" in
-        merge|replace) ;;
-        *) msg_warn "Expected merge or replace."; return 1 ;;
-    esac
+    mode="$(select_enum_value "GPO JSON LOAD MODE" 1         "merge|Merge with existing Registry policy content"         "replace|Replace existing Registry policy content")" || return 1
 
     backup_gpo_safe "$guid" || true
 
@@ -5362,11 +5710,7 @@ generate_and_install_ubuntu_adsys_templates() {
     }
 
     local mode tmp
-    mode="$(ask 'Template generation [lts-only/all]' 'lts-only')"
-    case "$mode" in
-        lts-only|all) ;;
-        *) msg_warn "Expected lts-only or all."; return 1 ;;
-    esac
+    mode="$(select_enum_value "UBUNTU ADSYS TEMPLATE SET" 1         "lts-only|Generate templates for supported LTS releases"         "all|Generate all available Ubuntu templates")" || return 1
 
     tmp="$(mktemp -d "${RUN_ROOT}/adsys-admx.XXXXXX")"
     (
@@ -5496,7 +5840,7 @@ samba_linux_gpo_menu() {
                 ui_pause
                 ;;
             2)
-                account="$(ask 'Domain user/computer account')"
+                account="$(select_user_or_computer_account)" || { ui_pause; continue; }
                 if capture_samba_gpo output list "$account"; then
                     printf '%s\n' "$output"
                 else
@@ -5732,7 +6076,7 @@ domain_password_policy_menu() {
                 ;;
             3)
                 local complexity history minlen minage maxage threshold duration reset
-                complexity="$(ask 'Complexity [on/off/default]' 'on')"
+                complexity="$(select_enum_value "PASSWORD COMPLEXITY" 1                     "on|Require Samba password complexity"                     "off|Disable complexity requirement"                     "default|Use Samba/domain default")" || { ui_pause; continue; }
                 history="$(ask 'History length' '24')"
                 minlen="$(ask 'Minimum password length' '12')"
                 minage="$(ask 'Minimum password age (days)' '1')"
@@ -5768,17 +6112,17 @@ domain_password_policy_menu() {
 user_admin_menu() {
     while true; do
         (( MENU_MAIN_REQUESTED )) && return 0
-        ui_menu_screen "USER DIRECTORY" "Structured account lifecycle, profile, password and group operations"
+        ui_menu_screen "USER DIRECTORY" "Selector-driven account lifecycle, profile, password and group operations"
         ui_menu_item "1" "List users" "Inventory all domain user accounts"
-        ui_menu_item "2" "Inspect user" "Show directory attributes for one account"
+        ui_menu_item "2" "Inspect user" "Select an account then show directory attributes"
         ui_menu_item "3" "Create user" "Guided creation with first-logon password and groups" "$C_GREEN"
-        ui_menu_item "4" "Edit user" "Profile, OU, groups, password and account state"
-        ui_menu_item "5" "Reset password" "Optionally require password change at next logon"
-        ui_menu_item "6" "Group memberships" "Indexed add/remove membership workflow"
-        ui_menu_item "7" "Enable user" "Re-enable a disabled identity" "$C_GREEN"
-        ui_menu_item "8" "Disable user" "Block interactive authentication" "$C_YELLOW"
-        ui_menu_item "9" "Unlock user" "Clear supported lockout state"
-        ui_menu_item "10" "Delete user" "Permanently remove an identity" "$C_RED"
+        ui_menu_item "4" "Edit user" "Select account; profile, OU, groups, password and state"
+        ui_menu_item "5" "Reset password" "Select account; optionally require change at next logon"
+        ui_menu_item "6" "Group memberships" "Select account then indexed add/remove membership workflow"
+        ui_menu_item "7" "Enable user" "Select and re-enable a disabled identity" "$C_GREEN"
+        ui_menu_item "8" "Disable user" "Select and block interactive authentication" "$C_YELLOW"
+        ui_menu_item "9" "Unlock user" "Select account and clear supported lockout state"
+        ui_menu_item "10" "Delete user" "Select and permanently remove an identity" "$C_RED"
         ui_menu_exit
         ui_rule
 
@@ -5786,39 +6130,43 @@ user_admin_menu() {
         choice="$(ask 'Select operation' '1')"
         case "$choice" in
             1) samba-tool user list | sort; ui_pause ;;
-            2) user="$(ask 'User')"; samba-tool user show "$user"; ui_pause ;;
+            2)
+                user="$(select_domain_user)" || { ui_pause; continue; }
+                samba-tool user show "$user"; ui_pause
+                ;;
             3) create_user_interactive; ui_pause ;;
             4)
-                user="$(ask 'User')"
-                samba-tool user show "$user" >/dev/null 2>&1 \
-                    && edit_user_interactive_menu "$user" \
-                    || { msg_warn "User '$user' not found."; ui_pause; }
+                user="$(select_domain_user)" || { ui_pause; continue; }
+                edit_user_interactive_menu "$user"
                 ;;
             5)
-                user="$(ask 'User')"
+                user="$(select_domain_user)" || { ui_pause; continue; }
                 reset_user_password_interactive "$user"
                 ui_pause
                 ;;
             6)
-                user="$(ask 'User')"
+                user="$(select_domain_user)" || { ui_pause; continue; }
                 manage_user_memberships "$user"
                 ;;
-            7) user="$(ask 'User')"; samba-tool user enable "$user"; ui_pause ;;
+            7)
+                user="$(select_domain_user)" || { ui_pause; continue; }
+                samba-tool user enable "$user"; ui_pause
+                ;;
             8)
-                user="$(ask 'User')"
+                user="$(select_domain_user)" || { ui_pause; continue; }
                 case "${user,,}" in administrator|krbtgt) msg_warn "Protected built-in account."; ui_pause; continue ;; esac
                 confirm_high_risk "Disable AD user '$user'" && samba-tool user disable "$user"
                 ui_pause
                 ;;
             9)
-                user="$(ask 'User')"
+                user="$(select_domain_user)" || { ui_pause; continue; }
                 samba-tool user unlock --help >/dev/null 2>&1 \
                     && samba-tool user unlock "$user" \
                     || msg_warn "user unlock is unsupported by installed Samba."
                 ui_pause
                 ;;
             10)
-                user="$(ask 'User')"
+                user="$(select_domain_user)" || { ui_pause; continue; }
                 case "${user,,}" in administrator|guest|krbtgt) msg_warn "Refusing protected built-in account deletion."; ui_pause; continue ;; esac
                 confirm_high_risk "PERMANENTLY delete AD user '$user'" && samba-tool user delete "$user"
                 ui_pause
@@ -5833,14 +6181,14 @@ user_admin_menu() {
 group_admin_menu() {
     while true; do
         (( MENU_MAIN_REQUESTED )) && return 0
-        ui_menu_screen "GROUP DIRECTORY" "Indexed group selection, membership management and delegation"
+        ui_menu_screen "GROUP DIRECTORY" "Indexed group and principal selection, membership management and delegation"
         ui_menu_item "1" "List groups" "Indexed inventory of domain groups"
         ui_menu_item "2" "Inspect group" "Select a group then show its directory object"
         ui_menu_item "3" "Create group" "Create a new domain group" "$C_GREEN"
         ui_menu_item "4" "Edit group" "Select group then open Samba object editor"
         ui_menu_item "5" "List members" "Select group then display membership"
-        ui_menu_item "6" "Add member" "Select group, then specify account" "$C_GREEN"
-        ui_menu_item "7" "Remove member" "Select group, then revoke account membership" "$C_YELLOW"
+        ui_menu_item "6" "Add member" "Select group and then select user/group/computer" "$C_GREEN"
+        ui_menu_item "7" "Remove member" "Select group then select one of its current members" "$C_YELLOW"
         ui_menu_item "8" "Delete group" "Select and permanently delete non-core group" "$C_RED"
         ui_menu_exit
         ui_rule
@@ -5851,29 +6199,26 @@ group_admin_menu() {
             1) list_domain_groups_indexed; ui_pause ;;
             2)
                 group="$(select_domain_group)" || { ui_pause; continue; }
-                samba-tool group show "$group"
-                ui_pause
+                samba-tool group show "$group"; ui_pause
                 ;;
             3) create_group_selector_item >/dev/null; ui_pause ;;
             4)
                 group="$(select_domain_group)" || { ui_pause; continue; }
-                samba-tool group edit "$group"
-                ui_pause
+                samba-tool group edit "$group"; ui_pause
                 ;;
             5)
                 group="$(select_domain_group)" || { ui_pause; continue; }
-                samba-tool group listmembers "$group"
-                ui_pause
+                samba-tool group listmembers "$group"; ui_pause
                 ;;
             6)
                 group="$(select_domain_group)" || { ui_pause; continue; }
-                member="$(ask 'User/group/computer account')"
+                member="$(select_domain_principal)" || { ui_pause; continue; }
                 samba-tool group addmembers "$group" "$member"
                 ui_pause
                 ;;
             7)
                 group="$(select_domain_group)" || { ui_pause; continue; }
-                member="$(ask 'User/group/computer account')"
+                member="$(select_group_member "$group")" || { ui_pause; continue; }
                 confirm "Remove '$member' from '$group'?" N && samba-tool group removemembers "$group" "$member"
                 ui_pause
                 ;;
@@ -5896,12 +6241,12 @@ group_admin_menu() {
 computer_admin_menu() {
     while true; do
         (( MENU_MAIN_REQUESTED )) && return 0
-        ui_menu_screen "DOMAIN COMPUTERS" "Joined computer accounts and best-effort network presence"
+        ui_menu_screen "DOMAIN COMPUTERS" "Joined computer accounts with selector-driven network presence and lifecycle operations"
         ui_menu_item "1" "List accounts" "Inventory computer objects joined to the domain"
-        ui_menu_item "2" "Network presence" "Resolve DNS and probe SMB/445 availability"
-        ui_menu_item "3" "Inspect computer" "Show one computer object's attributes"
-        ui_menu_item "4" "Edit computer" "Open object editor when supported"
-        ui_menu_item "5" "Delete stale account" "Remove an obsolete computer object" "$C_RED"
+        ui_menu_item "2" "Network presence" "Indexed DNS/IP/SMB readiness inventory"
+        ui_menu_item "3" "Inspect computer" "Select a listed computer and show its attributes"
+        ui_menu_item "4" "Edit computer" "Select a computer then open object editor when supported"
+        ui_menu_item "5" "Delete stale account" "Select and remove an obsolete computer object" "$C_RED"
         ui_menu_exit
         ui_rule
         local choice computer
@@ -5909,16 +6254,19 @@ computer_admin_menu() {
         case "$choice" in
             1) samba-tool computer list | sort; ui_pause ;;
             2) list_domain_computers_status; ui_pause ;;
-            3) computer="$(ask 'Computer account')"; samba-tool computer show "$computer"; ui_pause ;;
+            3)
+                computer="$(select_domain_computer)" || { ui_pause; continue; }
+                samba-tool computer show "$computer"; ui_pause
+                ;;
             4)
-                computer="$(ask 'Computer account')"
+                computer="$(select_domain_computer)" || { ui_pause; continue; }
                 samba-tool computer edit --help >/dev/null 2>&1 \
                     && samba-tool computer edit "$computer" \
                     || msg_warn "computer edit is unsupported."
                 ui_pause
                 ;;
             5)
-                computer="$(ask 'Computer account')"
+                computer="$(select_domain_computer)" || { ui_pause; continue; }
                 confirm_high_risk "Delete computer account '$computer'" && samba-tool computer delete "$computer"
                 ui_pause
                 ;;
@@ -5932,49 +6280,58 @@ computer_admin_menu() {
 permissions_admin_menu() {
     while true; do
         (( MENU_MAIN_REQUESTED )) && return 0
-        ui_menu_screen "ACCESS & DELEGATION" "Indexed memberships plus advanced directory-service ACL operations"
-        ui_menu_item "1" "User groups" "Show direct group memberships for a user"
+        ui_menu_screen "ACCESS & DELEGATION" "Selector-driven memberships plus advanced directory-service ACL operations"
+        ui_menu_item "1" "User groups" "Select a user and show direct memberships"
         ui_menu_item "2" "Group members" "Select group then enumerate principals"
-        ui_menu_item "3" "Grant membership" "Select group, then add account" "$C_GREEN"
-        ui_menu_item "4" "Revoke membership" "Select group, then remove account" "$C_YELLOW"
-        ui_menu_item "5" "Manage user groups" "Full indexed user membership workflow"
-        ui_menu_item "6" "Inspect DS ACL" "Read access-control entries on a directory object"
-        ui_menu_item "7" "Add DS ACL ACE" "Advanced: apply a raw SDDL ACE" "$C_YELLOW"
-        ui_menu_item "8" "Delete DS ACL ACE" "Advanced: remove raw SDDL ACE when supported" "$C_RED"
+        ui_menu_item "3" "Grant membership" "Select group and principal" "$C_GREEN"
+        ui_menu_item "4" "Revoke membership" "Select group then one current member" "$C_YELLOW"
+        ui_menu_item "5" "Manage user groups" "Select user then full indexed membership workflow"
+        ui_menu_item "6" "Inspect DS ACL" "Select directory object or enter DN manually"
+        ui_menu_item "7" "Add DS ACL ACE" "Select object; apply a raw SDDL ACE" "$C_YELLOW"
+        ui_menu_item "8" "Delete DS ACL ACE" "Select object; remove raw SDDL ACE when supported" "$C_RED"
         ui_menu_exit
         ui_rule
 
         local choice user group member dn sddl
         choice="$(ask 'Select operation' '1')"
         case "$choice" in
-            1) user="$(ask 'User')"; samba-tool user getgroups "$user"; ui_pause ;;
+            1)
+                user="$(select_domain_user)" || { ui_pause; continue; }
+                samba-tool user getgroups "$user"; ui_pause
+                ;;
             2)
                 group="$(select_domain_group)" || { ui_pause; continue; }
-                samba-tool group listmembers "$group"
-                ui_pause
+                samba-tool group listmembers "$group"; ui_pause
                 ;;
             3)
                 group="$(select_domain_group)" || { ui_pause; continue; }
-                member="$(ask 'Account')"
-                samba-tool group addmembers "$group" "$member"
-                ui_pause
+                member="$(select_domain_principal)" || { ui_pause; continue; }
+                samba-tool group addmembers "$group" "$member"; ui_pause
                 ;;
             4)
                 group="$(select_domain_group)" || { ui_pause; continue; }
-                member="$(ask 'Account')"
+                member="$(select_group_member "$group")" || { ui_pause; continue; }
                 confirm "Remove '$member' from '$group'?" N && samba-tool group removemembers "$group" "$member"
                 ui_pause
                 ;;
-            5) user="$(ask 'User')"; manage_user_memberships "$user" ;;
-            6) dn="$(ask 'Object DN')"; samba-tool dsacl get --objectdn="$dn"; ui_pause ;;
+            5)
+                user="$(select_domain_user)" || { ui_pause; continue; }
+                manage_user_memberships "$user"
+                ;;
+            6)
+                dn="$(select_directory_object_dn)" || { ui_pause; continue; }
+                samba-tool dsacl get --objectdn="$dn"; ui_pause
+                ;;
             7)
-                dn="$(ask 'Object DN')"; sddl="$(ask 'ACE SDDL')"
+                dn="$(select_directory_object_dn)" || { ui_pause; continue; }
+                sddl="$(ask 'ACE SDDL')"
                 confirm_high_risk "Add raw DS ACL ACE to '$dn'" &&
                     samba-tool dsacl set --objectdn="$dn" --sddl="$sddl"
                 ui_pause
                 ;;
             8)
-                dn="$(ask 'Object DN')"; sddl="$(ask 'ACE SDDL')"
+                dn="$(select_directory_object_dn)" || { ui_pause; continue; }
+                sddl="$(ask 'ACE SDDL')"
                 samba-tool dsacl delete --help >/dev/null 2>&1 \
                     && { confirm_high_risk "Delete DS ACL ACE from '$dn'" &&
                          samba-tool dsacl delete --objectdn="$dn" --sddl="$sddl"; } \
@@ -6259,8 +6616,14 @@ migration_trust_menu() {
         choice="$(ask 'Select operation' '1')"
         case "$choice" in
             1) samba-tool domain trust list; ui_pause ;;
-            2) target="$(ask 'Trusted domain DNS name')"; samba-tool domain trust show "$target"; ui_pause ;;
-            3) target="$(ask 'Trusted domain DNS name')"; samba-tool domain trust validate "$target"; ui_pause ;;
+            2)
+                target="$(select_trusted_domain)" || { ui_pause; continue; }
+                samba-tool domain trust show "$target"; ui_pause
+                ;;
+            3)
+                target="$(select_trusted_domain)" || { ui_pause; continue; }
+                samba-tool domain trust validate "$target"; ui_pause
+                ;;
             4) samba-tool domain trust create --help; ui_pause ;;
             H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;

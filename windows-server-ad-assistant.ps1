@@ -2007,10 +2007,467 @@ function Show-AdUsers {
         Format-Table -AutoSize
 }
 
+
+function Select-EnumeratedValue {
+    param(
+        [Parameter(Mandatory=$true)][string]$Title,
+        [Parameter(Mandatory=$true)][object[]]$Options,
+        [int]$DefaultIndex = 1
+    )
+
+    Write-Console ''
+    Write-Console $Title Cyan
+    for ($i = 0; $i -lt $Options.Count; $i++) {
+        Write-Console ('  [{0}] {1,-22} {2}' -f ($i + 1), $Options[$i].Value, $Options[$i].Description)
+    }
+    Write-Console '  [0] Cancel' Gray
+
+    while ($true) {
+        $choice = Read-MenuChoice -Prompt 'Select value' -Default ([string]$DefaultIndex)
+        if ($choice -eq '0') { return $null }
+
+        $number = 0
+        if ([int]::TryParse($choice, [ref]$number)) {
+            $index = $number - 1
+            if ($index -ge 0 -and $index -lt $Options.Count) {
+                return [string]$Options[$index].Value
+            }
+        }
+        Write-Console 'Invalid selection.' Yellow
+    }
+}
+
+function Select-AdUserIdentity {
+    param([string]$Prompt = 'Select user')
+
+    Assert-DomainController
+    $filterText = ''
+
+    while ($true) {
+        $users = @(Get-ADUser -Filter * -Properties DisplayName,Enabled |
+            Sort-Object SamAccountName)
+
+        if ($filterText) {
+            $users = @($users | Where-Object {
+                $_.SamAccountName -like ("*{0}*" -f $filterText) -or
+                $_.DisplayName -like ("*{0}*" -f $filterText)
+            })
+        }
+
+        Write-Console ''
+        Write-Console 'Domain users:' Cyan
+        for ($i = 0; $i -lt $users.Count; $i++) {
+            Write-Console ('  [{0,3}] {1,-28} {2,-34} Enabled={3}' -f
+                ($i + 1), $users[$i].SamAccountName, $users[$i].DisplayName, $users[$i].Enabled)
+        }
+        if ($users.Count -eq 0) { Write-Console '  No users matched.' Yellow }
+
+        Write-Console '  [S] Search/filter' Gray
+        Write-Console '  [M] Enter identity manually' Gray
+        Write-Console '  [0] Cancel' Gray
+
+        $choice = (Read-Host $Prompt).Trim()
+        if ($choice -eq '0' -or [string]::IsNullOrWhiteSpace($choice)) { return $null }
+
+        switch ($choice.ToUpperInvariant()) {
+            'S' { $filterText = (Read-Host 'User filter').Trim(); continue }
+            'M' {
+                $manual = (Read-Host 'User identity / sAMAccountName').Trim()
+                if (-not $manual) { continue }
+                try { return (Get-ADUser -Identity $manual -ErrorAction Stop).SamAccountName }
+                catch { Write-Console $_.Exception.Message Red; continue }
+            }
+        }
+
+        $number = 0
+        if ([int]::TryParse($choice, [ref]$number)) {
+            $index = $number - 1
+            if ($index -ge 0 -and $index -lt $users.Count) { return $users[$index].SamAccountName }
+        }
+        Write-Console 'Invalid user selection.' Yellow
+    }
+}
+
+function Select-AdGroupIdentity {
+    param([string]$Prompt = 'Select group')
+
+    Assert-DomainController
+    $filterText = ''
+
+    while ($true) {
+        $groups = @(Get-ADGroup -Filter * | Sort-Object Name)
+        if ($filterText) {
+            $groups = @($groups | Where-Object {
+                $_.Name -like ("*{0}*" -f $filterText) -or
+                $_.SamAccountName -like ("*{0}*" -f $filterText)
+            })
+        }
+
+        Write-Console ''
+        Write-Console 'Domain groups:' Cyan
+        for ($i = 0; $i -lt $groups.Count; $i++) {
+            Write-Console ('  [{0,3}] {1,-38} {2,-12} {3}' -f
+                ($i + 1), $groups[$i].Name, $groups[$i].GroupScope, $groups[$i].GroupCategory)
+        }
+        if ($groups.Count -eq 0) { Write-Console '  No groups matched.' Yellow }
+
+        Write-Console '  [S] Search/filter' Gray
+        Write-Console '  [M] Enter group manually' Gray
+        Write-Console '  [0] Cancel' Gray
+
+        $choice = (Read-Host $Prompt).Trim()
+        if ($choice -eq '0' -or [string]::IsNullOrWhiteSpace($choice)) { return $null }
+
+        switch ($choice.ToUpperInvariant()) {
+            'S' { $filterText = (Read-Host 'Group filter').Trim(); continue }
+            'M' {
+                $manual = (Read-Host 'Group identity').Trim()
+                if (-not $manual) { continue }
+                try { return (Get-ADGroup -Identity $manual -ErrorAction Stop).SamAccountName }
+                catch { Write-Console $_.Exception.Message Red; continue }
+            }
+        }
+
+        $number = 0
+        if ([int]::TryParse($choice, [ref]$number)) {
+            $index = $number - 1
+            if ($index -ge 0 -and $index -lt $groups.Count) { return $groups[$index].SamAccountName }
+        }
+        Write-Console 'Invalid group selection.' Yellow
+    }
+}
+
+function Select-AdComputerIdentity {
+    param([string]$Prompt = 'Select computer')
+
+    Assert-DomainController
+    $filterText = ''
+
+    while ($true) {
+        $computers = @(Get-ADComputer -Filter * -Properties Enabled,DNSHostName,IPv4Address,OperatingSystem,LastLogonDate |
+            Sort-Object Name)
+
+        if ($filterText) {
+            $computers = @($computers | Where-Object {
+                $_.Name -like ("*{0}*" -f $filterText) -or
+                $_.DNSHostName -like ("*{0}*" -f $filterText) -or
+                $_.IPv4Address -like ("*{0}*" -f $filterText)
+            })
+        }
+
+        Write-Console ''
+        Write-Console 'Domain computers:' Cyan
+        Write-Console ('  {0,-6} {1,-22} {2,-34} {3,-16} {4}' -f '#','NAME','DNS','IP','OS') Gray
+        for ($i = 0; $i -lt $computers.Count; $i++) {
+            Write-Console ('  [{0,3}]  {1,-22} {2,-34} {3,-16} {4}' -f
+                ($i + 1), $computers[$i].Name, $computers[$i].DNSHostName,
+                $computers[$i].IPv4Address, $computers[$i].OperatingSystem)
+        }
+        if ($computers.Count -eq 0) { Write-Console '  No computers matched.' Yellow }
+
+        Write-Console '  [S] Search/filter' Gray
+        Write-Console '  [M] Enter computer manually' Gray
+        Write-Console '  [0] Cancel' Gray
+
+        $choice = (Read-Host $Prompt).Trim()
+        if ($choice -eq '0' -or [string]::IsNullOrWhiteSpace($choice)) { return $null }
+
+        switch ($choice.ToUpperInvariant()) {
+            'S' { $filterText = (Read-Host 'Computer filter').Trim(); continue }
+            'M' {
+                $manual = (Read-Host 'Computer name / identity').Trim()
+                if (-not $manual) { continue }
+                try { return (Get-ADComputer -Identity $manual -ErrorAction Stop).SamAccountName }
+                catch { Write-Console $_.Exception.Message Red; continue }
+            }
+        }
+
+        $number = 0
+        if ([int]::TryParse($choice, [ref]$number)) {
+            $index = $number - 1
+            if ($index -ge 0 -and $index -lt $computers.Count) { return $computers[$index].SamAccountName }
+        }
+        Write-Console 'Invalid computer selection.' Yellow
+    }
+}
+
+function Select-AdPrincipalIdentity {
+    Assert-DomainController
+
+    Write-Console ''
+    Write-Console 'Security principal type:' Cyan
+    Write-Console '  [1] User'
+    Write-Console '  [2] Group'
+    Write-Console '  [3] Computer'
+    Write-Console '  [M] Enter identity manually'
+    Write-Console '  [0] Cancel'
+
+    $choice = Read-MenuChoice -Prompt 'Select principal type' -Default '1'
+    switch ($choice.ToUpperInvariant()) {
+        '1' {
+            $id = Select-AdUserIdentity
+            if ($id) { return [pscustomobject]@{ Identity=$id; TargetType='User' } }
+        }
+        '2' {
+            $id = Select-AdGroupIdentity
+            if ($id) { return [pscustomobject]@{ Identity=$id; TargetType='Group' } }
+        }
+        '3' {
+            $id = Select-AdComputerIdentity
+            if ($id) { return [pscustomobject]@{ Identity=$id; TargetType='Computer' } }
+        }
+        'M' {
+            $id = (Read-Host 'User/group/computer identity').Trim()
+            if (-not $id) { return $null }
+            $kind = Select-EnumeratedValue -Title 'PRINCIPAL TYPE' -DefaultIndex 2 -Options @(
+                [pscustomobject]@{ Value='User'; Description='User account' },
+                [pscustomobject]@{ Value='Group'; Description='Group object' },
+                [pscustomobject]@{ Value='Computer'; Description='Computer account' }
+            )
+            if ($kind) { return [pscustomobject]@{ Identity=$id; TargetType=$kind } }
+        }
+    }
+    return $null
+}
+
+function Select-AdGroupMemberIdentity {
+    param([Parameter(Mandatory=$true)][string]$Group)
+
+    $members = @(Get-ADGroupMember -Identity $Group -ErrorAction Stop | Sort-Object Name)
+    Write-Console ''
+    Write-Console ("Current members of '{0}':" -f $Group) Cyan
+    for ($i = 0; $i -lt $members.Count; $i++) {
+        Write-Console ('  [{0,3}] {1,-36} {2,-12} {3}' -f
+            ($i + 1), $members[$i].Name, $members[$i].ObjectClass, $members[$i].SamAccountName)
+    }
+    if ($members.Count -eq 0) {
+        Write-Console '  No direct members returned.' Yellow
+        return $null
+    }
+
+    Write-Console '  [M] Enter member manually' Gray
+    Write-Console '  [0] Cancel' Gray
+
+    while ($true) {
+        $choice = (Read-Host 'Select member').Trim()
+        if ($choice -eq '0' -or [string]::IsNullOrWhiteSpace($choice)) { return $null }
+        if ($choice.ToUpperInvariant() -eq 'M') {
+            $manual = (Read-Host 'Existing member identity').Trim()
+            if ($manual) { return $manual }
+            continue
+        }
+
+        $number = 0
+        if ([int]::TryParse($choice, [ref]$number)) {
+            $index = $number - 1
+            if ($index -ge 0 -and $index -lt $members.Count) {
+                return $members[$index].DistinguishedName
+            }
+        }
+        Write-Console 'Invalid member selection.' Yellow
+    }
+}
+
+function Select-AdOuDn {
+    param(
+        [string]$Prompt = 'Select OU',
+        [switch]$IncludeDomainRoot,
+        [switch]$AllowDefault
+    )
+
+    Assert-DomainController
+    $domain = Get-ADDomain
+    $ous = @(Get-ADOrganizationalUnit -Filter * | Sort-Object DistinguishedName)
+    $offset = 1
+
+    Write-Console ''
+    Write-Console 'Directory containers:' Cyan
+    if ($AllowDefault) { Write-Console '  [D] Use default container' Green }
+    if ($IncludeDomainRoot) {
+        Write-Console ('  [1] DOMAIN ROOT  {0}' -f $domain.DistinguishedName) Green
+        $offset = 2
+    }
+    for ($i = 0; $i -lt $ous.Count; $i++) {
+        Write-Console ('  [{0,3}] OU  {1}' -f ($i + $offset), $ous[$i].DistinguishedName)
+    }
+    Write-Console '  [M] Enter DN manually' Gray
+    Write-Console '  [0] Cancel' Gray
+
+    while ($true) {
+        $choice = (Read-Host $Prompt).Trim()
+        if ($choice -eq '0' -or [string]::IsNullOrWhiteSpace($choice)) { return $null }
+        if ($AllowDefault -and $choice.ToUpperInvariant() -eq 'D') { return '__DEFAULT__' }
+        if ($choice.ToUpperInvariant() -eq 'M') {
+            $manual = (Read-Host 'Container distinguished name').Trim()
+            if ($manual) { return $manual }
+            continue
+        }
+
+        $number = 0
+        if ([int]::TryParse($choice, [ref]$number)) {
+            if ($IncludeDomainRoot -and $number -eq 1) { return $domain.DistinguishedName }
+            $index = $number - $offset
+            if ($index -ge 0 -and $index -lt $ous.Count) { return $ous[$index].DistinguishedName }
+        }
+        Write-Console 'Invalid OU/container selection.' Yellow
+    }
+}
+
+function Select-AdDirectoryObjectIdentity {
+    Assert-DomainController
+
+    Write-Console ''
+    Write-Console 'Directory object type:' Cyan
+    Write-Console '  [1] User'
+    Write-Console '  [2] Group'
+    Write-Console '  [3] Computer'
+    Write-Console '  [4] Organizational Unit'
+    Write-Console '  [M] Enter DN/identity manually'
+    Write-Console '  [0] Cancel'
+
+    $choice = Read-MenuChoice -Prompt 'Select object type' -Default '1'
+    switch ($choice.ToUpperInvariant()) {
+        '1' {
+            $id = Select-AdUserIdentity
+            if ($id) { return (Get-ADUser -Identity $id).DistinguishedName }
+        }
+        '2' {
+            $id = Select-AdGroupIdentity
+            if ($id) { return (Get-ADGroup -Identity $id).DistinguishedName }
+        }
+        '3' {
+            $id = Select-AdComputerIdentity
+            if ($id) { return (Get-ADComputer -Identity $id).DistinguishedName }
+        }
+        '4' { return (Select-AdOuDn -Prompt 'Select OU') }
+        'M' { return (Read-Host 'Object distinguished name or identity').Trim() }
+    }
+    return $null
+}
+
+function Select-DnsZoneName {
+    Assert-DomainController
+    Assert-DnsServerModule
+
+    $zones = @(Get-DnsServerZone | Sort-Object ZoneName)
+    Write-Console ''
+    Write-Console 'DNS zones:' Cyan
+    for ($i = 0; $i -lt $zones.Count; $i++) {
+        Write-Console ('  [{0,3}] {1,-42} {2,-10} AD-integrated={3}' -f
+            ($i + 1), $zones[$i].ZoneName, $zones[$i].ZoneType, $zones[$i].IsDsIntegrated)
+    }
+    Write-Console '  [M] Enter zone manually' Gray
+    Write-Console '  [0] Cancel' Gray
+
+    while ($true) {
+        $choice = (Read-Host 'Select DNS zone').Trim()
+        if ($choice -eq '0' -or [string]::IsNullOrWhiteSpace($choice)) { return $null }
+        if ($choice.ToUpperInvariant() -eq 'M') {
+            $manual = (Read-Host 'DNS zone').Trim()
+            if ($manual) { return $manual }
+            continue
+        }
+        $number = 0
+        if ([int]::TryParse($choice, [ref]$number)) {
+            $index = $number - 1
+            if ($index -ge 0 -and $index -lt $zones.Count) { return $zones[$index].ZoneName }
+        }
+        Write-Console 'Invalid DNS zone selection.' Yellow
+    }
+}
+
+
+function Select-DnsRecordInteractive {
+    param([Parameter(Mandatory=$true)][string]$ZoneName)
+
+    Assert-DomainController
+    Assert-DnsServerModule
+
+    $filterText = ''
+
+    while ($true) {
+        $records = @(Get-DnsServerResourceRecord -ZoneName $ZoneName -ErrorAction Stop |
+            Sort-Object HostName,RecordType)
+
+        if ($filterText) {
+            $records = @($records | Where-Object {
+                $_.HostName -like ("*{0}*" -f $filterText) -or
+                $_.RecordType -like ("*{0}*" -f $filterText)
+            })
+        }
+
+        $displayRecords = @($records | Select-Object -First 150)
+
+        Write-Console ''
+        Write-Console ("DNS records in {0}:" -f $ZoneName) Cyan
+        if ($records.Count -gt 150) {
+            Write-Console ("  Showing first 150 of {0}. Use [S] to filter before selecting." -f $records.Count) Yellow
+        }
+
+        for ($i = 0; $i -lt $displayRecords.Count; $i++) {
+            Write-Console ('  [{0,3}] {1,-36} {2,-8} TTL={3}' -f
+                ($i + 1), $displayRecords[$i].HostName, $displayRecords[$i].RecordType, $displayRecords[$i].TimeToLive)
+        }
+
+        if ($displayRecords.Count -eq 0) { Write-Console '  No records matched.' Yellow }
+        Write-Console '  [S] Search/filter by node name or record type' Gray
+        Write-Console '  [0] Cancel' Gray
+
+        $choice = (Read-Host 'Select DNS record').Trim()
+        if ($choice -eq '0' -or [string]::IsNullOrWhiteSpace($choice)) { return $null }
+        if ($choice.ToUpperInvariant() -eq 'S') {
+            $filterText = (Read-Host 'Record filter').Trim()
+            continue
+        }
+
+        $number = 0
+        if ([int]::TryParse($choice, [ref]$number)) {
+            $index = $number - 1
+            if ($index -ge 0 -and $index -lt $displayRecords.Count) {
+                return $displayRecords[$index]
+            }
+        }
+        Write-Console 'Invalid DNS record selection.' Yellow
+    }
+}
+
+function Select-AdTrustName {
+    Assert-DomainController
+    if (-not (Test-Command 'Get-ADTrust')) { return $null }
+
+    $trusts = @(Get-ADTrust -Filter * | Sort-Object Name)
+    Write-Console ''
+    Write-Console 'Domain/forest trusts:' Cyan
+    for ($i = 0; $i -lt $trusts.Count; $i++) {
+        Write-Console ('  [{0,3}] {1,-36} {2,-14} {3}' -f
+            ($i + 1), $trusts[$i].Name, $trusts[$i].Direction, $trusts[$i].TrustType)
+    }
+    if ($trusts.Count -eq 0) { Write-Console '  No trusts found.' Yellow }
+    Write-Console '  [M] Enter trusted domain manually' Gray
+    Write-Console '  [0] Cancel' Gray
+
+    while ($true) {
+        $choice = (Read-Host 'Select trust').Trim()
+        if ($choice -eq '0' -or [string]::IsNullOrWhiteSpace($choice)) { return $null }
+        if ($choice.ToUpperInvariant() -eq 'M') {
+            $manual = (Read-Host 'Trusted domain/forest DNS name').Trim()
+            if ($manual) { return $manual }
+            continue
+        }
+        $number = 0
+        if ([int]::TryParse($choice, [ref]$number)) {
+            $index = $number - 1
+            if ($index -ge 0 -and $index -lt $trusts.Count) { return $trusts[$index].Name }
+        }
+        Write-Console 'Invalid trust selection.' Yellow
+    }
+}
+
 function Show-AdUserDetail {
     Assert-DomainController
 
-    $identity = Read-Host 'User identity / sAMAccountName'
+    $identity = Select-AdUserIdentity -Prompt 'Select user to inspect'
+    if (-not $identity) { return }
     Get-ADUser -Identity $identity -Properties * |
         Select-Object SamAccountName, UserPrincipalName, DisplayName, GivenName, Surname,
             Enabled, LockedOut, PasswordLastSet, PasswordNeverExpires, LastLogonDate,
@@ -2065,13 +2522,21 @@ function New-AdGroupForSelector {
     $name = (Read-Host 'New group name').Trim()
     if ([string]::IsNullOrWhiteSpace($name)) { return $null }
 
-    $scope = (Read-Host 'Scope [Global/Universal/DomainLocal] (Global)').Trim()
-    if ([string]::IsNullOrWhiteSpace($scope)) { $scope = 'Global' }
+    $scope = Select-EnumeratedValue -Title 'GROUP SCOPE' -DefaultIndex 1 -Options @(
+        [pscustomobject]@{ Value='Global'; Description='Typical domain role/application group' },
+        [pscustomobject]@{ Value='Universal'; Description='Forest-wide group' },
+        [pscustomobject]@{ Value='DomainLocal'; Description='Resource permission scope in this domain' }
+    )
+    if (-not $scope) { return $null }
 
-    $category = (Read-Host 'Category [Security/Distribution] (Security)').Trim()
-    if ([string]::IsNullOrWhiteSpace($category)) { $category = 'Security' }
+    $category = Select-EnumeratedValue -Title 'GROUP CATEGORY' -DefaultIndex 1 -Options @(
+        [pscustomobject]@{ Value='Security'; Description='Can be used for access control' },
+        [pscustomobject]@{ Value='Distribution'; Description='Distribution-only group' }
+    )
+    if (-not $category) { return $null }
 
-    $path = (Read-Host 'Target OU distinguished name (blank = default)').Trim()
+    $path = Select-AdOuDn -Prompt 'Select group container' -AllowDefault
+    if ($null -eq $path) { return $null }
 
     if (-not (Confirm-Action `
         -Action ("Create AD group '{0}'" -f $name) `
@@ -2088,7 +2553,7 @@ function New-AdGroupForSelector {
         GroupCategory = $category
         PassThru      = $true
     }
-    if ($path) { $params.Path = $path }
+    if ($path -and $path -ne '__DEFAULT__') { $params.Path = $path }
 
     try {
         return (New-ADGroup @params)
@@ -2198,7 +2663,7 @@ function Manage-AdUserGroupsInteractive {
     Assert-DomainController
 
     if ([string]::IsNullOrWhiteSpace($Identity)) {
-        $Identity = (Read-Host 'User identity / sAMAccountName').Trim()
+        $Identity = Select-AdUserIdentity -Prompt 'Select user'
     }
     if ([string]::IsNullOrWhiteSpace($Identity)) { return }
 
@@ -2380,7 +2845,7 @@ function New-AdUserInteractive {
 function Edit-AdUserInteractive {
     Assert-DomainController
 
-    $identity = (Read-Host 'User identity / sAMAccountName').Trim()
+    $identity = Select-AdUserIdentity -Prompt 'Select user to edit'
     if ([string]::IsNullOrWhiteSpace($identity)) { return }
 
     $user = Get-ADUser -Identity $identity -Properties DisplayName, Mail, Department, Title, Company,
@@ -2450,7 +2915,8 @@ function Edit-AdUserInteractive {
 function Reset-AdUserPassword {
     Assert-DomainController
 
-    $identity = Read-Host 'User identity / sAMAccountName'
+    $identity = Select-AdUserIdentity -Prompt 'Select user for password reset'
+    if (-not $identity) { return }
     $password = Read-Host 'New password' -AsSecureString
 
     if (-not (Confirm-Action `
@@ -2470,7 +2936,8 @@ function Set-AdUserEnabledState {
 
     Assert-DomainController
 
-    $identity = Read-Host 'User identity / sAMAccountName'
+    $identity = Select-AdUserIdentity -Prompt $(if ($Enabled) { 'Select user to enable' } else { 'Select user to disable' })
+    if (-not $identity) { return }
     $verb = if ($Enabled) { 'Enable' } else { 'Disable' }
     $impact = if ($Enabled) { 'LOW' } else { 'MEDIUM' }
 
@@ -2494,7 +2961,8 @@ function Set-AdUserEnabledState {
 function Unlock-AdUserInteractive {
     Assert-DomainController
 
-    $identity = Read-Host 'User identity / sAMAccountName'
+    $identity = Select-AdUserIdentity -Prompt 'Select user to unlock'
+    if (-not $identity) { return }
 
     if (Confirm-Action `
         -Action ("Unlock AD user '{0}'" -f $identity) `
@@ -2508,7 +2976,8 @@ function Unlock-AdUserInteractive {
 function Remove-AdUserInteractive {
     Assert-DomainController
 
-    $identity = Read-Host 'User identity / sAMAccountName'
+    $identity = Select-AdUserIdentity -Prompt 'Select user to delete'
+    if (-not $identity) { return }
 
     if (-not (Confirm-Action `
         -Action ("PERMANENTLY delete AD user '{0}'" -f $identity) `
@@ -2539,13 +3008,21 @@ function New-AdGroupInteractive {
     Assert-DomainController
 
     $name = Read-Host 'Group name'
-    $scope = Read-Host 'Scope [Global/Universal/DomainLocal]'
-    if ([string]::IsNullOrWhiteSpace($scope)) { $scope = 'Global' }
+    $scope = Select-EnumeratedValue -Title 'GROUP SCOPE' -DefaultIndex 1 -Options @(
+        [pscustomobject]@{ Value='Global'; Description='Typical domain role/application group' },
+        [pscustomobject]@{ Value='Universal'; Description='Forest-wide group' },
+        [pscustomobject]@{ Value='DomainLocal'; Description='Resource permission scope in this domain' }
+    )
+    if (-not $scope) { return $null }
 
-    $category = Read-Host 'Category [Security/Distribution]'
-    if ([string]::IsNullOrWhiteSpace($category)) { $category = 'Security' }
+    $category = Select-EnumeratedValue -Title 'GROUP CATEGORY' -DefaultIndex 1 -Options @(
+        [pscustomobject]@{ Value='Security'; Description='Can be used for access control' },
+        [pscustomobject]@{ Value='Distribution'; Description='Distribution-only group' }
+    )
+    if (-not $category) { return $null }
 
-    $path = Read-Host 'Target OU distinguished name (blank = default)'
+    $path = Select-AdOuDn -Prompt 'Select group container' -AllowDefault
+    if ($null -eq $path) { return $null }
 
     if (-not (Confirm-Action `
         -Action ("Create AD group '{0}'" -f $name) `
@@ -2562,7 +3039,7 @@ function New-AdGroupInteractive {
         GroupCategory = $category
     }
 
-    if ($path) { $params.Path = $path }
+    if ($path -and $path -ne '__DEFAULT__') { $params.Path = $path }
 
     New-ADGroup @params
 }
@@ -2570,7 +3047,8 @@ function New-AdGroupInteractive {
 function Show-AdGroupMembers {
     Assert-DomainController
 
-    $group = Read-Host 'Group name'
+    $group = Select-AdGroupIdentity -Prompt 'Select group to inspect'
+    if (-not $group) { return }
     Get-ADGroupMember -Identity $group |
         Select-Object Name, SamAccountName, ObjectClass, DistinguishedName |
         Format-Table -AutoSize
@@ -2579,8 +3057,11 @@ function Show-AdGroupMembers {
 function Add-AdGroupMemberInteractive {
     Assert-DomainController
 
-    $group = Read-Host 'Group'
-    $member = Read-Host 'User/group/computer identity'
+    $group = Select-AdGroupIdentity -Prompt 'Select target group'
+    if (-not $group) { return }
+    $principal = Select-AdPrincipalIdentity
+    if (-not $principal) { return }
+    $member = $principal.Identity
 
     if (Confirm-Action `
         -Action ("Add '{0}' to '{1}'" -f $member, $group) `
@@ -2595,8 +3076,10 @@ function Add-AdGroupMemberInteractive {
 function Remove-AdGroupMemberInteractive {
     Assert-DomainController
 
-    $group = Read-Host 'Group'
-    $member = Read-Host 'User/group/computer identity'
+    $group = Select-AdGroupIdentity -Prompt 'Select target group'
+    if (-not $group) { return }
+    $member = Select-AdGroupMemberIdentity -Group $group
+    if (-not $member) { return }
 
     if (Confirm-Action `
         -Action ("Remove '{0}' from '{1}'" -f $member, $group) `
@@ -2611,7 +3094,8 @@ function Remove-AdGroupMemberInteractive {
 function Remove-AdGroupInteractive {
     Assert-DomainController
 
-    $group = Read-Host 'Group name'
+    $group = Select-AdGroupIdentity -Prompt 'Select group to delete'
+    if (-not $group) { return }
 
     if ($group -in @('Domain Admins','Enterprise Admins','Schema Admins','Domain Users','Domain Controllers','Administrators')) {
         Write-Console 'Protected/core AD group: deletion refused.' Red
@@ -2661,7 +3145,8 @@ function Show-AdComputers {
 function Show-AdComputerDetail {
     Assert-DomainController
 
-    $identity = Read-Host 'Computer name / identity'
+    $identity = Select-AdComputerIdentity -Prompt 'Select computer to inspect'
+    if (-not $identity) { return }
     Get-ADComputer -Identity $identity -Properties * |
         Select-Object Name, Enabled, DNSHostName, IPv4Address, OperatingSystem,
             OperatingSystemVersion, LastLogonDate, PasswordLastSet, DistinguishedName |
@@ -2673,7 +3158,8 @@ function Set-AdComputerEnabledState {
 
     Assert-DomainController
 
-    $identity = Read-Host 'Computer name / identity'
+    $identity = Select-AdComputerIdentity -Prompt $(if ($Enabled) { 'Select computer to enable' } else { 'Select computer to disable' })
+    if (-not $identity) { return }
     $verb = if ($Enabled) { 'Enable' } else { 'Disable' }
 
     if (-not (Confirm-Action `
@@ -2696,7 +3182,8 @@ function Set-AdComputerEnabledState {
 function Remove-AdComputerInteractive {
     Assert-DomainController
 
-    $identity = Read-Host 'Computer name / identity'
+    $identity = Select-AdComputerIdentity -Prompt 'Select computer to delete'
+    if (-not $identity) { return }
 
     if (Confirm-Action `
         -Action ("PERMANENTLY delete computer account '{0}'" -f $identity) `
@@ -2721,11 +3208,8 @@ function New-AdOrganizationalUnitInteractive {
     Assert-DomainController
 
     $name = Read-Host 'OU name'
-    $path = Read-Host 'Parent DN (blank = domain root)'
-
-    if ([string]::IsNullOrWhiteSpace($path)) {
-        $path = (Get-ADDomain).DistinguishedName
-    }
+    $path = Select-AdOuDn -Prompt 'Select parent container' -IncludeDomainRoot
+    if (-not $path) { return }
 
     if (Confirm-Action `
         -Action ("Create OU '{0}' under '{1}'" -f $name, $path) `
@@ -2740,8 +3224,10 @@ function New-AdOrganizationalUnitInteractive {
 function Move-AdObjectInteractive {
     Assert-DomainController
 
-    $identity = Read-Host 'Object distinguished name or identity'
-    $target = Read-Host 'Target OU distinguished name'
+    $identity = Select-AdDirectoryObjectIdentity
+    if (-not $identity) { return }
+    $target = Select-AdOuDn -Prompt 'Select destination OU' -IncludeDomainRoot
+    if (-not $target) { return }
 
     if (Confirm-Action `
         -Action ("Move object to '{0}'" -f $target) `
@@ -2756,7 +3242,8 @@ function Move-AdObjectInteractive {
 function Remove-AdOrganizationalUnitInteractive {
     Assert-DomainController
 
-    $identity = Read-Host 'OU distinguished name'
+    $identity = Select-AdOuDn -Prompt 'Select OU to delete'
+    if (-not $identity) { return }
 
     if (-not (Confirm-Action `
         -Action ("PERMANENTLY delete OU '{0}'" -f $identity) `
@@ -3289,52 +3776,28 @@ function Set-GpoPermissionInteractive {
     $gpo = Select-GpoInteractive -Prompt 'Select GPO for delegation/security filtering'
     if (-not $gpo) { return }
 
-    Write-Console ''
-    Write-Console 'Choose the security principal.' Cyan
-    $principalType = (Read-Host 'Principal type [G=Group/U=User/C=Computer] (G)').Trim().ToUpperInvariant()
-    if ([string]::IsNullOrWhiteSpace($principalType)) { $principalType = 'G' }
+    $principal = Select-AdPrincipalIdentity
+    if (-not $principal) { return }
 
-    $targetType = 'Group'
-    $principal = $null
-
-    switch ($principalType) {
-        'G' {
-            $groups = @(Select-AdGroupsInteractive)
-            if ($groups.Count -eq 0) { return }
-            if ($groups.Count -gt 1) {
-                Write-Console 'Select exactly one group for a GPO permission operation.' Yellow
-                return
-            }
-            $principal = $groups[0].SamAccountName
-            $targetType = 'Group'
-        }
-        'U' {
-            $principal = (Read-Host 'User identity').Trim()
-            $targetType = 'User'
-        }
-        'C' {
-            $principal = (Read-Host 'Computer identity').Trim()
-            $targetType = 'Computer'
-        }
-        default {
-            Write-Console 'Invalid principal type.' Yellow
-            return
-        }
-    }
-
-    $permission = Read-Host 'Permission [GpoRead/GpoApply/GpoEdit/GpoEditDeleteModifySecurity/None]'
+    $permission = Select-EnumeratedValue -Title 'GPO PERMISSION LEVEL' -DefaultIndex 1 -Options @(
+        [pscustomobject]@{ Value='GpoRead'; Description='Read the GPO' },
+        [pscustomobject]@{ Value='GpoApply'; Description='Read and apply policy' },
+        [pscustomobject]@{ Value='GpoEdit'; Description='Edit settings' },
+        [pscustomobject]@{ Value='GpoEditDeleteModifySecurity'; Description='Full GPO administration' },
+        [pscustomobject]@{ Value='None'; Description='Remove explicit permission' }
+    )
+    if (-not $permission) { return }
 
     if (Confirm-Action `
-        -Action ("Set GPO permission for '{0}' on '{1}' [{2}]" -f $principal, $gpo.DisplayName, $gpo.Id) `
+        -Action ("Set GPO permission for '{0}' on '{1}' [{2}]" -f $principal.Identity, $gpo.DisplayName, $gpo.Id) `
         -Reason 'Modify GPO delegation/security filtering permissions.' `
         -Impact MEDIUM) {
 
         New-ChangeSet
-
         Set-GPPermission `
             -Guid $gpo.Id `
-            -TargetName $principal `
-            -TargetType $targetType `
+            -TargetName $principal.Identity `
+            -TargetType $principal.TargetType `
             -PermissionLevel $permission `
             -Replace
     }
@@ -3421,7 +3884,8 @@ function Show-DnsRecords {
     Assert-DomainController
     Assert-DnsServerModule
 
-    $zone = Read-Host 'DNS zone'
+    $zone = Select-DnsZoneName
+    if (-not $zone) { return }
     $name = Read-Host 'Record/node name (blank = all records)'
 
     if ($name) {
@@ -3438,7 +3902,8 @@ function Add-DnsARecordInteractive {
     Assert-DomainController
     Assert-DnsServerModule
 
-    $zone = Read-Host 'DNS zone'
+    $zone = Select-DnsZoneName
+    if (-not $zone) { return }
     $name = Read-Host 'Host name'
     $ip = Read-Host 'IPv4 address'
 
@@ -3456,37 +3921,23 @@ function Remove-DnsRecordInteractive {
     Assert-DomainController
     Assert-DnsServerModule
 
-    $zone = Read-Host 'DNS zone'
-    $name = Read-Host 'Record/node name'
-    $type = Read-Host 'Record type [A/CNAME/TXT/PTR/AAAA/etc.]'
+    $zone = Select-DnsZoneName
+    if (-not $zone) { return }
 
-    $records = @(Get-DnsServerResourceRecord -ZoneName $zone -Name $name -RRType $type -ErrorAction Stop)
+    $record = Select-DnsRecordInteractive -ZoneName $zone
+    if (-not $record) { return }
 
-    if ($records.Count -eq 0) {
-        Write-Console 'No matching record found.' Yellow
-        return
-    }
-
-    $records | Format-Table HostName, RecordType, TimeToLive, RecordData -AutoSize
-
-    if ($records.Count -gt 1) {
-        Write-Console 'Multiple records matched. Refusing ambiguous deletion.' Yellow
-        return
-    }
+    $record | Format-List HostName,RecordType,TimeToLive,Timestamp,RecordData
 
     if (Confirm-Action `
-        -Action ("PERMANENTLY delete DNS record {0} ({1}) in {2}" -f $name, $type, $zone) `
-        -Reason 'Remove a DNS resource record.' `
+        -Action ("Delete DNS record {0} [{1}] from {2}" -f $record.HostName, $record.RecordType, $zone) `
+        -Reason 'Delete the selected DNS resource record.' `
         -Impact HIGH) {
 
         New-ChangeSet
-        Remove-DnsServerResourceRecord -ZoneName $zone -InputObject $records[0] -Force
+        $record | Remove-DnsServerResourceRecord -ZoneName $zone -Force
     }
 }
-
-# ===========================================================================
-# Forest provisioning
-# ===========================================================================
 
 function Get-PrimaryIpv4Configuration {
     try {
@@ -3854,7 +4305,7 @@ function Show-DomainTrusts {
 function Test-DomainTrustInteractive {
     Assert-DomainController
 
-    $name = (Read-Host 'Trusted domain/forest DNS name').Trim()
+    $name = Select-AdTrustName
     if (-not $name) { return }
 
     try {
@@ -4060,8 +4511,8 @@ function Show-GroupMenu {
         Write-MenuItem '1' 'List groups' 'Inventory domain groups'
         Write-MenuItem '2' 'List members' 'Inspect direct membership of one group'
         Write-MenuItem '3' 'Create group' 'Create security/distribution group' Good
-        Write-MenuItem '4' 'Add member' 'Grant group membership' Good
-        Write-MenuItem '5' 'Remove member' 'Revoke group membership' Warn
+        Write-MenuItem '4' 'Add member' 'Select group and user/group/computer principal' Good
+        Write-MenuItem '5' 'Remove member' 'Select group then one current member' Warn
         Write-MenuItem '6' 'Privileged groups' 'Review Domain/Enterprise/Schema/Admin operators'
         Write-MenuItem '7' 'Delete group' 'Delete non-core group object' Danger
         Write-MenuNavigation
@@ -4087,7 +4538,7 @@ function Show-ComputerOuMenu {
         if ($script:MainMenuRequested) { return }
         Write-MenuHeader 'COMPUTERS & ORGANIZATIONAL UNITS' 'Machine accounts, OU structure and directory placement'
         Write-MenuItem '1' 'List computers' 'Inventory machine accounts and last-logon metadata'
-        Write-MenuItem '2' 'Inspect computer' 'Show detailed computer attributes'
+        Write-MenuItem '2' 'Inspect computer' 'Select from indexed computer inventory and show attributes'
         Write-MenuItem '3' 'Enable computer' 'Restore machine authentication' Good
         Write-MenuItem '4' 'Disable computer' 'Disable stale/suspect machine account' Warn
         Write-MenuItem '5' 'Delete computer' 'Remove obsolete machine object' Danger
