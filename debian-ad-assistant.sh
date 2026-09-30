@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 5.0.0-suricata-ids
+# Version 5.0.2-samba-kdc-boot-selfheal
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -43,7 +43,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.0.0-suricata-ids"
+SCRIPT_VERSION="5.0.2-samba-kdc-boot-selfheal"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -68,6 +68,9 @@ IDS_EVE_DIR="/var/log/suricata"
 IDS_EVE_GLOB="${IDS_EVE_DIR}/eve.json*"
 IDS_DAILY_SERVICE="/etc/systemd/system/debian-ad-ids-daily.service"
 IDS_DAILY_TIMER="/etc/systemd/system/debian-ad-ids-daily.timer"
+
+SAMBA_HEALTH_HELPER="/usr/local/libexec/debian-ad-samba-health"
+SAMBA_HEALTH_SERVICE="/etc/systemd/system/debian-ad-samba-health.service"
 
 RUN_ROOT=""
 LOG_FILE=""
@@ -924,21 +927,73 @@ package_installed_version() {
     dpkg-query -W -f='${Version}' "$1" 2>/dev/null || true
 }
 
+package_policy_text() {
+    local pkg="$1" output="" rc=0
+
+    # Metadata lookup is best-effort. Capture the complete apt-cache output
+    # before parsing it. This avoids SIGPIPE/rc=141 with `set -o pipefail`
+    # when a downstream parser stops reading early.
+    if output="$(apt-cache policy "$pkg" 2>/dev/null)"; then
+        printf '%s\n' "$output"
+        return 0
+    else
+        rc=$?
+    fi
+
+    [[ -n "$output" ]] && printf '%s\n' "$output"
+    return "$rc"
+}
+
 package_candidate_version() {
-    apt-cache policy "$1" 2>/dev/null |
-        awk '/Candidate:/{print $2;exit}'
+    local pkg="$1" policy=""
+
+    policy="$(package_policy_text "$pkg" 2>/dev/null || true)"
+    [[ -n "$policy" ]] || return 0
+
+    # Parse captured text completely. No early exit on a live pipeline.
+    awk '
+        $1 == "Candidate:" && !seen {
+            print $2
+            seen=1
+        }
+    ' <<<"$policy"
 }
 
 package_candidate_origin() {
-    local pkg="$1"
-    apt-cache policy "$pkg" 2>/dev/null |
+    local pkg="$1" policy="" candidate=""
+
+    policy="$(package_policy_text "$pkg" 2>/dev/null || true)"
+    [[ -n "$policy" ]] || return 0
+
+    candidate="$(
         awk '
-            /^[[:space:]]+[0-9][^[:space:]]*[[:space:]]+[0-9]+$/ { version=$1; next }
-            /^[[:space:]]+[0-9]+[[:space:]]+(https?:|file:)/ {
+            $1 == "Candidate:" && !seen {
                 print $2
-                exit
+                seen=1
             }
-        '
+        ' <<<"$policy"
+    )"
+
+    [[ -n "$candidate" && "$candidate" != "(none)" ]] || return 0
+
+    # Find the first repository line belonging to the candidate version while
+    # consuming all input. The installed-version marker (***) is handled too.
+    awk -v candidate="$candidate" '
+        /^[[:space:]]*\*\*\*[[:space:]]+/ {
+            version=$2
+            in_candidate=(version == candidate)
+            next
+        }
+        /^[[:space:]]*[^[:space:]]+[[:space:]]+[0-9]+[[:space:]]*$/ {
+            version=$1
+            in_candidate=(version == candidate)
+            next
+        }
+        in_candidate && /^[[:space:]]+[0-9]+[[:space:]]+(https?:|file:)/ && !seen {
+            print $2
+            seen=1
+        }
+    ' <<<"$policy"
 }
 
 dependency_required_packages() {
@@ -967,8 +1022,8 @@ dependency_pending_updates() {
         [[ -n "$pkg" ]] || continue
         package_installed "$pkg" || continue
         installed="$(package_installed_version "$pkg")"
-        candidate="$(package_candidate_version "$pkg")"
-        if [[ -n "$candidate" && "$candidate" != "(none)" ]] &&
+        candidate="$(package_candidate_version "$pkg" 2>/dev/null || true)"
+        if [[ -n "$candidate" && "$candidate" != "(none)" && -n "$installed" ]] &&
            dpkg --compare-versions "$candidate" gt "$installed"; then
             printf '%s|%s|%s\n' "$pkg" "$installed" "$candidate"
         fi
@@ -987,15 +1042,18 @@ show_dependency_inventory() {
     while IFS='|' read -r pkg class purpose; do
         [[ -n "$pkg" ]] || continue
         installed="$(package_installed_version "$pkg")"
-        candidate="$(package_candidate_version "$pkg")"
-        origin="$(package_candidate_origin "$pkg")"
+        candidate="$(package_candidate_version "$pkg" 2>/dev/null || true)"
+        origin="$(package_candidate_origin "$pkg" 2>/dev/null || true)"
         [[ -n "$installed" ]] || installed="-"
-        [[ -n "$candidate" ]] || candidate="-"
+        [[ -n "$candidate" && "$candidate" != "(none)" ]] || candidate="-"
 
         printf '  %-22s %-9s %-20.20s %-20.20s %s\n' \
             "$pkg" "$class" "$installed" "$candidate" "$purpose"
-        [[ -n "$origin" ]] &&
+        if [[ -n "$origin" ]]; then
             printf '    source: %s\n' "$origin"
+        elif [[ "$candidate" != "-" ]]; then
+            printf '    source: %s\n' "configured APT source (origin not resolved)"
+        fi
     done < <(dependency_catalog "$profile")
 
     printf '\n'
@@ -2687,6 +2745,217 @@ configure_samba_interface_scope() {
     fi
 }
 
+
+samba_required_ports() {
+    printf '%s\n' 53 88 389 445 464
+}
+
+samba_listener_snapshot() {
+    ss -H -lntup 2>/dev/null || true
+}
+
+samba_missing_required_ports() {
+    local listeners="${1:-}" port
+    [[ -n "$listeners" ]] || listeners="$(samba_listener_snapshot)"
+
+    while IFS= read -r port; do
+        [[ -n "$port" ]] || continue
+        if ! grep -Eq ":${port}([[:space:]]|$)" <<<"$listeners"; then
+            printf '%s\n' "$port"
+        fi
+    done < <(samba_required_ports)
+}
+
+samba_required_listeners_ready() {
+    systemctl is-active --quiet samba-ad-dc || return 1
+
+    local listeners="" missing=""
+    listeners="$(samba_listener_snapshot)"
+    missing="$(samba_missing_required_ports "$listeners")"
+    [[ -z "$missing" ]]
+}
+
+capture_samba_runtime_evidence() {
+    local label="${1:-runtime}"
+    local prefix="${RUN_ROOT}/samba-${label}"
+    local listeners="" missing=""
+
+    listeners="$(samba_listener_snapshot)"
+    missing="$(samba_missing_required_ports "$listeners" | paste -sd, -)"
+
+    systemctl status samba-ad-dc --no-pager --full >"${prefix}-status.txt" 2>&1 || true
+    journalctl -u samba-ad-dc -b --no-pager -n 200 >"${prefix}-journal.txt" 2>&1 || true
+    printf '%s\n' "$listeners" >"${prefix}-listeners.txt"
+
+    {
+        printf 'timestamp=%s\n' "$(date -Is)"
+        printf 'service_state=%s\n' "$(safe_systemctl_state samba-ad-dc)"
+        printf 'missing_ports=%s\n' "${missing:-none}"
+    } >"${prefix}-summary.txt"
+}
+
+ensure_samba_runtime_health() {
+    [[ "$SAMBA_ROLE" == "ad-dc" || "$SAMBA_ROLE" == "ad-dc-config" ]] || return 0
+
+    if samba_required_listeners_ready; then
+        return 0
+    fi
+
+    local before="" missing_before="" after="" missing_after=""
+    before="$(samba_listener_snapshot)"
+    missing_before="$(samba_missing_required_ports "$before" | paste -sd, -)"
+    capture_samba_runtime_evidence "pre-selfheal"
+
+    # Automatic only when the current AD/DC is already degraded.
+    # Merely opening the assistant never restarts a healthy DC.
+    msg_info "Samba AD/DC runtime incomplete (missing listener(s): ${missing_before:-unknown}); attempting one controlled restart."
+
+    if ! systemctl restart samba-ad-dc >/dev/null 2>&1; then
+        capture_samba_runtime_evidence "restart-failed"
+        result WARN "Samba runtime self-heal" \
+            "restart failed; evidence saved under $RUN_ROOT" \
+            "manual investigation required"
+        return 1
+    fi
+
+    if wait_for_samba 60; then
+        capture_samba_runtime_evidence "post-selfheal"
+        result PASS "Samba runtime self-heal" \
+            "listeners 53/88/389/445/464 restored after one controlled restart" \
+            "healthy"
+        return 0
+    fi
+
+    after="$(samba_listener_snapshot)"
+    missing_after="$(samba_missing_required_ports "$after" | paste -sd, -)"
+    capture_samba_runtime_evidence "post-selfheal-failed"
+    result WARN "Samba runtime self-heal" \
+        "still missing listener(s): ${missing_after:-unknown}; evidence saved under $RUN_ROOT" \
+        "manual investigation required"
+    return 1
+}
+
+samba_boot_health_guard_installed() {
+    [[ -x "$SAMBA_HEALTH_HELPER" && -f "$SAMBA_HEALTH_SERVICE" ]] || return 1
+    systemctl is-enabled --quiet debian-ad-samba-health.service 2>/dev/null
+}
+
+install_samba_boot_health_guard() {
+    local helper="$SAMBA_HEALTH_HELPER"
+    local service="$SAMBA_HEALTH_SERVICE"
+
+    mkdir -p /usr/local/libexec
+    backup_file "$helper"
+    backup_file "$service"
+
+    cat >"$helper" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+initial_timeout="${1:-45}"
+recovery_timeout="${2:-60}"
+tag="debian-ad-samba-health"
+
+snapshot() {
+    /usr/bin/ss -H -lntup 2>/dev/null || true
+}
+
+missing_ports() {
+    local listeners="${1:-}" port=""
+    [[ -n "$listeners" ]] || listeners="$(snapshot)"
+
+    for port in 53 88 389 445 464; do
+        if ! /usr/bin/grep -Eq ":${port}([[:space:]]|$)" <<<"$listeners"; then
+            printf '%s\n' "$port"
+        fi
+    done
+}
+
+healthy() {
+    /usr/bin/systemctl is-active --quiet samba-ad-dc.service || return 1
+
+    local listeners="" missing=""
+    listeners="$(snapshot)"
+    missing="$(missing_ports "$listeners")"
+    [[ -z "$missing" ]]
+}
+
+wait_healthy() {
+    local timeout="$1" i
+    for ((i=0; i<timeout; i++)); do
+        if healthy; then
+            return 0
+        fi
+        /usr/bin/sleep 1
+    done
+    return 1
+}
+
+if wait_healthy "$initial_timeout"; then
+    /usr/bin/logger -t "$tag" \
+        "Samba AD/DC listeners healthy after boot; no restart required."
+    exit 0
+fi
+
+before="$(missing_ports "$(snapshot)" | /usr/bin/paste -sd, -)"
+/usr/bin/logger -p daemon.warning -t "$tag" \
+    "Samba AD/DC started incompletely; missing listener(s): ${before:-unknown}. Performing one controlled restart."
+
+if ! /usr/bin/systemctl restart samba-ad-dc.service; then
+    /usr/bin/logger -p daemon.err -t "$tag" \
+        "Controlled Samba restart failed. Manual investigation required."
+    exit 1
+fi
+
+if wait_healthy "$recovery_timeout"; then
+    /usr/bin/logger -p daemon.notice -t "$tag" \
+        "Samba AD/DC listener self-heal succeeded after one restart."
+    exit 0
+fi
+
+after="$(missing_ports "$(snapshot)" | /usr/bin/paste -sd, -)"
+/usr/bin/logger -p daemon.err -t "$tag" \
+    "Samba AD/DC still unhealthy after restart; missing listener(s): ${after:-unknown}."
+exit 1
+EOF
+    chmod 0755 "$helper"
+
+    cat >"$service" <<EOF
+[Unit]
+Description=Verify and self-heal Samba AD/DC listeners after boot
+Documentation=man:samba(8)
+Wants=network-online.target samba-ad-dc.service
+After=network-online.target debian-ad-network-ready.service samba-ad-dc.service
+
+[Service]
+Type=oneshot
+ExecStart=${helper} 45 60
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable debian-ad-samba-health.service >/dev/null
+
+    change APPLIED "Installed Samba AD/DC post-boot listener health guard"
+    result PASS "Samba boot listener guard" \
+        "53/88/389/445/464 + one conditional restart" \
+        "enabled"
+}
+
+upgrade_samba_boot_health_guard_if_managed() {
+    # Older assistant builds already own these files. Extend that managed boot
+    # policy in-place; do not silently adopt unrelated/custom systemd units.
+    if [[ -f /etc/systemd/system/debian-ad-network-ready.service &&
+          -f /etc/systemd/system/samba-ad-dc.service.d/20-debian-ad-network.conf ]]; then
+        if ! samba_boot_health_guard_installed; then
+            install_samba_boot_health_guard
+        fi
+    fi
+}
+
 configure_samba_boot_ordering() {
     discover_network_topology
     [[ -n "$DC_IP" ]] || DC_IP="${AD_IP:-$PRIMARY_IP}"
@@ -2710,7 +2979,8 @@ ip_addr="${2:?IPv4 required}"
 timeout="${3:-90}"
 
 for ((i=0; i<timeout; i++)); do
-    if /usr/sbin/ip -4 -o addr show dev "$iface" scope global 2>/dev/null | /usr/bin/grep -Fq " ${ip_addr}/"; then
+    addresses="$(/usr/sbin/ip -4 -o addr show dev "$iface" scope global 2>/dev/null || true)"
+    if /usr/bin/grep -Fq " ${ip_addr}/" <<<"$addresses"; then
         exit 0
     fi
     /usr/bin/sleep 1
@@ -2751,22 +3021,54 @@ EOF
     systemctl unmask samba-ad-dc >/dev/null 2>&1 || true
     systemctl enable samba-ad-dc >/dev/null
 
+    install_samba_boot_health_guard
+
+    # Verify current runtime too. Healthy Samba is untouched; an incomplete
+    # instance receives at most one controlled restart.
+    ensure_samba_runtime_health || true
+
     change APPLIED "Samba waits for $AD_IFACE/$DC_IP before boot"
-    result PASS "Samba boot ordering" "$AD_IFACE $DC_IP" "persistent network guard"
+    result PASS "Samba boot ordering" "$AD_IFACE $DC_IP" \
+        "network guard + post-boot listener self-heal"
 }
 
 audit_samba_boot_persistence() {
-    local enabled guard
+    local enabled guard health missing=""
     enabled="$(safe_systemctl_enabled samba-ad-dc)"
     [[ "$enabled" == "enabled" ]] \
         && result PASS "samba-ad-dc boot" "$enabled" "enabled" \
         || result FAIL "samba-ad-dc boot" "$enabled" "enabled"
 
     guard="$(safe_systemctl_enabled debian-ad-network-ready.service)"
-    if [[ "$guard" == "enabled" && -f /etc/systemd/system/samba-ad-dc.service.d/20-debian-ad-network.conf ]]; then
+    if [[ "$guard" == "enabled" &&
+          -f /etc/systemd/system/samba-ad-dc.service.d/20-debian-ad-network.conf ]]; then
         result PASS "AD network boot guard" "enabled" "wait before Samba"
     else
         result WARN "AD network boot guard" "$guard" "configure from Security menu"
+    fi
+
+    health="$(safe_systemctl_enabled debian-ad-samba-health.service)"
+    if [[ "$health" == "enabled" &&
+          -x "$SAMBA_HEALTH_HELPER" &&
+          -f "$SAMBA_HEALTH_SERVICE" ]]; then
+        result PASS "AD listener boot guard" \
+            "enabled" \
+            "conditional recovery for 53/88/389/445/464"
+    else
+        result WARN "AD listener boot guard" \
+            "$health" \
+            "repair Boot ordering to install listener self-heal"
+    fi
+
+    if systemctl is-active --quiet samba-ad-dc; then
+        missing="$(samba_missing_required_ports "$(samba_listener_snapshot)" | paste -sd, -)"
+        if [[ -z "$missing" ]]; then
+            result PASS "AD runtime listeners" "53/88/389/445/464 present" "healthy"
+        else
+            result WARN "AD runtime listeners" \
+                "missing: $missing" \
+                "runtime self-heal available"
+        fi
     fi
 }
 
@@ -3046,19 +3348,15 @@ prepare_dns_transaction() {
 }
 
 wait_for_samba() {
-    local i listeners
-    for i in {1..30}; do
-        if systemctl is-active --quiet samba-ad-dc; then
-            listeners="$(ss -lntup 2>/dev/null || true)"
-            if grep -Eq ':53([[:space:]]|$)' <<<"$listeners" &&
-               grep -Eq ':88([[:space:]]|$)' <<<"$listeners" &&
-               grep -Eq ':389([[:space:]]|$)' <<<"$listeners" &&
-               grep -Eq ':445([[:space:]]|$)' <<<"$listeners"; then
-                return 0
-            fi
+    local timeout="${1:-60}" i
+
+    for ((i=0; i<timeout; i++)); do
+        if samba_required_listeners_ready; then
+            return 0
         fi
         sleep 1
     done
+
     return 1
 }
 
@@ -3902,6 +4200,10 @@ validate_ad() {
 
     audit_samba_boot_persistence
     audit_local_resolver_state || fail=1
+
+    if ! ensure_samba_runtime_health; then
+        fail=1
+    fi
 
     systemctl is-active --quiet samba-ad-dc \
         && result PASS "samba-ad-dc" "active" "active" \
@@ -7292,8 +7594,10 @@ create_domain_reset_recovery_bundle() {
         /etc/fail2ban/jail.d/90-debian-ad-assistant.conf \
         /etc/sysctl.d/99-debian-ad-hardening.conf \
         /etc/systemd/system/debian-ad-network-ready.service \
+        /etc/systemd/system/debian-ad-samba-health.service \
         /etc/systemd/system/samba-ad-dc.service.d/20-debian-ad-network.conf \
         /usr/local/libexec/debian-ad-wait-network \
+        /usr/local/libexec/debian-ad-samba-health \
         /usr/local/libexec/debian-ad-assistant
     do
         [[ -e "$p" || -L "$p" ]] && config_paths+=("${p#/}")
@@ -7455,10 +7759,14 @@ remove_assistant_managed_host_files() {
 
     local p source=""
 
-    # Boot/network guard.
+    # Boot/network/listener guards.
+    systemctl disable --now debian-ad-samba-health.service >/dev/null 2>&1 || true
+
     for p in \
         /usr/local/libexec/debian-ad-wait-network \
+        /usr/local/libexec/debian-ad-samba-health \
         /etc/systemd/system/debian-ad-network-ready.service \
+        /etc/systemd/system/debian-ad-samba-health.service \
         /etc/systemd/system/samba-ad-dc.service.d/20-debian-ad-network.conf
     do
         if ! restore_earliest_assistant_backup "$p"; then
@@ -8835,7 +9143,7 @@ security_hardening_menu() {
             4) set_progress_plan 1; configure_network_hardening; ui_pause ;;
             5) set_progress_plan 1; configure_ufw; ui_pause ;;
             6) set_progress_plan 1; harden_delegated_admin; ui_pause ;;
-            7) set_progress_plan 1; validate_ad; ui_pause ;;
+            7) set_progress_plan 1; validate_ad || true; ui_pause ;;
             8) set_progress_plan 1; repair_local_resolver_only; ui_pause ;;
             9) samba_kerberos_security_menu ;;
             10) ids_menu ;;
@@ -8874,7 +9182,7 @@ domain_admin_console() {
             6) security_hardening_menu ;;
             7) install_cli_commands; ui_pause ;;
             8) show_cli_commands; ui_pause ;;
-            9) set_progress_plan 1; validate_ad; ui_pause ;;
+            9) set_progress_plan 1; validate_ad || true; ui_pause ;;
             10) set_progress_plan 1; create_domain_backup; ui_pause ;;
             11) domain_migration_menu ;;
             0) break ;;
@@ -8900,6 +9208,10 @@ CURRENT IDENTITY
 [BOOT]
   [ ] systemctl is-enabled samba-ad-dc
   [ ] systemctl is-enabled debian-ad-network-ready.service
+  [ ] systemctl is-enabled debian-ad-samba-health.service
+  [ ] systemctl status debian-ad-samba-health.service --no-pager -l
+  [ ] journalctl -u debian-ad-samba-health.service -b --no-pager
+  [ ] ss -lntup | grep -E ':(53|88|389|445|464)([[:space:]]|$)'
   [ ] systemd-analyze critical-chain samba-ad-dc.service
 
 [AD/DNS/KERBEROS]
@@ -9080,7 +9392,7 @@ manage_menu() {
         choice="$(ask 'Select module' '1')"
         case "$choice" in
             1) set_progress_plan 2; audit_existing; audit_security_baseline; ui_pause ;;
-            2) set_progress_plan 1; validate_ad; ui_pause ;;
+            2) set_progress_plan 1; validate_ad || true; ui_pause ;;
             3) repair_dns_stack; ui_pause ;;
             4)
                 set_progress_plan 1
@@ -9115,10 +9427,18 @@ prepare_existing_ad_context() {
     detect_samba_role
     [[ "$SAMBA_ROLE" == ad-dc || "$SAMBA_ROLE" == ad-dc-config ]] ||
         die "No existing Samba AD/DC detected."
+
     load_config || true
     discover_network_topology
     discover_existing_identity
     ensure_existing_dependency_preflight
+
+    upgrade_samba_boot_health_guard_if_managed
+
+    if ! ensure_samba_runtime_health; then
+        msg_warn "Samba AD/DC is still degraded after one recovery attempt. The console will remain open; Kerberos/LDAP-dependent operations may fail until the service issue is resolved."
+    fi
+
     [[ -n "$ADMIN_USER" ]] || ADMIN_USER="$(ask 'AD admin account' 'Administrator')"
 }
 
@@ -9145,7 +9465,7 @@ audit_mode() {
 validate_mode() {
     prepare_existing_ad_context
     set_progress_plan 1
-    validate_ad
+    validate_ad || true
 }
 
 status_mode() {
