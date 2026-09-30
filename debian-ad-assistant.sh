@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 5.1.0-remote-ops-ui
+# Version 5.1.1-ids-dns-resilience
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -44,7 +44,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.1.0-remote-ops-ui"
+SCRIPT_VERSION="5.1.1-ids-dns-resilience"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -69,6 +69,7 @@ IDS_EVE_DIR="/var/log/suricata"
 IDS_EVE_GLOB="${IDS_EVE_DIR}/eve.json*"
 IDS_DAILY_SERVICE="/etc/systemd/system/debian-ad-ids-daily.service"
 IDS_DAILY_TIMER="/etc/systemd/system/debian-ad-ids-daily.timer"
+IDS_MANAGED_STATE="${IDS_STATE_DIR}/managed.env"
 
 SAMBA_HEALTH_HELPER="/usr/local/libexec/debian-ad-samba-health"
 SAMBA_HEALTH_SERVICE="/etc/systemd/system/debian-ad-samba-health.service"
@@ -102,6 +103,7 @@ DC_IP=""
 AD_CLIENT_CIDR=""
 SSH_SOURCE=""
 DNS_FORWARDER=""
+DNS_FORWARDING_STATUS="unknown"
 TIMEZONE="Europe/London"
 NTP_POOL="pool.ntp.org"
 ADMIN_USER=""
@@ -264,6 +266,12 @@ ui_context_panel() {
         else
             printf '%bTIME:OFF%b  ' "$C_RED" "$C_RESET"
         fi
+
+        case "${DNS_FORWARDING_STATUS:-unknown}" in
+            ok) printf '%bFWD:OK%b  ' "$C_GREEN" "$C_RESET" ;;
+            bad) printf '%bFWD:CHECK%b  ' "$C_YELLOW" "$C_RESET" ;;
+            *) printf '%bFWD:?%b  ' "$C_DIM" "$C_RESET" ;;
+        esac
 
         if systemctl is-active --quiet suricata.service 2>/dev/null; then
             printf '%bIDS:ON%b' "$C_GREEN" "$C_RESET"
@@ -3442,6 +3450,108 @@ detect_dns_forwarder() {
         }
     ' <<<"$candidates"
 }
+
+
+dns_upstream_query_ok() {
+    local server="$1" mode="${2:-udp}" answer=""
+    is_valid_ipv4 "$server" || return 1
+    [[ "$server" != "127.0.0.1" && "$server" != "127.0.0.53" ]] || return 1
+
+    if [[ "$mode" == tcp ]]; then
+        answer="$(dig +tcp +time=2 +tries=1 @"$server" example.com A +short 2>/dev/null || true)"
+    else
+        answer="$(dig +time=2 +tries=1 @"$server" example.com A +short 2>/dev/null || true)"
+    fi
+    grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' <<<"$answer"
+}
+
+samba_dns_forwarding_healthy() {
+    local answer=""
+    command_exists dig || return 1
+    systemctl is-active --quiet samba-ad-dc || return 1
+    answer="$(dig +time=2 +tries=1 @127.0.0.1 example.com A +short 2>/dev/null || true)"
+    grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' <<<"$answer"
+}
+
+discover_dns_forwarder_candidates() {
+    local existing=""
+    existing="$(detect_dns_forwarder 2>/dev/null || true)"
+    [[ -n "$existing" ]] && printf '%s\n' "$existing"
+    [[ -n "${DNS_FORWARDER:-}" ]] && printf '%s\n' "$DNS_FORWARDER"
+
+    local f
+    for f in /run/systemd/resolve/resolv.conf /run/NetworkManager/resolv.conf /etc/resolv.conf; do
+        [[ -r "$f" ]] || continue
+        awk '/^[[:space:]]*nameserver[[:space:]]+/ {print $2}' "$f"
+    done
+
+    if command_exists resolvectl; then
+        resolvectl dns 2>/dev/null |
+            awk '{
+                for(i=1;i<=NF;i++)
+                    if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) print $i
+            }'
+    fi
+}
+
+ensure_samba_dns_forwarding_health() {
+    command_exists dig || return 0
+    systemctl is-active --quiet samba-ad-dc || return 0
+
+    if samba_dns_forwarding_healthy; then
+        DNS_FORWARDING_STATUS="ok"
+        return 0
+    fi
+
+    msg_warn "Samba DNS is authoritative for AD but external DNS forwarding is not healthy."
+    local current="" candidate="" candidates="" changed=0
+    current="$(detect_dns_forwarder 2>/dev/null || true)"
+    candidates="$(discover_dns_forwarder_candidates 2>/dev/null | awk '
+        NF && $0!="127.0.0.1" && $0!="127.0.0.53" && !seen[$0]++ {print}
+    ')"
+
+    while IFS= read -r candidate; do
+        [[ -n "$candidate" ]] || continue
+        [[ "$candidate" != "${DC_IP:-}" ]] || continue
+
+        # Require both normal UDP DNS and TCP fallback before selecting it.
+        dns_upstream_query_ok "$candidate" udp || continue
+        dns_upstream_query_ok "$candidate" tcp || continue
+
+        if [[ "$candidate" != "$current" ]]; then
+            msg_info "Self-healing Samba DNS forwarder: ${current:-unset} -> $candidate"
+            backup_file /etc/samba/smb.conf
+            set_smb_global_option "dns forwarder" "$candidate" || continue
+            testparm -s >/dev/null 2>&1 || {
+                msg_warn "testparm rejected forwarder candidate $candidate; restoring backup is recommended."
+                continue
+            }
+            DNS_FORWARDER="$candidate"
+            changed=1
+        else
+            msg_info "Configured DNS forwarder $candidate is reachable; restarting Samba DNS once."
+        fi
+
+        if systemctl restart samba-ad-dc >/dev/null 2>&1 &&
+           wait_for_samba 45 &&
+           samba_dns_forwarding_healthy; then
+            if (( changed )); then
+                change APPLIED "Repaired Samba DNS forwarder -> $candidate"
+            else
+                change APPLIED "Recovered Samba DNS forwarding with service restart"
+            fi
+            DNS_FORWARDING_STATUS="ok"
+            result PASS "Samba DNS forwarding" "$candidate" "external recursion"
+            return 0
+        fi
+    done <<<"$candidates"
+
+    DNS_FORWARDING_STATUS="bad"
+    result WARN "Samba DNS forwarding" "${current:-unavailable}" "external names should resolve through AD DNS"
+    msg_warn "Clients should not use public DNS as fallback. Repair the DC upstream DNS path before domain joins."
+    return 1
+}
+
 
 samba_dns_stack_healthy() {
     command_exists dig || return 1
@@ -8438,32 +8548,51 @@ ids_default_home_net() {
     return 1
 }
 
+
+ids_write_managed_state() {
+    local iface="$1" home_net="$2"
+    ids_prepare_state
+    cat >"$IDS_MANAGED_STATE" <<EOF
+IDS_INTERFACE=$(printf '%q' "$iface")
+IDS_HOME_NET=$(printf '%q' "$home_net")
+UPDATED_AT=$(printf '%q' "$(date -Is)")
+EOF
+    chmod 0600 "$IDS_MANAGED_STATE"
+}
+
+ids_load_managed_state() {
+    IDS_INTERFACE=""
+    IDS_HOME_NET=""
+    if [[ -r "$IDS_MANAGED_STATE" ]]; then
+        # shellcheck disable=SC1090
+        . "$IDS_MANAGED_STATE"
+    fi
+    [[ -n "${IDS_INTERFACE:-}" ]] || IDS_INTERFACE="${AD_IFACE:-}"
+    [[ -n "${IDS_HOME_NET:-}" ]] || IDS_HOME_NET="$(ids_default_home_net 2>/dev/null || true)"
+}
+
+ids_legacy_overlay_detected() {
+    [[ -r "$IDS_CONFIG" ]] || return 1
+    grep -Fq "# Managed by ${SCRIPT_NAME}" "$IDS_CONFIG" || return 1
+    grep -Eq '^(vars:|default-rule-path:|rule-files:|af-packet:)' "$IDS_CONFIG"
+}
+
 ids_write_managed_config() {
     local iface="$1" home_net="$2"
     mkdir -p /etc/suricata
     backup_file "$IDS_CONFIG"
+    ids_write_managed_state "$iface" "$home_net"
 
+    # IMPORTANT: do not redefine vars/default-rule-path/rule-files here.
+    # Command-line includes are loaded after suricata.yaml and overwrite whole
+    # top-level nodes. Replacing "vars" drops vendor port-groups such as
+    # TEREDO_PORTS/GENEVE_PORTS/VXLAN_PORTS and breaks rule loading.
     cat >"$IDS_CONFIG" <<EOF
 %YAML 1.1
 ---
 # Managed by ${SCRIPT_NAME} ${SCRIPT_VERSION}
-# Passive IDS overlay for the AD-facing interface.
-# This fragment is loaded after the distribution suricata.yaml.
-
-vars:
-  address-groups:
-    HOME_NET: "[${home_net}]"
-
-default-rule-path: /var/lib/suricata/rules
-rule-files:
-  - suricata.rules
-
-af-packet:
-  - interface: ${iface}
-    threads: auto
-    cluster-id: 99
-    cluster-type: cluster_flow
-    defrag: yes
+# EVE-only overlay. HOME_NET and AF_PACKET interface are supplied via the
+# service command line so vendor variables/rules/capture defaults stay intact.
 
 outputs:
   - eve-log:
@@ -8478,6 +8607,7 @@ outputs:
             threads: no
         - dns
         - krb5
+        - ldap
         - smb
         - tls
         - ssh
@@ -8500,6 +8630,7 @@ ids_vendor_execstart() {
 }
 
 ids_install_systemd_dropin() {
+    local iface="$1" home_net="$2"
     local vendor_exec="" config=""
     vendor_exec="$(ids_vendor_execstart 2>/dev/null || true)"
     config="$(ids_suricata_config 2>/dev/null || true)"
@@ -8520,12 +8651,16 @@ ids_install_systemd_dropin() {
         return 1
     fi
 
-    if ! grep -q -- '--af-packet' <<<"$vendor_exec"; then
-        vendor_exec+=" --af-packet"
+    # Replace an existing AF_PACKET switch, otherwise append one with the
+    # selected device. This avoids redefining the entire af-packet YAML list.
+    if grep -Eq '(^|[[:space:]])--af-packet(=([^[:space:]]+))?([[:space:]]|$)' <<<"$vendor_exec"; then
+        vendor_exec="$(sed -E "s#(^|[[:space:]])--af-packet(=[^[:space:]]+)?#\\1--af-packet=${iface}#" <<<"$vendor_exec")"
+    else
+        vendor_exec+=" --af-packet=${iface}"
     fi
 
-    # The overlay is appended on the command line, so it is processed after the
-    # distribution YAML without rewriting vendor configuration.
+    # --set overrides a scalar without replacing the vendor "vars" mapping.
+    vendor_exec+=" --set vars.address-groups.HOME_NET=[${home_net}]"
     vendor_exec+=" --include ${IDS_CONFIG}"
 
     mkdir -p "$(dirname "$IDS_DROPIN")"
@@ -8540,20 +8675,29 @@ EOF
 }
 
 ids_validate_config() {
-    local label="${1:-current}" bin="" config="" evidence=""
+    local label="${1:-current}" bin="" config="" evidence="" iface="" home_net=""
     bin="$(ids_suricata_binary 2>/dev/null || true)"
     config="$(ids_suricata_config 2>/dev/null || true)"
     evidence="${RUN_ROOT}/suricata-test-${label}.txt"
+    ids_load_managed_state
+    iface="${IDS_INTERFACE:-${AD_IFACE:-}}"
+    home_net="${IDS_HOME_NET:-$(ids_default_home_net 2>/dev/null || true)}"
 
     [[ -n "$bin" && -n "$config" && -f "$IDS_CONFIG" ]] || return 1
+    [[ -n "$home_net" ]] || {
+        result FAIL "Suricata config test" "HOME_NET unavailable" "managed state"
+        return 1
+    }
 
-    if "$bin" -T -c "$config" --include "$IDS_CONFIG" >"$evidence" 2>&1; then
+    if "$bin" -T -c "$config" \
+        --set "vars.address-groups.HOME_NET=[${home_net}]" \
+        --include "$IDS_CONFIG" >"$evidence" 2>&1; then
         result PASS "Suricata config test" "$label" "valid"
         return 0
     fi
 
     result FAIL "Suricata config test" "$label; evidence=$evidence" "valid"
-    tail -n 60 "$evidence" >&2 || true
+    tail -n 80 "$evidence" >&2 || true
     return 1
 }
 
@@ -8586,7 +8730,15 @@ ids_update_rules() {
     printf 'Updating Suricata rules using: %s\n' "$updater"
     if ! "$updater" >"${RUN_ROOT}/suricata-update.txt" 2>&1; then
         msg_warn "suricata-update failed. Evidence: ${RUN_ROOT}/suricata-update.txt"
-        tail -n 60 "${RUN_ROOT}/suricata-update.txt" >&2 || true
+        tail -n 80 "${RUN_ROOT}/suricata-update.txt" >&2 || true
+        return 1
+    fi
+
+    local rule_file=""
+    rule_file="$(ids_rules_file 2>/dev/null || true)"
+    if [[ -z "$rule_file" || ! -s "$rule_file" ]]; then
+        msg_error "suricata-update completed but no non-empty suricata.rules file was produced."
+        tail -n 80 "${RUN_ROOT}/suricata-update.txt" >&2 || true
         return 1
     fi
 
@@ -8606,9 +8758,9 @@ ids_update_rules() {
         fi
     fi
 
-    local rule_file=""
-    rule_file="$(ids_rules_file 2>/dev/null || true)"
-    result PASS "Suricata rules" "${rule_file:-updated}" "updated and validated"
+    local count=""
+    count="$(grep -hcE '^[[:space:]]*(alert|drop|reject)[[:space:]]' "$rule_file" 2>/dev/null || true)"
+    result PASS "Suricata rules" "$rule_file / ${count:-0} active rule lines" "updated and validated"
 }
 
 ids_configure_passive() {
@@ -8617,7 +8769,7 @@ ids_configure_passive() {
     ids_install_optional || return 1
     ids_prepare_state
 
-    local iface="" home_default="" home_net="" config=""
+    local iface="" home_default="" home_net=""
     iface="$(ids_select_interface)" || return 1
     home_default="$(ids_default_home_net 2>/dev/null || true)"
     [[ -n "$home_default" ]] || home_default="192.168.1.0/24"
@@ -8631,16 +8783,16 @@ ids_configure_passive() {
     printf '  Capture interface : %s\n' "$iface"
     printf '  HOME_NET          : %s\n' "$home_net"
     printf '  Capture mode      : AF_PACKET / passive\n'
-    printf '  EVE telemetry     : alert, stats, DNS, KRB5, SMB, TLS, SSH\n'
+    printf '  EVE telemetry     : alert, stats, DNS, KRB5, LDAP, SMB, TLS, SSH\n'
     printf '  Inline blocking   : disabled\n'
+    printf '  Vendor vars/rules : preserved\n'
     printf '  Managed overlay   : %s\n' "$IDS_CONFIG"
 
     confirm "Apply this passive IDS configuration?" Y || return 0
 
     ids_write_managed_config "$iface" "$home_net"
-    ids_install_systemd_dropin || return 1
+    ids_install_systemd_dropin "$iface" "$home_net" || return 1
 
-    # A first ruleset is needed before the service can be considered useful.
     if ids_suricata_update_binary >/dev/null 2>&1; then
         ids_update_rules || {
             msg_warn "Initial rule update failed; Suricata configuration remains staged for inspection."
@@ -8657,7 +8809,7 @@ ids_configure_passive() {
     if ! systemctl restart suricata.service; then
         msg_error "Suricata service failed to start."
         systemctl status suricata.service --no-pager --full >&2 || true
-        journalctl -u suricata.service -b --no-pager -n 80 >&2 || true
+        journalctl -u suricata.service -b --no-pager -n 100 >&2 || true
         return 1
     fi
 
@@ -8669,6 +8821,40 @@ ids_configure_passive() {
         result FAIL "Suricata service" "not active" "active"
         return 1
     fi
+}
+
+
+ids_auto_repair_managed_install() {
+    ids_prepare_state
+    ids_load_managed_state
+
+    local iface="${IDS_INTERFACE:-${AD_IFACE:-}}" home_net="${IDS_HOME_NET:-}"
+    [[ -n "$home_net" ]] || home_net="$(ids_default_home_net 2>/dev/null || true)"
+    [[ -n "$iface" && -n "$home_net" ]] || return 1
+
+    if ids_legacy_overlay_detected; then
+        msg_warn "Legacy assistant Suricata overlay detected; migrating away from top-level vars/rule-files overrides."
+        ids_write_managed_config "$iface" "$home_net"
+        ids_install_systemd_dropin "$iface" "$home_net" || return 1
+        change APPLIED "Migrated Suricata managed overlay to vendor-vars-preserving format"
+    fi
+
+    local rules=""
+    rules="$(ids_rules_file 2>/dev/null || true)"
+    if [[ -z "$rules" || ! -s "$rules" ]]; then
+        msg_warn "No usable Suricata ruleset is installed; attempting official suricata-update."
+        ids_update_rules || return 1
+    elif ! ids_validate_config "auto-repair"; then
+        msg_warn "Managed Suricata configuration is invalid; rewriting assistant-owned overlay and drop-in."
+        ids_write_managed_config "$iface" "$home_net"
+        ids_install_systemd_dropin "$iface" "$home_net" || return 1
+        ids_validate_config "auto-repair-rewritten" || return 1
+    fi
+
+    if ! systemctl is-active --quiet suricata.service; then
+        systemctl restart suricata.service >/dev/null 2>&1 || return 1
+    fi
+    return 0
 }
 
 ids_eve_parser() {
@@ -8704,6 +8890,20 @@ def inc(counter, key):
     if key not in (None, ""):
         counter[str(key)] += 1
 
+def dns_names(d):
+    names = []
+    q = d.get("query")
+    if isinstance(q, dict) and q.get("rrname"):
+        names.append(q.get("rrname"))
+    if d.get("rrname"):
+        names.append(d.get("rrname"))
+    qs = d.get("queries")
+    if isinstance(qs, list):
+        for item in qs:
+            if isinstance(item, dict) and item.get("rrname"):
+                names.append(item.get("rrname"))
+    return [str(x) for x in names if x]
+
 files = [p for p in glob.glob(pattern) if os.path.isfile(p)]
 files.sort(key=lambda p: os.path.getmtime(p))
 
@@ -8713,8 +8913,20 @@ alert_src = Counter()
 alert_sev = Counter()
 dns_queries = 0
 dns_nxdomain = 0
+dns_query_names = Counter()
+dns_sources = Counter()
 krb_encryption = Counter()
+krb_msg_types = Counter()
+krb_sources = Counter()
+krb_clients = Counter()
+krb_errors = Counter()
+krb_error_sources = Counter()
 krb_weak = []
+recent_krb_errors = deque(maxlen=80)
+ldap_operations = Counter()
+ldap_sources = Counter()
+ldap_result_codes = Counter()
+recent_ldap_failures = deque(maxlen=80)
 smb_dialects = Counter()
 smb_ntlm = Counter()
 smb_ntlm_hosts = Counter()
@@ -8759,17 +8971,54 @@ for path in files:
             if et == "dns":
                 dns_queries += 1
                 d = ev.get("dns") or {}
+                inc(dns_sources, ev.get("src_ip"))
+                for name in dns_names(d):
+                    inc(dns_query_names, name)
                 rcode = str(d.get("rcode_name") or d.get("rcode") or "").upper()
                 if "NXDOMAIN" in rcode or rcode == "3":
                     dns_nxdomain += 1
 
             if et == "krb5":
                 k = ev.get("krb5") or {}
+                inc(krb_sources, ev.get("src_ip"))
+                inc(krb_clients, k.get("cname"))
+                inc(krb_msg_types, k.get("msg_type"))
                 enc = k.get("ticket_encryption") or k.get("encryption")
                 inc(krb_encryption, enc)
+                err = k.get("error_code")
+                if err not in (None, ""):
+                    inc(krb_errors, err)
+                    inc(krb_error_sources, ev.get("src_ip"))
+                    recent_krb_errors.append((
+                        ev.get("timestamp",""), ev.get("src_ip","-"),
+                        k.get("cname","-"), k.get("failed_request") or k.get("msg_type","-"),
+                        err, k.get("sname","-")
+                    ))
                 if k.get("weak_encryption") is True or k.get("ticket_weak_encryption") is True:
                     krb_weak.append((ev.get("timestamp",""), ev.get("src_ip","-"),
                                      k.get("cname","-"), k.get("sname","-"), enc or "-"))
+
+            if et == "ldap":
+                l = ev.get("ldap") or {}
+                inc(ldap_sources, ev.get("src_ip"))
+                req = l.get("request") or {}
+                inc(ldap_operations, req.get("operation"))
+                for resp in (l.get("responses") or []):
+                    if not isinstance(resp, dict):
+                        continue
+                    inc(ldap_operations, resp.get("operation"))
+                    # Result-bearing response objects use nested keys.
+                    for key, value in resp.items():
+                        if not isinstance(value, dict):
+                            continue
+                        rc = value.get("result_code")
+                        if rc not in (None, "", "success", "SUCCESS", "0"):
+                            inc(ldap_result_codes, rc)
+                            recent_ldap_failures.append((
+                                ev.get("timestamp",""), ev.get("src_ip","-"),
+                                resp.get("operation","-"), rc,
+                                value.get("matched_dn","-"), value.get("message","-")
+                            ))
 
             if et == "smb":
                 s = ev.get("smb") or {}
@@ -8807,11 +9056,20 @@ try:
 except Exception:
     drop_pct = 0.0
 
+# PREAUTH_REQUIRED (25 / KDC_ERR_PREAUTH_REQUIRED) is common in normal Kerberos
+# negotiation, so report it but don't make it automatically actionable.
+def is_benign_krb_error(code):
+    value = str(code).upper()
+    return value in {"25", "KDC_ERR_PREAUTH_REQUIRED", "PREAUTH_REQUIRED"}
+
+actionable_krb_errors = sum(count for code, count in krb_errors.items() if not is_benign_krb_error(code))
+
 if view == "alerts":
     print(f"RECENT SURICATA ALERTS — LAST {hours:g}H")
     print("=" * 88)
     if not recent_alerts:
-        print("No alerts observed in the selected window.")
+        print("No signature alerts observed in the selected window.")
+        print("Normal domain-join traffic is telemetry and does not necessarily match an IDS signature.")
     else:
         for ts, src, dst, sev, sig in list(recent_alerts)[-50:]:
             print(f"{ts:30.30s} sev={str(sev):<3} {src:15.15s} -> {dst:15.15s}  {sig}")
@@ -8819,11 +9077,38 @@ if view == "alerts":
 
 if view == "ad":
     print(f"AD PROTOCOL INTELLIGENCE — LAST {hours:g}H")
-    print("=" * 72)
+    print("=" * 78)
+    print_counter("Kerberos message types:", krb_msg_types, 20)
+    print()
+    print_counter("Kerberos client principals:", krb_clients, 20)
+    print()
+    print_counter("Kerberos source IPs:", krb_sources, 20)
+    print()
+    print_counter("Kerberos error codes:", krb_errors, 20)
+    print(f"\nActionable/non-PREAUTH Kerberos errors: {actionable_krb_errors}")
+    if recent_krb_errors:
+        print("\nRecent Kerberos errors:")
+        for row in list(recent_krb_errors)[-25:]:
+            print("  " + " | ".join(map(str, row)))
+    print()
     print_counter("Kerberos encryption:", krb_encryption, 20)
     print(f"\nWeak Kerberos observations: {len(krb_weak)}")
     for row in krb_weak[-20:]:
         print("  " + " | ".join(map(str, row)))
+    print()
+    print_counter("DNS queried names:", dns_query_names, 20)
+    print()
+    print_counter("DNS source IPs:", dns_sources, 15)
+    print()
+    print_counter("LDAP operations:", ldap_operations, 20)
+    print()
+    print_counter("LDAP source IPs:", ldap_sources, 15)
+    print()
+    print_counter("LDAP non-success result codes:", ldap_result_codes, 20)
+    if recent_ldap_failures:
+        print("\nRecent LDAP failures:")
+        for row in list(recent_ldap_failures)[-20:]:
+            print("  " + " | ".join(map(str, row)))
     print()
     print_counter("SMB dialects:", smb_dialects, 20)
     print()
@@ -8853,10 +9138,26 @@ print_counter("Top alert source IPs:", alert_src, 12)
 print()
 print(f"DNS events                    {dns_queries}")
 print(f"DNS NXDOMAIN observations     {dns_nxdomain}")
+print(f"Kerberos events               {events.get('krb5', 0)}")
+print(f"Kerberos error observations   {sum(krb_errors.values())}")
+print(f"Actionable Kerberos errors    {actionable_krb_errors}")
+print(f"LDAP events                    {events.get('ldap', 0)}")
+print(f"LDAP failure observations      {sum(ldap_result_codes.values())}")
 print(f"Weak Kerberos observations    {len(krb_weak)}")
 print(f"SMB NTLMSSP observations      {sum(smb_ntlm.values())}")
 smb1 = sum(v for k,v in smb_dialects.items() if "NT LM 0.12" in k.upper() or k.upper().startswith("SMB1"))
 print(f"SMB1 observations             {smb1}")
+
+print("\nRECENT AD ACTIVITY")
+print_counter("Kerberos source IPs:", krb_sources, 8)
+print()
+print_counter("Kerberos client principals:", krb_clients, 8)
+print()
+print_counter("DNS queried names:", dns_query_names, 8)
+print()
+print_counter("LDAP source IPs:", ldap_sources, 8)
+print()
+print_counter("LDAP operations:", ldap_operations, 8)
 
 print("\nACTIONABLE FINDINGS")
 actions = []
@@ -8866,6 +9167,10 @@ elif drop_pct > 0.1:
     actions.append(f"REVIEW sensor packet loss: kernel drop rate {drop_pct:.3f}%")
 if krb_weak:
     actions.append(f"REVIEW {len(krb_weak)} weak Kerberos observation(s) before AES-only enforcement")
+if actionable_krb_errors:
+    actions.append(f"REVIEW {actionable_krb_errors} Kerberos error observation(s) excluding normal PREAUTH_REQUIRED negotiation")
+if ldap_result_codes:
+    actions.append(f"REVIEW {sum(ldap_result_codes.values())} LDAP non-success response(s), useful for failed joins/delegation diagnostics")
 if smb1:
     actions.append(f"REVIEW {smb1} SMB1 observation(s); identify legacy clients")
 sev12 = sum(v for k,v in alert_sev.items() if str(k) in ("1","2"))
@@ -8920,6 +9225,12 @@ ids_choose_window() {
 
 ids_sensor_health() {
     section "SURICATA SENSOR HEALTH"
+
+    if [[ -f "$IDS_CONFIG" ]]; then
+        ids_auto_repair_managed_install || \
+            msg_warn "Automatic repair could not fully normalize the managed Suricata installation."
+    fi
+
     local bin="" config="" rules="" eve="${IDS_EVE_DIR}/eve.json"
     bin="$(ids_suricata_binary 2>/dev/null || true)"
     config="$(ids_suricata_config 2>/dev/null || true)"
@@ -8929,7 +9240,7 @@ ids_sensor_health() {
         "Suricata service" "$(safe_systemctl_state suricata.service)" "active"
 
     [[ -n "$bin" ]] \
-        && result PASS "Suricata binary" "$($bin -V 2>&1 | head -n1)" "available" \
+        && result PASS "Suricata binary" "$($bin -V 2>&1 | awk 'NR==1{print; exit}')" "available" \
         || result WARN "Suricata binary" "missing" "installed"
 
     [[ -f "$IDS_CONFIG" ]] \
@@ -8940,12 +9251,20 @@ ids_sensor_health() {
         ids_validate_config health || true
     fi
 
-    if [[ -n "$rules" ]]; then
+    if [[ -s "$IDS_LOCAL_RULES" ]]; then
+        local local_count=""
+        local_count="$(grep -hcE '^[[:space:]]*(alert|drop|reject)[[:space:]]' "$IDS_LOCAL_RULES" 2>/dev/null || true)"
+        result PASS "AD local rules" "$IDS_LOCAL_RULES / ${local_count:-0} signal rules" "loaded"
+    else
+        result FAIL "AD local rules" "missing" "$IDS_LOCAL_RULES"
+    fi
+
+    if [[ -n "$rules" && -s "$rules" ]]; then
         local count=""
         count="$(grep -hcE '^[[:space:]]*(alert|drop|reject)[[:space:]]' "$rules" 2>/dev/null || true)"
-        result PASS "Rules file" "$rules / ${count:-0} active rule lines" "loaded"
+        result PASS "External rules" "$rules / ${count:-0} active rule lines" "suricata-update"
     else
-        result WARN "Rules file" "not found" "suricata.rules"
+        result WARN "External rules" "not found or empty" "suricata-update recommended; local AD rules remain active"
     fi
 
     if [[ -f "$eve" ]]; then
@@ -9149,7 +9468,7 @@ ids_menu() {
         ui_menu_item "4" "Sensor health" "Service, config test, rules, EVE freshness and packet-drop telemetry"
         ui_menu_item "5" "Security summary" "Alerts, DNS, Kerberos, SMB/NTLM and decision triggers"
         ui_menu_item "6" "Recent alerts" "Human-readable alert timeline for a selected time window"
-        ui_menu_item "7" "AD protocol intelligence" "Kerberos encryption, weak crypto, SMB dialects and NTLMSSP"
+        ui_menu_item "7" "AD protocol intelligence" "Kerberos attempts/errors/sources, DNS activity, SMB dialects and NTLMSSP"
         ui_menu_item "8" "Update rules" "suricata-update -> config test -> safe reload" "$C_YELLOW"
         ui_menu_item "9" "Daily local reports" "Generate/view reports or enable a systemd timer"
         ui_menu_item "10" "Export evidence" "Config/health/summary bundle without raw EVE payload"
@@ -10406,6 +10725,8 @@ prepare_existing_ad_context() {
     if ! ensure_samba_runtime_health; then
         msg_warn "Samba AD/DC is still degraded after one recovery attempt. The console will remain open; Kerberos/LDAP-dependent operations may fail until the service issue is resolved."
     fi
+
+    ensure_samba_dns_forwarding_health || true
 
     [[ -n "$ADMIN_USER" ]] || ADMIN_USER="$(ask 'AD admin account' 'Administrator')"
 }

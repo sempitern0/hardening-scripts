@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # linux-ad-client-assistant.sh
-# Version 1.1.3-resolver-convergence
+# Version 1.1.4-dns-forwarding-resilience
 #
 # Reversible Active Directory client join assistant for Linux.
 #
@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.1.3-resolver-convergence"
+SCRIPT_VERSION="1.1.4-dns-forwarding-resilience"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -71,6 +71,7 @@ JOIN_TRANSACTION_SNAPSHOT=""
 JOIN_TRANSACTION_ROLLBACK=0
 SYSTEM_RESOLVER_BACKEND=""
 RESOLV_CONF_TARGET=""
+AD_DNS_FORWARDING_OK=0
 
 # ---------------------------------------------------------------------------
 # UI / logging
@@ -655,11 +656,17 @@ apply_resolved_runtime_dns() {
     local domain="$1" dns_csv="$2" iface="$3"
     command_exists resolvectl || return 1
     systemctl is-active --quiet systemd-resolved.service 2>/dev/null || return 1
+
     local -a dns_array=()
     mapfile -t dns_array < <(parse_dns_csv "$dns_csv")
     ((${#dns_array[@]})) || return 1
+
+    # Standard AD client policy: the AD DNS servers are the resolver path for
+    # all names. They are authoritative for AD and must forward external names.
+    # "~." prevents public/DHCP DNS from racing AD lookups.
     resolvectl dns "$iface" "${dns_array[@]}" || return 1
-    resolvectl domain "$iface" "$domain" "~$domain" || return 1
+    resolvectl domain "$iface" "$domain" "~." || return 1
+    resolvectl default-route "$iface" yes >/dev/null 2>&1 || true
     resolvectl flush-caches >/dev/null 2>&1 || true
 }
 
@@ -876,8 +883,7 @@ required_packages() {
                 adcli \
                 krb5-user \
                 libnss-sss \
-                libpam-sss \
-                dnsutils
+                libpam-sss
             ;;
         dnf)
             printf '%s\n' \
@@ -887,11 +893,36 @@ required_packages() {
                 krb5-workstation \
                 oddjob \
                 oddjob-mkhomedir \
-                samba-common-tools \
-                bind-utils
+                samba-common-tools
             ;;
         *)
             return 0
+            ;;
+    esac
+}
+
+
+dns_tools_package_name() {
+    # dig is the actual capability required by this assistant. Do not treat
+    # transitional/virtual package names such as dnsutils as missing when a
+    # real provider already supplies dig.
+    command_exists dig && return 0
+
+    case "$PKG_FAMILY" in
+        apt)
+            if apt-cache show bind9-dnsutils >/dev/null 2>&1; then
+                printf '%s' "bind9-dnsutils"
+            elif apt-cache show dnsutils >/dev/null 2>&1; then
+                printf '%s' "dnsutils"
+            else
+                return 1
+            fi
+            ;;
+        dnf)
+            printf '%s' "bind-utils"
+            ;;
+        *)
+            return 1
             ;;
     esac
 }
@@ -926,11 +957,25 @@ install_required_packages() {
         return $?
     fi
 
-    local pkg
+    local pkg dns_pkg=""
     for pkg in "${required[@]}"; do
         [[ -n "$pkg" ]] || continue
         pkg_installed "$pkg" || missing+=("$pkg")
     done
+
+    # DNS tooling is capability-based. Ubuntu/Debian may satisfy "dnsutils"
+    # through bind9-dnsutils, so never ask to install a package merely because
+    # a transitional package name is absent.
+    if ! command_exists dig; then
+        dns_pkg="$(dns_tools_package_name 2>/dev/null || true)"
+        [[ -n "$dns_pkg" ]] || {
+            err "dig is unavailable and no distribution DNS tools package could be identified."
+            return 1
+        }
+        pkg_installed "$dns_pkg" || missing+=("$dns_pkg")
+    else
+        ok "DNS diagnostic capability already available: $(command -v dig)."
+    fi
 
     if ((${#missing[@]} == 0)); then
         ok "Required AD client packages are already installed."
@@ -966,7 +1011,6 @@ install_required_packages() {
             ;;
     esac
 
-    # Record only packages that were absent before and are now actually present.
     for pkg in "${missing[@]}"; do
         pkg_installed "$pkg" && record_assistant_package "$snap" "$pkg"
     done
@@ -1134,6 +1178,10 @@ apply_domain_dns() {
     dns_space="$(dns_space_list "$dns_csv")"
 
     [[ -n "$dns_space" ]] || { err "No DNS servers supplied."; return 1; }
+    (( AD_DNS_FORWARDING_OK == 1 )) || {
+        err "AD DNS external forwarding was not validated. Refusing to replace the client resolver and risk losing Internet access."
+        return 1
+    }
 
     if (( REMOTE_SESSION )); then
         warn "Remote session detected. DNS changes should not interrupt an existing IP-based SSH session,"
@@ -1144,14 +1192,18 @@ apply_domain_dns() {
         NetworkManager)
             [[ -n "$NM_CONNECTION" ]] || { err "NetworkManager connection could not be determined."; return 1; }
 
+            # DHCP still owns IP/gateway/routes. Only DNS is overridden.
+            # Negative priority excludes DNS from other active connections with
+            # a worse priority and "~." makes this the default DNS route.
             nmcli connection modify "$NM_CONNECTION" \
                 ipv4.ignore-auto-dns yes \
                 ipv4.dns "$dns_space" \
-                ipv4.dns-search "$domain" \
-                ipv4.dns-priority -50 || return 1
+                ipv4.dns-search "$domain,~." \
+                ipv4.dns-priority -100 || return 1
 
-            # Do not allow DHCP-provided IPv6 DNS to bypass the AD DNS policy.
-            nmcli connection modify "$NM_CONNECTION" ipv6.ignore-auto-dns yes || true
+            nmcli connection modify "$NM_CONNECTION" \
+                ipv6.ignore-auto-dns yes \
+                ipv6.dns-priority -100 || true
 
             if ! nmcli device reapply "$iface" >/dev/null 2>&1; then
                 warn "NetworkManager could not reapply DNS live."
@@ -1164,7 +1216,8 @@ apply_domain_dns() {
 
             if command_exists resolvectl &&
                systemctl is-active --quiet systemd-resolved.service 2>/dev/null; then
-                apply_resolved_runtime_dns "$domain" "$dns_csv" "$iface" ||                     warn "NetworkManager was updated, but systemd-resolved did not accept the live per-link DNS update."
+                apply_resolved_runtime_dns "$domain" "$dns_csv" "$iface" || \
+                    warn "NetworkManager was updated, but systemd-resolved did not accept the live AD DNS policy."
             fi
             ;;
         systemd-resolved)
@@ -1181,14 +1234,13 @@ apply_domain_dns() {
             mkdir -p /etc/systemd/resolved.conf.d
             cat >/etc/systemd/resolved.conf.d/90-ad-client-assistant.conf <<EOF
 # Managed by Linux AD Client Assistant
+# AD DNS is authoritative for the domain and forwards external DNS.
 [Resolve]
 DNS=${dns_space}
-Domains=${domain} ~${domain}
+Domains=${domain} ~.
 EOF
             systemctl restart systemd-resolved.service || return 1
-            resolvectl dns "$iface" "${dns_array[@]}" || return 1
-            resolvectl domain "$iface" "$domain" "~$domain" || return 1
-            resolvectl flush-caches >/dev/null 2>&1 || true
+            apply_resolved_runtime_dns "$domain" "$dns_csv" "$iface" || return 1
             ;;
         resolv.conf)
             warn "No supported persistent DNS manager was detected."
@@ -1210,7 +1262,7 @@ EOF
     esac
 
     sleep 1
-    ok "AD DNS configuration applied via $DNS_BACKEND."
+    ok "AD DNS configuration applied via $DNS_BACKEND; DHCP/static IP addressing was left unchanged."
 }
 
 restore_network_from_snapshot() {
@@ -1281,22 +1333,49 @@ domain_srv_query() {
 
 
 preflight_ad_dns_servers() {
-    local domain="$1" dns_csv="$2" ip="" output="" failures=0
+    local domain="$1" dns_csv="$2" ip="" output="" external="" failures=0 forwarding_failures=0
+    AD_DNS_FORWARDING_OK=0
+
     if ! command_exists dig; then
         warn "dig is unavailable before dependency installation; direct DNS preflight is deferred."
         return 0
     fi
+
     while IFS= read -r ip; do
         [[ -n "$ip" ]] || continue
+
         output="$(domain_srv_query "$domain" "$ip" || true)"
         if [[ -n "$output" ]]; then
             ok "Preflight: $ip is an AD-capable DNS server for $domain."
         else
             err "Preflight: $ip does not answer the AD DC locator SRV query."
             failures=1
+            continue
+        fi
+
+        # A normal AD client should use only AD DNS. Therefore each configured
+        # AD DNS must also be able to resolve/forward external names.
+        external="$(dig +time=3 +tries=1 @"$ip" example.com A +short 2>/dev/null || true)"
+        if grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' <<<"$external"; then
+            ok "Preflight: $ip forwards external DNS queries."
+        else
+            err "Preflight: $ip is authoritative for AD but cannot resolve external DNS."
+            forwarding_failures=1
         fi
     done < <(parse_dns_csv "$dns_csv")
-    (( failures == 0 ))
+
+    (( failures == 0 )) || return 1
+
+    if (( forwarding_failures != 0 )); then
+        printf '\n%bAD DNS FORWARDING DIAGNOSTIC%b\n' "$C_BOLD" "$C_RESET"
+        warn "The AD DNS server can resolve the domain but cannot resolve Internet names."
+        info "The client IP may remain DHCP; do not add public DNS as a fallback because it can break AD/Kerberos discovery."
+        info "Repair the Samba/AD DNS forwarder on the DC, then retry. No client DNS change has been committed."
+        return 2
+    fi
+
+    AD_DNS_FORWARDING_OK=1
+    return 0
 }
 
 ad_dc_targets_from_dns() {
@@ -2204,7 +2283,7 @@ Logs:
   $LOG_ROOT
 
 Administrator is the default join/leave account but can be overridden at the credential step.
-DHCP addressing is supported; a static client IP is not required. AD DNS is managed separately and resolver convergence is validated.
+DHCP addressing is supported; a static client IP is not required. AD DNS must also forward external DNS before the assistant replaces the client resolver.
 No password is persisted, no third-party repository is added, and supported joins use a private Kerberos cache.
 EOF
 }

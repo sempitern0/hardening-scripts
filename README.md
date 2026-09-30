@@ -135,9 +135,9 @@ El repositorio mantiene dos control planes de DC y dos asistentes reversibles de
 Revisiones utilizadas para esta edición:
 
 ```text
-DC Debian      : 5.1.0-remote-ops-ui
+DC Debian      : 5.1.1-ids-dns-resilience
 DC Windows     : 1.7.0-remote-ops-ui
-Client Linux   : 1.1.3-resolver-convergence
+Client Linux   : 1.1.4-dns-forwarding-resilience
 Client Windows : 1.1.0-resilient
 ```
 
@@ -164,6 +164,8 @@ Debian
   revisión pipefail/SIGPIPE de rutas operativas
   fallos Kerberos/GPO contenidos sin expulsar del menú
   Remote Operations Center y navegación compacta por workspaces
+  Samba DNS forwarder self-heal / FWD health badge
+  Suricata 8 vendor-vars-preserving overlay + local AD signal rules
 
 Windows
   selectors e idempotencia
@@ -178,6 +180,8 @@ Client assistants v1.1
   preflight de todos los DNS AD antes de modificar el resolver local
   readiness de puertos AD sin dependencias nuevas
   lifecycle explícito alrededor de reboot/leave
+  DNS tools por capability/provider: no reinstala dnsutils si dig ya existe
+  preflight de forwarding externo antes de convertir AD DNS en resolver exclusivo
   validación post-join reforzada
   rollback más completo y diagnóstico accionable
 ```
@@ -1534,7 +1538,37 @@ evidence export
 disable integration
 ```
 
-La analítica EVE presta especial atención a DNS, Kerberos, SMB/NTLMSSP, alertas y packet drops.
+La analítica EVE presta especial atención a DNS, Kerberos, LDAP, SMB/NTLMSSP, alertas y packet drops.
+
+A partir de `5.1.1-ids-dns-resilience`, el overlay del assistant **no redefine** `vars`,
+`default-rule-path`, `rule-files` ni la lista `af-packet` del `suricata.yaml` de la distribución.
+Los includes de Suricata se cargan al final y una redefinición top-level sustituye el nodo anterior;
+eso podía eliminar variables vendor como `TEREDO_PORTS`, `GENEVE_PORTS` o `VXLAN_PORTS`.
+
+El modelo actual es:
+
+```text
+vendor suricata.yaml
+  ├─ vendor vars / port-groups preserved
+  ├─ vendor rule-path preserved
+  └─ vendor defaults preserved
+
+assistant
+  ├─ HOME_NET          → --set vars.address-groups.HOME_NET=...
+  ├─ capture interface → --af-packet=<iface>
+  ├─ local AD rules    → -s /etc/suricata/debian-ad-assistant.rules
+  └─ EVE overlay       → DNS / KRB5 / LDAP / SMB / TLS / SSH / stats / alerts
+```
+
+El sensor health migra automáticamente un overlay antiguo gestionado por el assistant y vuelve a
+validar la configuración. `suricata-update` sigue siendo la fuente recomendada para el ruleset
+externo, pero la ausencia temporal de ese ruleset ya no deja el sensor sin señal AD básica:
+se mantienen reglas locales para errores Kerberos relevantes y respuestas LDAP de credenciales,
+permisos o colisión de objetos.
+
+Esto significa que un intento de join normal puede aparecer como **telemetría** sin ser una alerta,
+mientras que errores como credenciales Kerberos revocadas o `LDAP insufficient_access_rights`
+pueden generar una alerta local además de quedar visibles en `AD protocol intelligence`.
 
 Reports:
 
@@ -1543,6 +1577,27 @@ Reports:
 ```
 
 Un IDS con drops elevados no debe interpretarse como evidencia de ausencia de ataques.
+
+
+### DNS forwarding health del DC
+
+Un miembro AD debe poder usar los DNS del dominio tanto para sus registros internos como para
+nombres externos. El control plane valida:
+
+```text
+client/DC → Samba DNS authoritative
+Samba DNS → configured upstream forwarder
+upstream DNS → UDP 53
+upstream DNS → TCP 53
+```
+
+En un dominio existente, `5.1.1` intenta autocorregir un forwarding roto únicamente cuando puede
+demostrar un upstream funcional a partir de la configuración/estado local. `smb.conf` se respalda
+antes de cambiar `dns forwarder`.
+
+El firewall UFW gestionado por el assistant mantiene `default allow outgoing`; si ningún upstream
+es alcanzable, el control plane no inventa un DNS público y deja un `WARN` accionable.
+
 
 <a id="reset-linux"></a>
 ## Decommission / reset Linux
@@ -2989,10 +3044,46 @@ ip
 
 No se añaden dependencias ni se intenta reconfigurar automáticamente OpenRC, runit o SysV.
 
+En Debian/Ubuntu, la necesidad DNS se evalúa por `command -v dig`. Si falta, se prefiere
+`bind9-dnsutils`; `dnsutils` queda únicamente como fallback de empaquetado. Esto evita pedir cada
+vez un metapaquete/transitional package que la distribución ya satisfizo mediante otro provider.
+
 ### Readiness y resiliencia v1.1
 
-La revisión Linux `1.1.3-resolver-convergence` conserva las mismas dependencias que `1.1.2` y añade
-diagnóstico/reparación del camino entre el gestor de red y el resolver real del sistema.
+La revisión Linux `1.1.4-dns-forwarding-resilience` conserva el mismo stack mínimo y añade dos
+guardas para que el join no degrade una estación funcional:
+
+```text
+1. "dig" se trata como capability, no como nombre de paquete.
+2. El DNS AD debe resolver tanto el dominio como nombres externos antes de sustituir el DNS DHCP.
+```
+
+En Ubuntu/Debian el paquete real puede ser `bind9-dnsutils` aunque el nombre histórico/transicional
+`dnsutils` no figure como instalado. Si `dig` ya existe, el assistant no vuelve a pedir ningún
+paquete DNS.
+
+El preflight comprueba además un nombre externo directamente contra **cada** DNS AD configurado.
+La política estándar es deliberadamente estricta:
+
+```text
+client
+  ↓
+AD DNS only
+  ├─ authoritative AD zones
+  └─ external names through the DC DNS forwarder
+```
+
+No se añade `8.8.8.8`, DNS del router ni DNS del ISP como fallback en un miembro AD: un resolver
+público puede contestar antes con `NXDOMAIN` para `_ldap._tcp`, Kerberos o nombres internos y crear
+fallos intermitentes difíciles de diagnosticar.
+
+Si el DC responde al SRV de AD pero no resuelve `example.com`, el client assistant se detiene
+**antes de cambiar el resolver local** y señala que debe repararse el forwarder del DC.
+
+El control plane Debian `5.1.1` comprueba ese forwarding al entrar en un dominio existente. Si
+encuentra un upstream ya configurado o visible en el estado de red que responde por UDP y TCP,
+puede reparar `dns forwarder`, reiniciar Samba una vez y validar de nuevo. La cabecera muestra
+`FWD:OK` o `FWD:CHECK`.
 
 Un cliente AD **no necesita IP estática** para unirse al dominio. DHCP puede seguir gestionando
 dirección, gateway y rutas; el requisito es que el resolver efectivo del cliente utilice DNS AD
@@ -3012,20 +3103,25 @@ Esto cubre el caso en el que NetworkManager acepta correctamente `192.168.x.x` c
 `dig`, libc o `realmd` continúan utilizando un `/etc/resolv.conf` desconectado o un
 `systemd-resolved` sin la información per-link.
 
-Cuando el DNS AD responde directamente pero el resolver del host no converge, el flujo es:
+Después del preflight, el modo estándar mantiene DHCP para IP/rutas pero hace que AD DNS sea el
+resolver efectivo:
 
 ```text
-direct @AD-DNS SRV query        PASS
-NetworkManager profile          PASS
-  ↓
-wait for resolver convergence
-  ↓
-systemd-resolved per-link sync
-  ↓
-flush caches
-  ↓
-system resolver SRV query
+NetworkManager:
+  ipv4.ignore-auto-dns = yes
+  ipv4.dns             = <AD DNS>
+  ipv4.dns-search      = <domain>,~.
+  ipv4.dns-priority    = -100
+
+systemd-resolved:
+  DNS                  = <AD DNS>
+  Domains              = <domain> ~.
+  DefaultRoute         = yes
 ```
+
+`~.` evita que DNS de otras conexiones compitan por consultas que deberían pasar por el DNS AD.
+La conectividad a Internet depende entonces del forwarder del DC, que ya fue validado antes de
+hacer el cambio.
 
 Si `systemd-resolved` puede descubrir AD pero `/etc/resolv.conf` no apunta al resolver activo, el
 assistant muestra el diagnóstico y puede reparar explícitamente el symlink. La modificación es
@@ -3133,18 +3229,21 @@ NetworkManager:
 ```text
 snapshot connection name + UUID
 snapshot ipv4/ipv6 DNS policy and DNS priority
-disable DHCP DNS for AD resolution
-set DC DNS
-set search domain
-prefer the AD DNS connection for resolver ordering
+leave DHCP/static addressing and routes untouched
+disable DHCP DNS contribution
+set only AD DNS servers
+set search domain plus `~.` default routing domain
+use negative DNS priority to exclude competing resolvers
 reapply interface without reconnect when possible
 ```
 
 `systemd-resolved`:
 
 ```text
-managed resolved.conf.d drop-in
-per-link resolvectl DNS/domain
+managed resolved.conf.d drop-in when required
+per-link AD DNS + `<domain>` + `~.`
+default-route=yes
+cache flush + resolver acceptance test
 reversible snapshot
 ```
 
