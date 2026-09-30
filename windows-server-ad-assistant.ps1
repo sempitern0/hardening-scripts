@@ -1,7 +1,7 @@
 ﻿#requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Windows Server AD Control Plane - v1.6.1-menu-resilience
+    Windows Server AD Control Plane - v1.7.0-remote-ops-ui
 
 .DESCRIPTION
     Professional, audit-first assistant for Windows Server and Active Directory.
@@ -39,18 +39,19 @@
       Reset              Supported AD DS demotion + post-reboot cleanup
       IDS                Optional Suricata IDS integration, EVE analytics and native GUI dashboard
       IDSReport          Non-interactive 24h IDS report target for Task Scheduler
+      RemoteOps          Remote endpoint operations center
 
 .EXAMPLE
-    .\windows-server-ad-v1.6.1-menu-resilience.ps1
+    .\windows-server-ad-v1.7.0-remote-ops-ui.ps1
 
 .EXAMPLE
-    .\windows-server-ad-v1.6.1-menu-resilience.ps1 -Mode Audit
+    .\windows-server-ad-v1.7.0-remote-ops-ui.ps1 -Mode Audit
 
 .EXAMPLE
-    .\windows-server-ad-v1.6.1-menu-resilience.ps1 -Mode ADAdmin
+    .\windows-server-ad-v1.7.0-remote-ops-ui.ps1 -Mode ADAdmin
 
 .EXAMPLE
-    .\windows-server-ad-v1.6.1-menu-resilience.ps1 -Mode Validate
+    .\windows-server-ad-v1.7.0-remote-ops-ui.ps1 -Mode Validate
 
 .NOTES
     Validate in a lab before production deployment.
@@ -58,7 +59,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Audit','Validate','Harden','Backup','ADAdmin','Provision','Migration','DirectorySecurity','Dependencies','Reset','IDS','IDSReport')]
+    [ValidateSet('Interactive','Audit','Validate','Harden','Backup','ADAdmin','Provision','Migration','DirectorySecurity','Dependencies','Reset','IDS','IDSReport','RemoteOps')]
     [string]$Mode = 'Interactive',
 
     [string]$ExportPath = "$env:ProgramData\WindowsADControlPlane",
@@ -78,7 +79,7 @@ $ErrorActionPreference = 'Stop'
 # ===========================================================================
 
 $script:ProductName = 'Windows Server AD Control Plane'
-$script:Version = '1.6.1-menu-resilience'
+$script:Version = '1.7.0-remote-ops-ui'
 $script:Started = Get-Date
 
 $script:Results = New-Object 'System.Collections.Generic.List[object]'
@@ -109,6 +110,12 @@ $script:IdsStatePath = Join-Path $ExportPath 'ids'
 $script:IdsReportPath = Join-Path $script:IdsStatePath 'reports'
 $script:IdsIntegrationFile = Join-Path $script:IdsStatePath 'suricata-integration.json'
 $script:IdsTaskName = 'WindowsADControlPlane-SuricataDaily'
+$script:RemoteOpsPath = Join-Path $ExportPath 'remote-ops'
+$script:RemoteOpsEvidencePath = Join-Path $script:RemoteOpsPath 'evidence'
+$script:RemoteOpsLog = Join-Path $script:RemoteOpsPath 'operations.tsv'
+$script:RemoteTarget = $null
+$script:RemoteOpsCredential = $null
+$script:RemoteSshUser = $null
 
 $script:UiWidth = 96
 
@@ -203,32 +210,40 @@ function Write-ContextPanel {
     $hostName = if ($script:ServerInfo) { $script:ServerInfo.ComputerName } else { $env:COMPUTERNAME }
     $osText = if ($script:ServerInfo) {
         '{0} / build {1}' -f (Get-WindowsServerGeneration -Info $script:ServerInfo), $script:ServerInfo.Build
-    } else {
+    }
+    else {
         'discovering'
     }
 
     $domain = if ($script:ServerInfo -and $script:ServerInfo.PartOfDomain) {
         $script:ServerInfo.Domain
-    } else {
+    }
+    else {
         'WORKGROUP / unjoined'
     }
 
-    $role = if ($script:IsDomainController) { 'Domain Controller' } else { 'Member / standalone server' }
+    $role = if ($script:IsDomainController) { 'Domain Controller' } else { 'Member / standalone' }
 
-    Write-Console ('  {0,-14} {1,-31} {2,-14} {3}' -f 'Server', $hostName, 'Role', $role)
-    Write-Console ('  {0,-14} {1,-31} {2,-14} {3}' -f 'Domain', $domain, 'OS', $osText)
-    Write-Console ('  {0,-14} {1,-31} {2,-14} {3}' -f 'Session', $script:RemoteKind, 'PowerShell', $PSVersionTable.PSVersion)
+    Write-Console ('  {0}' -f $domain) White -NoNewline
+    Write-Console ('  |  {0}' -f $hostName) Cyan -NoNewline
+    Write-Console ('  |  {0}' -f $role) Gray
+    Write-Console ('  {0}  |  Session={1}  |  PowerShell={2}' -f `
+        $osText, $script:RemoteKind, $PSVersionTable.PSVersion) Gray
 
     if ($script:IsDomainController) {
-        Write-Console '  Services       ' -NoNewline
-        foreach ($svcName in @('NTDS','DNS','Netlogon','Kdc','ADWS')) {
-            $state = Get-ServiceBadge -Name $svcName
-            $kind = if ($state -eq 'ONLINE') { 'Good' } elseif ($state -eq 'N/A') { 'Info' } else { 'Bad' }
-            Write-Console ('{0}=' -f $svcName) Gray -NoNewline
-            Write-Badge -Text $state -Kind $kind -NoNewline
-            Write-Console ' ' -NoNewline
-        }
-        Write-Console ''
+        Write-Console '  ' -NoNewline
+        Write-ServiceStatusInline -Label 'AD' -ServiceName 'NTDS'
+        Write-ServiceStatusInline -Label 'DNS' -ServiceName 'DNS'
+        Write-ServiceStatusInline -Label 'KRB' -ServiceName 'Kdc'
+        Write-ServiceStatusInline -Label 'NETLOGON' -ServiceName 'Netlogon'
+        Write-ServiceStatusInline -Label 'ADWS' -ServiceName 'ADWS'
+        Write-ServiceStatusInline -Label 'SMB' -ServiceName 'LanmanServer'
+        Write-ServiceStatusInline -Label 'WINRM' -ServiceName 'WinRM'
+
+        $idsState = Get-ServiceBadge -Name 'suricata'
+        $idsKind = if ($idsState -eq 'ONLINE') { 'Good' } elseif ($idsState -eq 'N/A') { 'Info' } else { 'Warn' }
+        Write-Console 'IDS=' Gray -NoNewline
+        Write-Badge -Text $idsState -Kind $idsKind
     }
 }
 
@@ -249,6 +264,44 @@ function Write-MenuHeader {
         Write-Console ('  {0}' -f $Subtitle) Gray
     }
     Write-Console ''
+}
+
+
+function Write-WorkspaceRow {
+    param(
+        [Parameter(Mandatory=$true)][string]$Key1,
+        [Parameter(Mandatory=$true)][string]$Title1,
+        [ValidateSet('Cyan','Green','Yellow','Red','Magenta','DarkCyan','Gray')]
+        [string]$Color1 = 'Cyan',
+        [string]$Key2 = '',
+        [string]$Title2 = '',
+        [ValidateSet('Cyan','Green','Yellow','Red','Magenta','DarkCyan','Gray')]
+        [string]$Color2 = 'Cyan'
+    )
+
+    Write-Console ('  [{0}] ' -f $Key1) $Color1 -NoNewline
+    Write-Console ('{0,-31}' -f $Title1) White -NoNewline
+
+    if ($Key2) {
+        Write-Console ('[{0}] ' -f $Key2) $Color2 -NoNewline
+        Write-Console $Title2 White
+    }
+    else {
+        Write-Console ''
+    }
+}
+
+function Write-ServiceStatusInline {
+    param(
+        [Parameter(Mandatory=$true)][string]$Label,
+        [Parameter(Mandatory=$true)][string]$ServiceName
+    )
+
+    $state = Get-ServiceBadge -Name $ServiceName
+    $kind = if ($state -eq 'ONLINE') { 'Good' } elseif ($state -eq 'N/A') { 'Info' } else { 'Bad' }
+    Write-Console ("{0}=" -f $Label) Gray -NoNewline
+    Write-Badge -Text $state -Kind $kind -NoNewline
+    Write-Console ' ' -NoNewline
 }
 
 function Write-MenuItem {
@@ -372,6 +425,11 @@ function Initialize-Runtime {
     $script:BackupPath = Join-Path $script:RunPath 'backup'
 
     New-Item -ItemType Directory -Path $script:BackupPath -Force | Out-Null
+    New-Item -ItemType Directory -Path $script:RemoteOpsPath -Force | Out-Null
+    New-Item -ItemType Directory -Path $script:RemoteOpsEvidencePath -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $script:RemoteOpsLog)) {
+        New-Item -ItemType File -Path $script:RemoteOpsLog -Force | Out-Null
+    }
 
     $script:LogFile = Join-Path $ExportPath "control-plane-$timestamp-$PID.log"
     $script:ReportFile = Join-Path $ExportPath "control-plane-report-$timestamp-$PID.json"
@@ -6596,6 +6654,876 @@ function Show-WindowsIdsMenu {
     }
 }
 
+
+# ===========================================================================
+# Remote Operations Center
+# ===========================================================================
+
+function Write-RemoteOpsAudit {
+    param(
+        [Parameter(Mandatory=$true)][string]$Action,
+        [Parameter(Mandatory=$true)][string]$Result,
+        [string]$Detail = ''
+    )
+
+    $target = if ($script:RemoteTarget) {
+        if ($script:RemoteTarget.DNSHostName) { $script:RemoteTarget.DNSHostName }
+        else { $script:RemoteTarget.Name }
+    }
+    else {
+        'none'
+    }
+
+    $operator = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $clean = ($Detail -replace "[`r`n`t]+", ' ').Trim()
+    $line = "{0}`t{1}`t{2}`t{3}`t{4}:{5}" -f `
+        (Get-Date -Format o), $operator, $target, $Action, $Result, $clean
+
+    Add-Content -LiteralPath $script:RemoteOpsLog -Value $line -Encoding UTF8
+}
+
+function Test-RemoteTcpPort {
+    param(
+        [Parameter(Mandatory=$true)][string]$ComputerName,
+        [Parameter(Mandatory=$true)][int]$Port,
+        [int]$TimeoutMs = 1500
+    )
+
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        $async = $client.BeginConnect($ComputerName, $Port, $null, $null)
+        if (-not $async.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) {
+            return $false
+        }
+        $client.EndConnect($async)
+        return $true
+    }
+    catch {
+        return $false
+    }
+    finally {
+        $client.Close()
+    }
+}
+
+function Select-RemoteOpsTarget {
+    Assert-DomainController
+    $identity = Select-AdComputerIdentity -Prompt 'Select remote target'
+    if (-not $identity) { return $false }
+
+    $script:RemoteTarget = Get-ADComputer `
+        -Identity $identity `
+        -Properties DNSHostName,IPv4Address,OperatingSystem,OperatingSystemVersion,Enabled,LastLogonDate `
+        -ErrorAction Stop
+
+    $script:RemoteSshUser = $null
+    Write-Console ("Remote target: {0} / {1}" -f `
+        $script:RemoteTarget.Name, $script:RemoteTarget.OperatingSystem) Green
+
+    Write-RemoteOpsAudit -Action 'target-select' -Result 'OK' -Detail $script:RemoteTarget.OperatingSystem
+    return $true
+}
+
+function Assert-RemoteOpsTarget {
+    if ($script:RemoteTarget) { return $true }
+    return (Select-RemoteOpsTarget)
+}
+
+function Get-RemoteOpsHost {
+    if (-not $script:RemoteTarget) { return $null }
+    if ($script:RemoteTarget.DNSHostName) { return [string]$script:RemoteTarget.DNSHostName }
+    return [string]$script:RemoteTarget.Name
+}
+
+function Get-RemoteOpsTargetKind {
+    if (-not $script:RemoteTarget) { return 'Unknown' }
+
+    $os = [string]$script:RemoteTarget.OperatingSystem
+    if ($os -match '(?i)windows') { return 'Windows' }
+    if ($os -match '(?i)linux|ubuntu|debian|red hat|fedora|rocky|alma|centos') { return 'Linux' }
+
+    $hostName = Get-RemoteOpsHost
+    if ($hostName -and (Test-RemoteTcpPort -ComputerName $hostName -Port 5985)) { return 'Windows' }
+    if ($hostName -and (Test-RemoteTcpPort -ComputerName $hostName -Port 445)) { return 'Windows' }
+    if ($hostName -and (Test-RemoteTcpPort -ComputerName $hostName -Port 22)) { return 'Linux' }
+
+    return 'Unknown'
+}
+
+function Set-RemoteOpsCredential {
+    $script:RemoteOpsCredential = Get-Credential `
+        -Message 'Optional alternate credential for Windows remote operations'
+    if ($script:RemoteOpsCredential) {
+        Write-Console ("Alternate credential held in memory only: {0}" -f `
+            $script:RemoteOpsCredential.UserName) Green
+    }
+}
+
+function Clear-RemoteOpsCredential {
+    $script:RemoteOpsCredential = $null
+    Write-Console 'Alternate remote credential cleared from memory.' Green
+}
+
+function Test-RemoteWinRm {
+    param([Parameter(Mandatory=$true)][string]$ComputerName)
+
+    try {
+        $params = @{
+            ComputerName = $ComputerName
+            ErrorAction  = 'Stop'
+        }
+        if ($script:RemoteOpsCredential) {
+            $params.Credential = $script:RemoteOpsCredential
+            $params.Authentication = 'Negotiate'
+        }
+
+        Test-WSMan @params | Out-Null
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Invoke-RemoteWindowsPs {
+    param(
+        [Parameter(Mandatory=$true)][scriptblock]$ScriptBlock,
+        [object[]]$ArgumentList = @()
+    )
+
+    if (-not (Assert-RemoteOpsTarget)) { throw 'No remote target selected.' }
+    $hostName = Get-RemoteOpsHost
+
+    $params = @{
+        ComputerName = $hostName
+        ScriptBlock  = $ScriptBlock
+        ErrorAction  = 'Stop'
+    }
+
+    if ($ArgumentList.Count -gt 0) {
+        $params.ArgumentList = $ArgumentList
+    }
+
+    if ($script:RemoteOpsCredential) {
+        $params.Credential = $script:RemoteOpsCredential
+        $params.Authentication = 'Negotiate'
+    }
+
+    Invoke-Command @params
+}
+
+function Ensure-LocalOpenSshClient {
+    $ssh = Get-Command ssh.exe -ErrorAction SilentlyContinue
+    if ($ssh) { return $ssh.Source }
+
+    Write-Console 'OpenSSH Client is required to manage Linux endpoints from Windows.' Yellow
+    if (-not (Confirm-Action `
+        -Action 'Install the Microsoft OpenSSH Client optional capability on this management server' `
+        -Reason 'Provide an in-box cross-platform SSH management transport.' `
+        -Impact LOW)) {
+        return $null
+    }
+
+    try {
+        Add-WindowsCapability -Online -Name 'OpenSSH.Client~~~~0.0.1.0' -ErrorAction Stop | Out-Host
+        $ssh = Get-Command ssh.exe -ErrorAction SilentlyContinue
+        if ($ssh) {
+            Write-Log 'Installed Microsoft OpenSSH Client capability for remote operations.' CHANGE
+            return $ssh.Source
+        }
+    }
+    catch {
+        Write-Console ("OpenSSH Client installation failed: {0}" -f $_.Exception.Message) Red
+    }
+
+    return $null
+}
+
+function Get-RemoteSshUser {
+    if ($script:RemoteSshUser) { return $script:RemoteSshUser }
+
+    $default = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    if ($default -match '\\') {
+        $parts = $default -split '\\', 2
+        if ($script:DomainInfo -and $script:DomainInfo.DNSRoot) {
+            $default = '{0}@{1}' -f $parts[1], $script:DomainInfo.DNSRoot
+        }
+    }
+
+    $script:RemoteSshUser = (Read-Host ("SSH login identity [{0}]" -f $default)).Trim()
+    if (-not $script:RemoteSshUser) { $script:RemoteSshUser = $default }
+
+    return $script:RemoteSshUser
+}
+
+function Invoke-RemoteSsh {
+    param(
+        [Parameter(Mandatory=$true)][string]$Command,
+        [switch]$Interactive
+    )
+
+    if (-not (Assert-RemoteOpsTarget)) { throw 'No remote target selected.' }
+
+    $ssh = Ensure-LocalOpenSshClient
+    if (-not $ssh) { throw 'OpenSSH Client is unavailable.' }
+
+    $hostName = Get-RemoteOpsHost
+    $user = Get-RemoteSshUser
+
+    $args = @(
+        '-o','ConnectTimeout=6',
+        '-o','ServerAliveInterval=10',
+        '-o','StrictHostKeyChecking=accept-new'
+    )
+    if ($Interactive) { $args += '-t' }
+    $args += @('-l', $user, $hostName, $Command)
+
+    & $ssh @args
+    if ($LASTEXITCODE -ne 0) {
+        throw ("SSH command failed with exit code {0}." -f $LASTEXITCODE)
+    }
+}
+
+function Get-RemoteSshOutput {
+    param([Parameter(Mandatory=$true)][string]$Command)
+
+    if (-not (Assert-RemoteOpsTarget)) { throw 'No remote target selected.' }
+    $ssh = Ensure-LocalOpenSshClient
+    if (-not $ssh) { throw 'OpenSSH Client is unavailable.' }
+
+    $hostName = Get-RemoteOpsHost
+    $user = Get-RemoteSshUser
+    $args = @(
+        '-o','ConnectTimeout=6',
+        '-o','ServerAliveInterval=10',
+        '-o','StrictHostKeyChecking=accept-new',
+        '-l',$user,$hostName,$Command
+    )
+
+    $output = & $ssh @args 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw ("SSH command failed with exit code {0}: {1}" -f `
+            $LASTEXITCODE, ($output -join ' '))
+    }
+    return @($output)
+}
+
+function Show-RemoteOpsReadiness {
+    if (-not (Assert-RemoteOpsTarget)) { return }
+
+    $hostName = Get-RemoteOpsHost
+    $kind = Get-RemoteOpsTargetKind
+    $ports = [ordered]@{
+        SSH      = Test-RemoteTcpPort -ComputerName $hostName -Port 22
+        SMB      = Test-RemoteTcpPort -ComputerName $hostName -Port 445
+        WinRM    = Test-RemoteTcpPort -ComputerName $hostName -Port 5985
+        WinRMTLS = Test-RemoteTcpPort -ComputerName $hostName -Port 5986
+    }
+
+    Write-Section 'Remote endpoint readiness'
+    [pscustomobject]@{
+        Name            = $script:RemoteTarget.Name
+        DNSHostName     = $script:RemoteTarget.DNSHostName
+        IPv4Address     = $script:RemoteTarget.IPv4Address
+        OperatingSystem = $script:RemoteTarget.OperatingSystem
+        Enabled         = $script:RemoteTarget.Enabled
+        LastLogonDate   = $script:RemoteTarget.LastLogonDate
+        DetectedKind    = $kind
+        SSH22           = $ports.SSH
+        SMB445          = $ports.SMB
+        WinRM5985       = $ports.WinRM
+        WinRMTLS5986    = $ports.WinRMTLS
+    } | Format-List
+
+    if ($kind -eq 'Windows') {
+        if (Test-RemoteWinRm -ComputerName $hostName) {
+            Write-Badge -Text 'WINRM/KERBEROS READY' -Kind Good
+        }
+        elseif ($ports.SMB) {
+            Write-Badge -Text 'RPC/SMB REACHABLE' -Kind Warn
+            Write-Console '  WinRM is not currently usable; session/power commands may still work through native RPC tools.' Yellow
+        }
+        else {
+            Write-Badge -Text 'NO WINDOWS CONTROL PATH' -Kind Bad
+        }
+    }
+    elseif ($kind -eq 'Linux') {
+        if ($ports.SSH) {
+            Write-Badge -Text 'SSH READY' -Kind Good
+        }
+        else {
+            Write-Badge -Text 'SSH CLOSED' -Kind Bad
+        }
+    }
+    else {
+        Write-Badge -Text 'OS/TRANSPORT UNKNOWN' -Kind Warn
+    }
+
+    Write-RemoteOpsAudit -Action 'readiness' -Result 'OK' `
+        -Detail ("kind={0};ssh={1};smb={2};winrm={3}/{4}" -f `
+            $kind,$ports.SSH,$ports.SMB,$ports.WinRM,$ports.WinRMTLS)
+}
+
+function Show-RemoteSessions {
+    if (-not (Assert-RemoteOpsTarget)) { return }
+    $kind = Get-RemoteOpsTargetKind
+    $hostName = Get-RemoteOpsHost
+
+    Write-Section 'Remote user sessions'
+
+    if ($kind -eq 'Windows') {
+        $output = & quser.exe "/server:$hostName" 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $output | ForEach-Object { Write-Console ([string]$_) }
+            Write-RemoteOpsAudit -Action 'sessions' -Result 'OK' -Detail 'quser'
+            return
+        }
+
+        try {
+            $output = Invoke-RemoteWindowsPs -ScriptBlock {
+                & "$env:SystemRoot\System32\quser.exe" 2>&1
+            }
+            $output | ForEach-Object { Write-Console ([string]$_) }
+            Write-RemoteOpsAudit -Action 'sessions' -Result 'OK' -Detail 'winrm'
+            return
+        }
+        catch {
+            throw ("Unable to enumerate Windows sessions: {0}" -f $_.Exception.Message)
+        }
+    }
+
+    if ($kind -eq 'Linux') {
+        Invoke-RemoteSsh `
+            -Command 'loginctl list-sessions --no-legend 2>/dev/null || who' `
+            -Interactive
+        Write-RemoteOpsAudit -Action 'sessions' -Result 'OK' -Detail 'ssh'
+        return
+    }
+
+    throw 'Unknown endpoint family.'
+}
+
+function Send-RemoteUserMessage {
+    if (-not (Assert-RemoteOpsTarget)) { return }
+    $kind = Get-RemoteOpsTargetKind
+    $hostName = Get-RemoteOpsHost
+    $message = (Read-Host 'Message to interactive users').Trim()
+    if (-not $message) { return }
+
+    if ($kind -eq 'Windows') {
+        $output = & msg.exe '*' "/server:$hostName" '/time:60' $message 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            try {
+                Invoke-RemoteWindowsPs -ScriptBlock {
+                    param($Text)
+                    & "$env:SystemRoot\System32\msg.exe" '*' '/time:60' $Text
+                } -ArgumentList @($message) | Out-Host
+            }
+            catch {
+                throw ("Windows user message failed: {0}" -f $_.Exception.Message)
+            }
+        }
+        Write-RemoteOpsAudit -Action 'message' -Result 'OK' -Detail 'windows'
+        return
+    }
+
+    if ($kind -eq 'Linux') {
+        $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($message))
+        $command = 'm=$(printf ''%s'' ''{0}'' | base64 -d); if [ "$(id -u)" -eq 0 ]; then printf ''%s\n'' "$m" | wall; else printf ''%s\n'' "$m" | sudo wall; fi' -f $b64
+        Invoke-RemoteSsh -Command $command -Interactive
+        Write-RemoteOpsAudit -Action 'message' -Result 'OK' -Detail 'linux'
+        return
+    }
+
+    throw 'Unknown endpoint family.'
+}
+
+function Invoke-RemoteSessionLogoff {
+    if (-not (Assert-RemoteOpsTarget)) { return }
+    $kind = Get-RemoteOpsTargetKind
+
+    Show-RemoteSessions
+    $sessionId = (Read-Host 'Session ID to terminate').Trim()
+    if ($sessionId -notmatch '^[A-Za-z0-9_.-]+$') {
+        Write-Console 'Invalid session ID.' Yellow
+        return
+    }
+
+    if (-not (Confirm-Action `
+        -Action ("Terminate session {0} on {1}" -f $sessionId, (Get-RemoteOpsHost)) `
+        -Reason 'Logging off a user terminates applications in that session and can lose unsaved work.' `
+        -Impact HIGH)) {
+        return
+    }
+
+    if ($kind -eq 'Windows') {
+        if ($sessionId -notmatch '^\d+$') {
+            Write-Console 'Windows logoff requires a numeric session ID.' Yellow
+            return
+        }
+
+        $output = & logoff.exe $sessionId "/server:$(Get-RemoteOpsHost)" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Invoke-RemoteWindowsPs -ScriptBlock {
+                param($Id)
+                & "$env:SystemRoot\System32\logoff.exe" $Id
+            } -ArgumentList @([int]$sessionId) | Out-Host
+        }
+
+        Write-RemoteOpsAudit -Action 'logoff' -Result 'OK' -Detail ("session={0}" -f $sessionId)
+        return
+    }
+
+    if ($kind -eq 'Linux') {
+        $command = 'if [ "$(id -u)" -eq 0 ]; then loginctl terminate-session ''{0}''; else sudo loginctl terminate-session ''{0}''; fi' -f $sessionId
+        Invoke-RemoteSsh -Command $command -Interactive
+        Write-RemoteOpsAudit -Action 'logoff' -Result 'OK' -Detail ("session={0}" -f $sessionId)
+        return
+    }
+
+    throw 'Unknown endpoint family.'
+}
+
+function Show-RemoteDiagnostics {
+    if (-not (Assert-RemoteOpsTarget)) { return }
+    $kind = Get-RemoteOpsTargetKind
+
+    Write-Section 'Remote diagnostics'
+
+    if ($kind -eq 'Windows') {
+        Invoke-RemoteWindowsPs -ScriptBlock {
+            $os = Get-CimInstance Win32_OperatingSystem
+            $cs = Get-CimInstance Win32_ComputerSystem
+            [pscustomobject]@{
+                Computer     = $env:COMPUTERNAME
+                Domain       = $cs.Domain
+                OS           = $os.Caption
+                Version      = $os.Version
+                LastBoot     = $os.LastBootUpTime
+                FreeMemoryMB = [math]::Round($os.FreePhysicalMemory / 1024, 0)
+            }
+
+            Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.IPAddress -notlike '169.254.*' } |
+                Select-Object InterfaceAlias,IPAddress,PrefixLength
+
+            Get-Service WinRM,Dnscache,Netlogon -ErrorAction SilentlyContinue |
+                Select-Object Name,Status,StartType
+        } | Format-List
+
+        Write-RemoteOpsAudit -Action 'diagnostics' -Result 'OK' -Detail 'windows-winrm'
+        return
+    }
+
+    if ($kind -eq 'Linux') {
+        Invoke-RemoteSsh -Command `
+            "printf 'HOST\n'; hostnamectl 2>/dev/null || hostname; printf '\nUPTIME\n'; uptime; printf '\nFILESYSTEM\n'; df -h -x tmpfs -x devtmpfs; printf '\nMEMORY\n'; free -h 2>/dev/null || true; printf '\nFAILED UNITS\n'; systemctl --failed --no-pager 2>/dev/null || true; printf '\nNETWORK\n'; ip -brief address 2>/dev/null || true" `
+            -Interactive
+
+        Write-RemoteOpsAudit -Action 'diagnostics' -Result 'OK' -Detail 'linux-ssh'
+        return
+    }
+
+    throw 'Unknown endpoint family.'
+}
+
+function Invoke-RemoteServiceControl {
+    if (-not (Assert-RemoteOpsTarget)) { return }
+    $kind = Get-RemoteOpsTargetKind
+    $service = (Read-Host 'Service/unit name').Trim()
+
+    if ($service -notmatch '^[A-Za-z0-9@_.:-]+$') {
+        Write-Console 'Invalid service/unit name.' Yellow
+        return
+    }
+
+    if ($kind -eq 'Windows') {
+        Invoke-RemoteWindowsPs -ScriptBlock {
+            param($Name)
+            Get-Service -Name $Name -ErrorAction Stop |
+                Select-Object Name,DisplayName,Status,StartType
+        } -ArgumentList @($service) | Format-Table -AutoSize
+
+        if (Confirm-Action `
+            -Action ("Restart remote service {0}" -f $service) `
+            -Reason 'Restart a selected service on the endpoint.' `
+            -Impact HIGH) {
+            Invoke-RemoteWindowsPs -ScriptBlock {
+                param($Name)
+                Restart-Service -Name $Name -ErrorAction Stop
+                Get-Service -Name $Name | Select-Object Name,Status
+            } -ArgumentList @($service) | Format-Table -AutoSize
+
+            Write-RemoteOpsAudit -Action 'service-restart' -Result 'OK' -Detail $service
+        }
+        return
+    }
+
+    if ($kind -eq 'Linux') {
+        Invoke-RemoteSsh `
+            -Command ("systemctl status --no-pager --full '{0}' 2>&1 || true" -f $service) `
+            -Interactive
+
+        if (Confirm-Action `
+            -Action ("Restart remote unit {0}" -f $service) `
+            -Reason 'Restart a selected systemd unit on the endpoint.' `
+            -Impact HIGH) {
+            $command = 'if [ "$(id -u)" -eq 0 ]; then systemctl restart ''{0}''; else sudo systemctl restart ''{0}''; fi; systemctl is-active ''{0}''' -f $service
+            Invoke-RemoteSsh -Command $command -Interactive
+            Write-RemoteOpsAudit -Action 'service-restart' -Result 'OK' -Detail $service
+        }
+        return
+    }
+
+    throw 'Unknown endpoint family.'
+}
+
+function Invoke-RemotePowerAction {
+    param(
+        [ValidateSet('Restart','Shutdown')]
+        [string]$Action
+    )
+
+    if (-not (Assert-RemoteOpsTarget)) { return }
+    $kind = Get-RemoteOpsTargetKind
+    $hostName = Get-RemoteOpsHost
+
+    $delayText = (Read-Host 'Delay in seconds [120]').Trim()
+    if (-not $delayText) { $delayText = '120' }
+    [int]$delay = 120
+    if (-not [int]::TryParse($delayText, [ref]$delay) -or $delay -lt 0) {
+        $delay = 120
+    }
+
+    $reason = (Read-Host 'User-visible maintenance reason [Administrative maintenance]').Trim()
+    if (-not $reason) { $reason = 'Administrative maintenance' }
+
+    if (-not (Confirm-Action `
+        -Action ("{0} {1} after {2}s" -f $Action, $hostName, $delay) `
+        -Reason 'Remote power operations terminate interactive work when the timeout expires.' `
+        -Impact HIGH)) {
+        return
+    }
+
+    if ($kind -eq 'Windows') {
+        $remote = "\\{0}" -f $hostName
+        $args = if ($Action -eq 'Restart') {
+            @('/r','/m',$remote,'/t',[string]$delay,'/c',$reason,'/d','p:0:0')
+        }
+        else {
+            @('/s','/m',$remote,'/t',[string]$delay,'/c',$reason,'/d','p:0:0')
+        }
+
+        & shutdown.exe @args
+        if ($LASTEXITCODE -ne 0) {
+            throw ("Remote shutdown command failed with exit code {0}." -f $LASTEXITCODE)
+        }
+
+        Write-RemoteOpsAudit -Action ($Action.ToLowerInvariant()) -Result 'OK' -Detail 'windows-rpc'
+        Write-Console ("{0} request submitted." -f $Action) Green
+        return
+    }
+
+    if ($kind -eq 'Linux') {
+        $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($reason))
+        $minutes = [Math]::Max(1, [Math]::Ceiling($delay / 60.0))
+        $flag = if ($Action -eq 'Restart') { '-r' } else { '-h' }
+        $command = 'm=$(printf ''%s'' ''{0}'' | base64 -d); if [ "$(id -u)" -eq 0 ]; then shutdown {1} +{2} "$m"; else sudo shutdown {1} +{2} "$m"; fi' -f `
+            $b64,$flag,[int]$minutes
+
+        Invoke-RemoteSsh -Command $command -Interactive
+        Write-RemoteOpsAudit -Action ($Action.ToLowerInvariant()) -Result 'OK' -Detail 'linux-ssh'
+        return
+    }
+
+    throw 'Unknown endpoint family.'
+}
+
+function Cancel-RemotePowerAction {
+    if (-not (Assert-RemoteOpsTarget)) { return }
+    $kind = Get-RemoteOpsTargetKind
+    $hostName = Get-RemoteOpsHost
+
+    if ($kind -eq 'Windows') {
+        & shutdown.exe '/a' '/m' ("\\{0}" -f $hostName)
+        if ($LASTEXITCODE -ne 0) {
+            throw ("Remote shutdown cancellation failed with exit code {0}." -f $LASTEXITCODE)
+        }
+        Write-RemoteOpsAudit -Action 'cancel-power' -Result 'OK' -Detail 'windows'
+        return
+    }
+
+    if ($kind -eq 'Linux') {
+        Invoke-RemoteSsh `
+            -Command 'if [ "$(id -u)" -eq 0 ]; then shutdown -c; else sudo shutdown -c; fi' `
+            -Interactive
+        Write-RemoteOpsAudit -Action 'cancel-power' -Result 'OK' -Detail 'linux'
+        return
+    }
+
+    throw 'Unknown endpoint family.'
+}
+
+function Export-RemoteOpsEvidence {
+    if (-not (Assert-RemoteOpsTarget)) { return }
+
+    $hostName = Get-RemoteOpsHost
+    $kind = Get-RemoteOpsTargetKind
+    $safe = ($hostName -replace '[^A-Za-z0-9_.-]', '_')
+    $file = Join-Path $script:RemoteOpsEvidencePath `
+        ("remote-{0}-{1}.txt" -f $safe, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('Remote Operations Evidence')
+    $lines.Add(("Generated: {0}" -f (Get-Date -Format o)))
+    $lines.Add(("Target: {0}" -f $hostName))
+    $lines.Add(("OS hint: {0}" -f $script:RemoteTarget.OperatingSystem))
+    $lines.Add(("Detected family: {0}" -f $kind))
+    $lines.Add('')
+
+    foreach ($port in @(22,445,5985,5986)) {
+        $state = Test-RemoteTcpPort -ComputerName $hostName -Port $port
+        $lines.Add(("Port {0}: {1}" -f $port, $(if ($state) { 'open' } else { 'closed/unreachable' })))
+    }
+
+    $lines.Add('')
+    $lines.Add('Diagnostics')
+
+    try {
+        if ($kind -eq 'Windows') {
+            $diag = Invoke-RemoteWindowsPs -ScriptBlock {
+                $os = Get-CimInstance Win32_OperatingSystem
+                [pscustomobject]@{
+                    Computer=$env:COMPUTERNAME
+                    OS=$os.Caption
+                    Version=$os.Version
+                    LastBoot=$os.LastBootUpTime
+                }
+                & "$env:SystemRoot\System32\quser.exe" 2>&1
+                Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                    Select-Object InterfaceAlias,IPAddress,PrefixLength
+            } | Out-String -Width 220
+
+            $lines.Add($diag)
+        }
+        elseif ($kind -eq 'Linux') {
+            $diag = Get-RemoteSshOutput -Command `
+                "hostnamectl 2>/dev/null || hostname; uptime; loginctl list-sessions --no-legend 2>/dev/null || who; df -h -x tmpfs -x devtmpfs; free -h 2>/dev/null || true; systemctl --failed --no-pager 2>/dev/null || true"
+            $lines.Add(($diag -join [Environment]::NewLine))
+        }
+    }
+    catch {
+        $lines.Add(("Diagnostics unavailable: {0}" -f $_.Exception.Message))
+    }
+
+    $lines | Set-Content -LiteralPath $file -Encoding UTF8
+    Write-RemoteOpsAudit -Action 'evidence-export' -Result 'OK' -Detail $file
+    Write-Console ("Evidence: {0}" -f $file) Green
+}
+
+function Show-RemoteOpsGuardrails {
+    Write-Section 'Remote operations security model'
+    Write-Console '  Windows -> Windows: prefer WinRM/PowerShell Remoting by hostname so domain Kerberos can be used.' Cyan
+    Write-Console '  Windows -> Linux  : Microsoft OpenSSH Client + endpoint sshd + delegated sudo policy.' Cyan
+    Write-Console ''
+    Write-Console '  No password is persisted by this panel.' Green
+    Write-Console '  Destructive session/service/power operations require HIGH-impact confirmation.' Green
+    Write-Console '  Arbitrary remote script/shell deployment is intentionally not exposed.' Green
+    Write-Console '  Remote actions are appended to remote-ops\operations.tsv.' Green
+    Write-Console ''
+    Write-Console '  Delegation recommendation:' Magenta
+    Write-Console '    Windows: JEA endpoints / constrained role capabilities instead of broad local-admin rights.'
+    Write-Console '    Linux  : restricted sudoers rules for approved commands instead of unrestricted sudo.'
+    Write-Console '    Network: scope WinRM/SSH firewall access to trusted management networks.'
+}
+
+function Show-RemoteOpsMenu {
+    Assert-DomainController
+
+    while ($true) {
+        if ($script:MainMenuRequested) { return }
+
+        $targetText = if ($script:RemoteTarget) {
+            '{0} · {1}' -f (Get-RemoteOpsHost), $script:RemoteTarget.OperatingSystem
+        }
+        else {
+            'none selected'
+        }
+
+        Write-MenuHeader 'REMOTE OPERATIONS CENTER' ("Target: {0}" -f $targetText)
+        Write-WorkspaceRow 'T' 'Target / readiness' Cyan 'S' 'Active sessions' DarkCyan
+        Write-WorkspaceRow 'M' 'Message users' Green 'L' 'Log off session' Yellow
+        Write-WorkspaceRow 'D' 'Diagnostics' Cyan 'V' 'Service control' Magenta
+        Write-WorkspaceRow 'R' 'Restart endpoint' Yellow 'X' 'Shut down endpoint' Red
+        Write-WorkspaceRow 'C' 'Cancel shutdown' Green 'E' 'Export evidence' Cyan
+        Write-WorkspaceRow 'K' 'Alternate credential' Magenta 'J' 'Guardrails / JEA' DarkCyan
+        Write-MenuNavigation
+        Write-Rule
+
+        try {
+            switch ((Read-MenuChoice -Prompt 'Remote operation' -Default 'T').ToUpperInvariant()) {
+                'T' {
+                    if (Select-RemoteOpsTarget) { Show-RemoteOpsReadiness }
+                    Pause-ControlPlane
+                }
+                'S' { Show-RemoteSessions; Pause-ControlPlane }
+                'M' { Send-RemoteUserMessage; Pause-ControlPlane }
+                'L' { Invoke-RemoteSessionLogoff; Pause-ControlPlane }
+                'D' { Show-RemoteDiagnostics; Pause-ControlPlane }
+                'V' { Invoke-RemoteServiceControl; Pause-ControlPlane }
+                'R' { Invoke-RemotePowerAction -Action Restart; Pause-ControlPlane }
+                'X' { Invoke-RemotePowerAction -Action Shutdown; Pause-ControlPlane }
+                'C' { Cancel-RemotePowerAction; Pause-ControlPlane }
+                'E' { Export-RemoteOpsEvidence; Pause-ControlPlane }
+                'K' {
+                    Write-Console ''
+                    Write-Console '  [1] Set/replace alternate Windows credential'
+                    Write-Console '  [2] Clear alternate credential'
+                    Write-Console '  [0] Cancel'
+                    $sub = (Read-Host 'Credential operation [1]').Trim()
+                    if (-not $sub) { $sub = '1' }
+                    if ($sub -eq '1') { Set-RemoteOpsCredential }
+                    elseif ($sub -eq '2') { Clear-RemoteOpsCredential }
+                    Pause-ControlPlane
+                }
+                'J' { Show-RemoteOpsGuardrails; Pause-ControlPlane }
+                'H' { $script:MainMenuRequested = $true; return }
+                '0' { return }
+                default { Write-Console 'Invalid remote operation.' Yellow; Pause-ControlPlane }
+            }
+        }
+        catch {
+            $message = $_.Exception.Message
+            Write-Console ("Remote operation failed: {0}" -f $message) Red
+            Write-RemoteOpsAudit -Action 'operation' -Result 'FAIL' -Detail $message
+            Write-Log ("Recoverable remote operation error: {0}" -f $message) ERROR
+            Pause-ControlPlane
+        }
+    }
+}
+
+# ===========================================================================
+# Compact workspace navigation
+# ===========================================================================
+
+function Show-DirectoryWorkspace {
+    while ($true) {
+        if ($script:MainMenuRequested) { return }
+        Write-MenuHeader 'DIRECTORY WORKSPACE' 'Identity and machine lifecycle'
+        Write-WorkspaceRow 'U' 'Users' Cyan 'G' 'Groups / access' Green
+        Write-WorkspaceRow 'C' 'Computers / OUs' DarkCyan 'R' 'Remote operations' Magenta
+        Write-MenuNavigation
+        Write-Rule
+
+        switch ((Read-MenuChoice -Default 'U').ToUpperInvariant()) {
+            'U' { Show-UserMenu }
+            'G' { Show-GroupMenu }
+            'C' { Show-ComputerOuMenu }
+            'R' { Show-RemoteOpsMenu }
+            'H' { $script:MainMenuRequested = $true; return }
+            '0' { return }
+            default { Write-Console 'Invalid directory workspace.' Yellow; Pause-ControlPlane }
+        }
+    }
+}
+
+function Show-PolicyWorkspace {
+    while ($true) {
+        if ($script:MainMenuRequested) { return }
+        Write-MenuHeader 'POLICY & NAME SERVICES' 'Group Policy and AD-integrated DNS'
+        Write-WorkspaceRow 'P' 'Group Policy' Magenta 'N' 'AD DNS' Cyan
+        Write-WorkspaceRow 'M' 'Domain migration' Yellow 'R' 'Remote operations' DarkCyan
+        Write-MenuNavigation
+        Write-Rule
+
+        switch ((Read-MenuChoice -Default 'P').ToUpperInvariant()) {
+            'P' { Show-GpoMenu }
+            'N' { Show-DnsMenu }
+            'M' { Show-DomainMigrationMenu }
+            'R' { Show-RemoteOpsMenu }
+            'H' { $script:MainMenuRequested = $true; return }
+            '0' { return }
+            default { Write-Console 'Invalid policy workspace.' Yellow; Pause-ControlPlane }
+        }
+    }
+}
+
+function Show-SecurityWorkspace {
+    while ($true) {
+        if ($script:MainMenuRequested) { return }
+        Write-MenuHeader 'SECURITY WORKSPACE' 'Host, protocol and network detection'
+        Write-WorkspaceRow 'S' 'Host hardening' Red 'P' 'Directory protocols' Magenta
+        Write-WorkspaceRow 'I' 'Suricata IDS' DarkCyan 'R' 'Remote guardrails' Yellow
+        Write-MenuNavigation
+        Write-Rule
+
+        switch ((Read-MenuChoice -Default 'S').ToUpperInvariant()) {
+            'S' { Show-SecurityMenu }
+            'P' { Show-DirectorySecurityMenu }
+            'I' { Show-WindowsIdsMenu }
+            'R' { Show-RemoteOpsGuardrails; Pause-ControlPlane }
+            'H' { $script:MainMenuRequested = $true; return }
+            '0' { return }
+            default { Write-Console 'Invalid security workspace.' Yellow; Pause-ControlPlane }
+        }
+    }
+}
+
+function Show-InsightsWorkspace {
+    while ($true) {
+        if ($script:MainMenuRequested) { return }
+        Write-MenuHeader 'INSIGHTS & HEALTH' 'Health, findings and telemetry'
+        Write-WorkspaceRow 'V' 'Validate DC' Green 'A' 'Host / AD audit' Cyan
+        Write-WorkspaceRow 'F' 'Current findings' Yellow 'I' 'Suricata IDS' Magenta
+        Write-MenuNavigation
+        Write-Rule
+
+        switch ((Read-MenuChoice -Default 'V').ToUpperInvariant()) {
+            'V' { Invoke-DcValidation; Pause-ControlPlane }
+            'A' {
+                $script:Results.Clear()
+                Invoke-HostAudit
+                if ($script:IsDomainController) { Invoke-DcValidation }
+                Pause-ControlPlane
+            }
+            'F' {
+                $script:Results |
+                    Select-Object Category,Control,Status,Current |
+                    Format-Table -AutoSize
+                Pause-ControlPlane
+            }
+            'I' { Show-WindowsIdsMenu }
+            'H' { $script:MainMenuRequested = $true; return }
+            '0' { return }
+            default { Write-Console 'Invalid insights workspace.' Yellow; Pause-ControlPlane }
+        }
+    }
+}
+
+function Show-MaintenanceWorkspace {
+    while ($true) {
+        if ($script:MainMenuRequested) { return }
+        Write-MenuHeader 'MAINTENANCE & LIFECYCLE' 'Recovery, servicing and domain lifecycle'
+        Write-WorkspaceRow 'B' 'Backup / recovery' Green 'D' 'Dependencies' Cyan
+        Write-WorkspaceRow 'M' 'Migration' Yellow 'X' 'Decommission / reset' Red
+        Write-WorkspaceRow 'P' 'Provision forest' Magenta 'A' 'All modules' Gray
+        Write-MenuNavigation
+        Write-Rule
+
+        switch ((Read-MenuChoice -Default 'B').ToUpperInvariant()) {
+            'B' { Show-RecoveryMenu }
+            'D' { Show-DependencyMenu }
+            'M' { Show-DomainMigrationMenu }
+            'X' { Show-DomainResetMenu }
+            'P' { Invoke-NewForestProvisioning; Pause-ControlPlane }
+            'A' { Show-AllModulesMenu }
+            'H' { $script:MainMenuRequested = $true; return }
+            '0' { return }
+            default { Write-Console 'Invalid maintenance workspace.' Yellow; Pause-ControlPlane }
+        }
+    }
+}
+
 # ===========================================================================
 # Interactive menus
 # ===========================================================================
@@ -6677,6 +7605,7 @@ function Show-ComputerOuMenu {
         Write-MenuItem '7' 'Create OU' 'Create protected OU' Good
         Write-MenuItem '8' 'Move AD object' 'Move user/group/computer between OUs' Warn
         Write-MenuItem '9' 'Delete OU' 'Unprotect and delete empty OU' Danger
+        Write-MenuItem 'R' 'Remote operations' 'Endpoint sessions, diagnostics and controlled actions' Good
         Write-MenuNavigation
         Write-Rule
 
@@ -6690,6 +7619,7 @@ function Show-ComputerOuMenu {
             '7' { New-AdOrganizationalUnitInteractive; Pause-ControlPlane }
             '8' { Move-AdObjectInteractive; Pause-ControlPlane }
             '9' { Remove-AdOrganizationalUnitInteractive; Pause-ControlPlane }
+            'R' { Show-RemoteOpsMenu }
             'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
@@ -6856,56 +7786,61 @@ function Show-AdOperationsMenu {
 
     while ($true) {
         if ($script:MainMenuRequested) { return }
-        Write-MenuHeader 'ACTIVE DIRECTORY OPERATIONS' 'Daily directory administration without leaving PowerShell'
-        Write-MenuItem '1' 'Users' 'Identity lifecycle, credentials and account state'
-        Write-MenuItem '2' 'Groups & access' 'Memberships and privileged groups'
-        Write-MenuItem '3' 'Computers & OUs' 'Machine accounts and organizational structure'
-        Write-MenuItem '4' 'Group Policy' 'Create, edit, link, back up and delete GPOs'
-        Write-MenuItem '5' 'AD DNS' 'Zones and resource records'
-        Write-MenuItem '6' 'DC health' 'DCDiag, replication, DNS, SYSVOL and FSMO'
-        Write-MenuItem '7' 'Backup & recovery' 'Change-set, GPO and system-state backup'
-        Write-MenuItem '8' 'Host security' 'Role-aware server hardening'
-        Write-MenuItem '9' 'Domain migration' 'Assessment, inventory, trusts and migration packages' Warn
-        Write-MenuItem '10' 'Directory protocol security' 'Kerberos/LDAP/SMB security posture for the Domain Controller' Good
-        Write-MenuItem '11' 'Dependencies' 'Repair missing official RSAT/GPMC/DNS/backup features'
-        Write-MenuItem '12' 'Domain decommission / reset' 'Supported demotion and host cleanup' Danger
-        Write-MenuItem '13' 'Network IDS / Suricata' 'Read-only EVE analytics and GUI dashboard' Good
+
+        Write-MenuHeader 'DAILY OPERATIONS' 'Stable letter shortcuts for routine administration'
+        Write-WorkspaceRow 'U' 'Users' Cyan 'G' 'Groups / access' Green
+        Write-WorkspaceRow 'C' 'Computers / OUs' DarkCyan 'P' 'Group Policy' Magenta
+        Write-WorkspaceRow 'N' 'AD DNS' Cyan 'R' 'Remote operations' Magenta
+        Write-WorkspaceRow 'V' 'Validate controller' Green 'B' 'Backup / recovery' Green
+        Write-WorkspaceRow 'S' 'Security' Red 'M' 'Migration' Yellow
         Write-MenuNavigation
         Write-Rule
 
         try {
-        switch (Read-MenuChoice -Prompt 'Select module' -Default '1') {
-            '1' { Show-UserMenu }
-            '2' { Show-GroupMenu }
-            '3' { Show-ComputerOuMenu }
-            '4' { Show-GpoMenu }
-            '5' { Show-DnsMenu }
-            '6' { Show-DcHealthMenu }
-            '7' { Show-RecoveryMenu }
-            '8' { Show-SecurityMenu }
-            '9' { Show-DomainMigrationMenu }
-            '10' { Show-DirectorySecurityMenu }
-            '11' { Show-DependencyMenu }
-            '12' { Show-DomainResetMenu }
-            '13' { Show-WindowsIdsMenu }
-            'H' { $script:MainMenuRequested = $true; return }
-            '0' { return }
-            default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
-        }
+            switch ((Read-MenuChoice -Prompt 'Operation' -Default 'U').ToUpperInvariant()) {
+                'U' { Show-UserMenu }
+                'G' { Show-GroupMenu }
+                'C' { Show-ComputerOuMenu }
+                'P' { Show-GpoMenu }
+                'N' { Show-DnsMenu }
+                'R' { Show-RemoteOpsMenu }
+                'V' { Invoke-DcValidation; Pause-ControlPlane }
+                'B' { Show-RecoveryMenu }
+                'S' { Show-SecurityMenu }
+                'M' { Show-DomainMigrationMenu }
+
+                '1' { Show-UserMenu }
+                '2' { Show-GroupMenu }
+                '3' { Show-ComputerOuMenu }
+                '4' { Show-GpoMenu }
+                '5' { Show-DnsMenu }
+                '6' { Show-DcHealthMenu }
+                '7' { Show-RecoveryMenu }
+                '8' { Show-SecurityMenu }
+                '9' { Show-DomainMigrationMenu }
+                '10' { Show-DirectorySecurityMenu }
+                '11' { Show-DependencyMenu }
+                '12' { Show-DomainResetMenu }
+                '13' { Show-WindowsIdsMenu }
+
+                'H' { $script:MainMenuRequested = $true; return }
+                '0' { return }
+                default { Write-Console 'Invalid daily operation.' Yellow; Pause-ControlPlane }
+            }
         }
         catch {
             $message = $_.Exception.Message
-            Write-Console ('Show-AdOperationsMenu: operation failed: {0}' -f $message) Red
-            Write-Log ('Recoverable menu error in Show-AdOperationsMenu: {0}' -f $message) ERROR
+            Write-Console ("Daily operation failed: {0}" -f $message) Red
+            Write-Log ("Recoverable menu error in Show-AdOperationsMenu: {0}" -f $message) ERROR
             Pause-ControlPlane
         }
     }
 }
 
-function Show-MainMenu {
+function Show-AllModulesMenu {
     while ($true) {
-        $script:MainMenuRequested = $false
-        Write-MenuHeader 'WINDOWS SERVER CONTROL PLANE' 'Audit, harden, administer Active Directory and maintain recovery readiness'
+        if ($script:MainMenuRequested) { return }
+        Write-MenuHeader 'ALL MODULES / CLASSIC MAP' 'Complete numbered map; compact workspaces remain the default'
 
         Write-MenuItem '1' 'Host security audit' 'Read-only server security inventory'
         Write-MenuItem '2' 'Interactive hardening' 'Apply selected host security changes' Good
@@ -6930,7 +7865,11 @@ function Show-MainMenu {
         Write-MenuItem '10' 'Dependencies & servicing' 'Official Windows features, modules and servicing status'
         Write-MenuItem '11' 'Domain decommission / reset' 'Supported DC demotion and post-reboot cleanup' Danger
         Write-MenuItem '12' 'Network IDS / Suricata' 'Optional EVE analytics and native Windows IDS dashboard' Good
-        Write-MenuItem '0' 'Exit' 'Close control plane' Danger
+        if ($script:IsDomainController) {
+            Write-MenuItem '13' 'Remote operations' 'Endpoint sessions, diagnostics, messaging and controlled power actions' Good
+        }
+        Write-MenuItem '0' 'Back' 'Return to compact workspace navigation' Danger
+        Write-MenuItem 'H' 'Main menu' 'Jump directly to compact workspace navigation' Warn
         Write-Rule
 
         try {
@@ -6979,14 +7918,76 @@ function Show-MainMenu {
             '10' { Show-DependencyMenu }
             '11' { Show-DomainResetMenu }
             '12' { Show-WindowsIdsMenu }
+            '13' {
+                if ($script:IsDomainController) { Show-RemoteOpsMenu }
+                else { Write-Console 'Remote domain operations require a Domain Controller.' Yellow; Pause-ControlPlane }
+            }
+            'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
         }
         }
         catch {
             $message = $_.Exception.Message
-            Write-Console ('Show-MainMenu: operation failed: {0}' -f $message) Red
-            Write-Log ('Recoverable menu error in Show-MainMenu: {0}' -f $message) ERROR
+            Write-Console ('Show-AllModulesMenu: operation failed: {0}' -f $message) Red
+            Write-Log ('Recoverable menu error in Show-AllModulesMenu: {0}' -f $message) ERROR
+            Pause-ControlPlane
+        }
+    }
+}
+
+function Show-MainMenu {
+    while ($true) {
+        $script:MainMenuRequested = $false
+
+        Write-MenuHeader 'AD/DC CONTROL PLANE' 'Workspace navigation · stable letters for daily muscle memory'
+        Write-WorkspaceRow 'O' 'Daily operations' Green 'D' 'Directory' Cyan
+        Write-WorkspaceRow 'P' 'Policy / DNS' Magenta 'S' 'Security' Red
+        Write-WorkspaceRow 'R' 'Remote operations' DarkCyan 'I' 'Insights / IDS' Yellow
+        Write-WorkspaceRow 'M' 'Maintenance' Cyan 'A' 'All modules' Gray
+        Write-MenuItem '0' 'Exit' 'Close control plane' Danger
+        Write-Rule
+
+        try {
+            switch ((Read-MenuChoice -Prompt 'Workspace' -Default 'O').ToUpperInvariant()) {
+                'O' {
+                    if ($script:IsDomainController) { Show-AdOperationsMenu }
+                    else { Write-Console 'Daily AD operations require a Domain Controller.' Yellow; Pause-ControlPlane }
+                }
+                'D' {
+                    if ($script:IsDomainController) { Show-DirectoryWorkspace }
+                    else { Write-Console 'Directory workspace requires a Domain Controller.' Yellow; Pause-ControlPlane }
+                }
+                'P' {
+                    if ($script:IsDomainController) { Show-PolicyWorkspace }
+                    else { Write-Console 'Policy workspace requires a Domain Controller.' Yellow; Pause-ControlPlane }
+                }
+                'S' {
+                    if ($script:IsDomainController) { Show-SecurityWorkspace }
+                    else { Invoke-Hardening; Pause-ControlPlane }
+                }
+                'R' {
+                    if ($script:IsDomainController) { Show-RemoteOpsMenu }
+                    else { Write-Console 'Remote domain operations require a Domain Controller.' Yellow; Pause-ControlPlane }
+                }
+                'I' {
+                    if ($script:IsDomainController) { Show-InsightsWorkspace }
+                    else {
+                        $script:Results.Clear()
+                        Invoke-HostAudit
+                        Pause-ControlPlane
+                    }
+                }
+                'M' { Show-MaintenanceWorkspace }
+                'A' { Show-AllModulesMenu }
+                '0' { return }
+                default { Write-Console 'Invalid workspace.' Yellow; Pause-ControlPlane }
+            }
+        }
+        catch {
+            $message = $_.Exception.Message
+            Write-Console ("Workspace operation failed: {0}" -f $message) Red
+            Write-Log ("Recoverable menu error in Show-MainMenu: {0}" -f $message) ERROR
             Pause-ControlPlane
         }
     }
@@ -7145,6 +8146,15 @@ try {
 
         'IDS' {
             Show-WindowsIdsMenu
+        }
+
+        'RemoteOps' {
+            if ($script:IsDomainController) {
+                Show-RemoteOpsMenu
+            }
+            else {
+                throw 'RemoteOps mode requires a Domain Controller.'
+            }
         }
 
         'IDSReport' {

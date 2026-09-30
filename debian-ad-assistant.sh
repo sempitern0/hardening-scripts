@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 5.0.6-reviewed
+# Version 5.1.0-remote-ops-ui
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -33,6 +33,7 @@
 #   --permissions    memberships + DS ACL menu
 #   --gpo            GPO menu
 #   --security       host/DC security menu
+#   --remote         remote endpoint operations center
 #   --install-cli    install adctl/ad-users/... terminal commands
 
 set -Eeuo pipefail
@@ -43,7 +44,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.0.6-reviewed"
+SCRIPT_VERSION="5.1.0-remote-ops-ui"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -71,6 +72,10 @@ IDS_DAILY_TIMER="/etc/systemd/system/debian-ad-ids-daily.timer"
 
 SAMBA_HEALTH_HELPER="/usr/local/libexec/debian-ad-samba-health"
 SAMBA_HEALTH_SERVICE="/etc/systemd/system/debian-ad-samba-health.service"
+
+REMOTE_OPS_DIR="${STATE_DIR}/remote-ops"
+REMOTE_OPS_EVIDENCE_DIR="${REMOTE_OPS_DIR}/evidence"
+REMOTE_OPS_LOG="${REMOTE_OPS_DIR}/operations.tsv"
 
 RUN_ROOT=""
 LOG_FILE=""
@@ -135,6 +140,12 @@ MENU_MAIN_REQUESTED=0
 RESET_COMPLETED=0
 RESET_RECOVERY_DIR=""
 RESET_RECOVERY_ROOT="/var/backups/debian-ad-assistant"
+
+REMOTE_TARGET_ACCOUNT=""
+REMOTE_TARGET_DNS=""
+REMOTE_TARGET_IP=""
+REMOTE_TARGET_OS=""
+REMOTE_SSH_USER=""
 
 KRB5_CACHE=""
 # Preserve the caller's cache hint for read-only diagnostics. The assistant still
@@ -215,7 +226,7 @@ ui_firewall_badge() {
 }
 
 ui_context_panel() {
-    local host domain dc ip iface admin session
+    local host domain dc ip iface admin session listeners leap
     host="$(hostname -s 2>/dev/null || hostname)"
     domain="${DOMAIN:-unconfigured}"
     dc="${DC_FQDN:-$host}"
@@ -225,15 +236,46 @@ ui_context_panel() {
     session="local"
     [[ $REMOTE_SESSION -eq 1 ]] && session="SSH ${SSH_CLIENT_IP:-unknown}"
 
-    printf '  %-13s %b%-31s%b %-13s %s\n' \
-        "Domain" "$C_WHITE" "$domain" "$C_RESET" "Role" "${SAMBA_ROLE:-unknown}"
-    printf '  %-13s %-31s %-13s %s\n' \
-        "Controller" "$dc" "Address" "$ip / $iface"
-    printf '  %-13s %-31s %-13s %s\n' \
-        "Admin" "$admin" "Session" "$session"
-    printf '  %-13s %s / %s    %-13s %s\n' \
-        "Samba" "$(ui_service_badge samba-ad-dc)" "$(ui_enabled_badge samba-ad-dc)" \
-        "Firewall" "$(ui_firewall_badge)"
+    printf '  %b%-24s%b  %-28s  %s\n' \
+        "$C_WHITE" "$domain" "$C_RESET" "$dc" "$ip / $iface"
+    printf '  %-11s %-26s %-11s %s\n' \
+        "Operator" "$admin" "Session" "$session"
+
+    if [[ "$SAMBA_ROLE" == "ad-dc" || "$SAMBA_ROLE" == "ad-dc-config" ]]; then
+        listeners="$(samba_listener_snapshot 2>/dev/null || true)"
+        printf '  '
+        if systemctl is-active --quiet samba-ad-dc 2>/dev/null; then
+            printf '%bAD:ONLINE%b  ' "$C_GREEN" "$C_RESET"
+        else
+            printf '%bAD:DEGRADED%b  ' "$C_RED" "$C_RESET"
+        fi
+        printf '%s  %s  %s  %s  %s  ' \
+            "$(ui_listener_badge DNS 53 "$listeners")" \
+            "$(ui_listener_badge KRB 88 "$listeners")" \
+            "$(ui_listener_badge LDAP 389 "$listeners")" \
+            "$(ui_listener_badge SMB 445 "$listeners")" \
+            "$(ui_listener_badge KPWD 464 "$listeners")"
+
+        leap="$(chrony_tracking_leap_status 2>/dev/null || true)"
+        if [[ "${leap,,}" == "normal" ]]; then
+            printf '%bTIME:OK%b  ' "$C_GREEN" "$C_RESET"
+        elif systemctl is-active --quiet "$(chrony_service_unit 2>/dev/null || printf chrony.service)" 2>/dev/null; then
+            printf '%bTIME:CHECK%b  ' "$C_YELLOW" "$C_RESET"
+        else
+            printf '%bTIME:OFF%b  ' "$C_RED" "$C_RESET"
+        fi
+
+        if systemctl is-active --quiet suricata.service 2>/dev/null; then
+            printf '%bIDS:ON%b' "$C_GREEN" "$C_RESET"
+        else
+            printf '%bIDS:OFF%b' "$C_DIM" "$C_RESET"
+        fi
+        printf '\n'
+    else
+        printf '  %-11s %s    %-11s %s\n' \
+            "Samba" "$(ui_service_badge samba-ad-dc)" \
+            "Firewall" "$(ui_firewall_badge)"
+    fi
 }
 
 ui_menu_screen() {
@@ -246,6 +288,30 @@ ui_menu_screen() {
     printf '%b%b%s%b\n' "$C_BOLD" "$C_WHITE" "$title" "$C_RESET"
     [[ -n "$subtitle" ]] && printf '%b%s%b\n' "$C_DIM" "$subtitle" "$C_RESET"
     printf '\n'
+}
+
+
+ui_workspace_pair() {
+    local k1="$1" t1="$2" c1="${3:-$C_CYAN}"
+    local k2="${4:-}" t2="${5:-}" c2="${6:-$C_CYAN}"
+
+    printf '  %b[%s]%b %b%-27s%b' \
+        "$c1" "$k1" "$C_RESET" "$C_BOLD" "$t1" "$C_RESET"
+
+    if [[ -n "$k2" ]]; then
+        printf '  %b[%s]%b %b%-27s%b' \
+            "$c2" "$k2" "$C_RESET" "$C_BOLD" "$t2" "$C_RESET"
+    fi
+    printf '\n'
+}
+
+ui_listener_badge() {
+    local label="$1" port="$2" listeners="${3:-}"
+    if grep -Eq ":${port}([[:space:]]|$)" <<<"$listeners"; then
+        printf '%b%s:OK%b' "$C_GREEN" "$label" "$C_RESET"
+    else
+        printf '%b%s:DOWN%b' "$C_RED" "$label" "$C_RESET"
+    fi
 }
 
 ui_menu_item() {
@@ -418,6 +484,7 @@ Usage:
   sudo bash $0 --reset-domain
   sudo bash $0 --dependencies
   sudo bash $0 --ids
+  sudo bash $0 --remote
   sudo bash $0 --install-cli
   sudo bash $0 --cli-info
   sudo bash $0 --no-color
@@ -425,7 +492,7 @@ Usage:
 
 Convenience commands installed by --install-cli:
   adctl, ad-users, ad-groups, ad-computers, ad-permissions,
-  ad-gpo, ad-security, ad-samba, ad-kerberos, ad-migrate, ad-reset, ad-deps, ad-ids,
+  ad-gpo, ad-security, ad-samba, ad-kerberos, ad-migrate, ad-reset, ad-deps, ad-ids, ad-remote,
   ad-audit, ad-validate, ad-status, ad-backup, ad-tools
 
 Safety:
@@ -453,6 +520,7 @@ detect_invocation_alias() {
         ad-reset) MODE="reset-domain" ;;
         ad-deps) MODE="dependencies" ;;
         ad-ids) MODE="ids" ;;
+        ad-remote) MODE="remote" ;;
         ad-audit) MODE="audit" ;;
         ad-validate) MODE="validate" ;;
         ad-backup) MODE="backup" ;;
@@ -483,6 +551,7 @@ parse_args() {
             --reset-domain|--factory-reset|--decommission) MODE="reset-domain" ;;
             --dependencies|--deps) MODE="dependencies" ;;
             --ids|--suricata|--network-ids) MODE="ids" ;;
+            --remote|--remote-ops|--remote-control) MODE="remote" ;;
             --ids-daily) MODE="ids-daily" ;;
             --install-cli) MODE="install-cli" ;;
             --cli-info|--tools) MODE="cli-info" ;;
@@ -528,7 +597,7 @@ ensure_privileges() {
 
 need_tty() {
     case "$MODE" in
-        bootstrap|manage|interactive|backup|admin|users|groups|computers|permissions|gpo|security|migration|reset-domain|dependencies|ids|install-cli)
+        bootstrap|manage|interactive|backup|admin|users|groups|computers|permissions|gpo|security|migration|reset-domain|dependencies|ids|remote|install-cli)
             [[ -r /dev/tty ]] || die "Mode '$MODE' requires a controlling TTY."
             INPUT_FD="/dev/tty"
             ;;
@@ -544,8 +613,8 @@ init_runtime() {
     BACKUP_DIR="${RUN_ROOT}/backup"
     DOMAIN_BACKUP_DIR="${RUN_ROOT}/domain-backup"
 
-    mkdir -p "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR" "$MIGRATION_DIR"
-    chmod 700 "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_BUILTIN_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR" "$MIGRATION_DIR"
+    mkdir -p "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR" "$MIGRATION_DIR" "$REMOTE_OPS_DIR" "$REMOTE_OPS_EVIDENCE_DIR"
+    chmod 700 "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_BUILTIN_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR" "$MIGRATION_DIR" "$REMOTE_OPS_DIR" "$REMOTE_OPS_EVIDENCE_DIR"
     touch "$LOG_FILE" "$REPORT_FILE"
     chmod 600 "$LOG_FILE" "$REPORT_FILE"
 
@@ -7023,6 +7092,7 @@ computer_admin_menu() {
         ui_menu_item "3" "Inspect computer" "Select a listed computer and show its attributes"
         ui_menu_item "4" "Edit computer" "Select a computer then open object editor when supported"
         ui_menu_item "5" "Delete stale account" "Select and remove an obsolete computer object" "$C_RED"
+        ui_menu_item "R" "Remote operations" "Open the endpoint control center for a domain computer" "$C_BLUE"
         ui_menu_exit
         ui_rule
         local choice computer
@@ -7046,6 +7116,7 @@ computer_admin_menu() {
                 confirm_high_risk "Delete computer account '$computer'" && samba-tool computer delete "$computer"
                 ui_pause
                 ;;
+            R|r) remote_ops_menu ;;
             H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
@@ -9162,6 +9233,7 @@ ad-migrate|Domain migration|Assess domain changes, inventory scope and generate 
 ad-reset|Domain reset|Destructive local Samba AD/DC decommission/reset with external recovery bundle.
 ad-deps|Dependencies|Audit/install/update the minimal official distribution package set used by the control plane.
 ad-ids|Network IDS|Optional passive Suricata IDS, AD protocol telemetry, daily summaries and evidence export.
+ad-remote|Remote operations|Select domain computers, inspect sessions, message users, collect diagnostics and perform controlled restarts/logoffs.
 ad-audit|Audit|Run a read-only inventory and security evidence review.
 ad-validate|Validation|Run functional Samba AD/DC DNS, Kerberos, LDAP, SMB, DB and SYSVOL checks.
 ad-status|Status|Show a compact current-state and AD/DC health report.
@@ -9237,6 +9309,7 @@ show_cli_commands() {
     printf '    sudo ad-samba     %b# Samba/Kerberos security center%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-kerberos  %b# Kerberos security center%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-ids       %b# passive Suricata IDS / daily security summary%b\n' "$C_DIM" "$C_RESET"
+    printf '    sudo ad-remote    %b# remote endpoint operations center%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-validate  %b# full functional validation%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-tools     %b# show this catalog again%b\n' "$C_DIM" "$C_RESET"
     ui_rule
@@ -9307,37 +9380,31 @@ security_hardening_menu() {
 
 domain_admin_console() {
     while true; do
-        MENU_MAIN_REQUESTED=0
-        ui_menu_screen "AD/DC DAILY OPERATIONS" "Focused users, groups, computers, permissions, GPOs and routine administration"
-        ui_menu_item "1" "Users" "Create, edit, enable, disable and reset domain identities"
-        ui_menu_item "2" "Groups" "Manage domain groups and memberships"
-        ui_menu_item "3" "Computers" "Inventory joined devices and inspect network presence"
-        ui_menu_item "4" "Access & delegation" "Memberships and advanced DS ACL operations"
-        ui_menu_item "5" "Group Policy" "Lifecycle and linking of GPOs"
-        ui_menu_item "6" "Security & resilience" "Firewall, Fail2ban, boot ordering and admin hardening"
-        ui_menu_item "7" "Install CLI commands" "Deploy/refresh adctl, ad-users, ad-gpo and related shortcuts"
-        ui_menu_item "8" "Installed CLI commands" "Show shortcut status and what every terminal command does"
-        ui_menu_item "9" "Validate controller" "Run complete AD/DC functional health checks"
-        ui_menu_item "10" "Domain backup" "Create an online Samba domain backup"
-        ui_menu_item "11" "Domain migration" "Assessment, trusts, inventory and client migration packages" "$C_YELLOW"
+        (( MENU_MAIN_REQUESTED )) && return 0
+        ui_menu_screen "DAILY OPERATIONS" "Stable letter shortcuts for the tasks used most often"
+        ui_workspace_pair "U" "Users" "$C_CYAN" "G" "Groups" "$C_GREEN"
+        ui_workspace_pair "C" "Computers" "$C_BLUE" "A" "Access / delegation" "$C_MAGENTA"
+        ui_workspace_pair "P" "Group Policy" "$C_MAGENTA" "R" "Remote operations" "$C_BLUE"
+        ui_workspace_pair "S" "Security" "$C_RED" "V" "Validate controller" "$C_GREEN"
+        ui_workspace_pair "B" "Domain backup" "$C_GREEN" "M" "Migration" "$C_YELLOW"
         ui_menu_root_exit
         ui_rule
+
         local choice
-        choice="$(ask 'Select module' '1')"
-        case "$choice" in
-            1) user_admin_menu ;;
-            2) group_admin_menu ;;
-            3) computer_admin_menu ;;
-            4) permissions_admin_menu ;;
-            5) gpo_admin_menu ;;
-            6) security_hardening_menu ;;
-            7) install_cli_commands; ui_pause ;;
-            8) show_cli_commands; ui_pause ;;
-            9) set_progress_plan 1; validate_ad || true; ui_pause ;;
-            10) set_progress_plan 1; create_domain_backup; ui_pause ;;
-            11) domain_migration_menu ;;
-            0) break ;;
-            *) msg_warn "Invalid menu option."; ui_pause ;;
+        choice="$(ask 'Operation' 'U')"
+        case "${choice^^}" in
+            U|1) user_admin_menu ;;
+            G|2) group_admin_menu ;;
+            C|3) computer_admin_menu ;;
+            A|4) permissions_admin_menu ;;
+            P|5) gpo_admin_menu ;;
+            S|6) security_hardening_menu ;;
+            V|9) set_progress_plan 1; validate_ad || true; ui_pause ;;
+            B|10) set_progress_plan 1; create_domain_backup; ui_pause ;;
+            M|11) domain_migration_menu ;;
+            R) remote_ops_menu ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid daily operation."; ui_pause ;;
         esac
     done
 }
@@ -9514,9 +9581,724 @@ bootstrap_mode() {
     fi
 }
 
-manage_menu() {
+
+# ---------------------------------------------------------------------------
+# Remote Operations Center
+# ---------------------------------------------------------------------------
+
+remote_ops_audit() {
+    local action="$1" result_state="$2" detail="${3:-}"
+    local target="${REMOTE_TARGET_DNS:-${REMOTE_TARGET_ACCOUNT:-none}}"
+    local operator="${ADMIN_USER:-root}"
+    detail="${detail//$'\t'/ }"
+    detail="${detail//$'\n'/ }"
+
+    mkdir -p "$REMOTE_OPS_DIR"
+    touch "$REMOTE_OPS_LOG"
+    chmod 600 "$REMOTE_OPS_LOG"
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$(date -Is)" "$operator" "$target" "$action" "${result_state}:${detail}" >>"$REMOTE_OPS_LOG"
+}
+
+remote_port_open() {
+    local host="$1" port="$2"
+    [[ -n "$host" && "$port" =~ ^[0-9]+$ ]] || return 1
+    command_exists timeout || return 1
+    timeout 2 bash -c 'exec 3<>"/dev/tcp/${1}/${2}"' _ "$host" "$port" >/dev/null 2>&1
+}
+
+remote_target_context() {
+    local account="$1" output="" dns="" os="" short="" resolved="" ip=""
+    output="$(samba-tool computer show "$account" 2>/dev/null || true)"
+    short="${account%\$}"
+
+    dns="$(awk -F': ' '
+        /^dNSHostName:/ && !seen { print $2; seen=1 }
+    ' <<<"$output")"
+    os="$(awk -F': ' '
+        /^operatingSystem:/ && !seen { print $2; seen=1 }
+    ' <<<"$output")"
+
+    [[ -n "$dns" ]] || dns="${short,,}.${DOMAIN}"
+    resolved="$(getent ahostsv4 "$dns" 2>/dev/null || true)"
+    ip="$(awk 'NR==1{print $1}' <<<"$resolved")"
+
+    printf '%s\t%s\t%s\t%s\n' "$account" "$dns" "${ip:--}" "${os:-unknown}"
+}
+
+remote_select_target() {
+    local account="" row=""
+    account="$(select_domain_computer)" || return 1
+    row="$(remote_target_context "$account")"
+
+    IFS=$'\t' read -r \
+        REMOTE_TARGET_ACCOUNT \
+        REMOTE_TARGET_DNS \
+        REMOTE_TARGET_IP \
+        REMOTE_TARGET_OS <<<"$row"
+
+    [[ "$REMOTE_TARGET_IP" == "-" ]] && REMOTE_TARGET_IP=""
+    REMOTE_SSH_USER=""
+
+    msg_success "Remote target: ${REMOTE_TARGET_DNS:-$REMOTE_TARGET_ACCOUNT} (${REMOTE_TARGET_OS:-unknown})"
+    remote_ops_audit "target-select" "OK" "${REMOTE_TARGET_OS:-unknown}"
+}
+
+remote_ensure_target() {
+    [[ -n "$REMOTE_TARGET_ACCOUNT" ]] && return 0
+    remote_select_target
+}
+
+remote_target_kind() {
+    local os="${REMOTE_TARGET_OS,,}"
+    if [[ "$os" == *windows* ]]; then
+        printf 'windows'
+    elif [[ "$os" == *linux* || "$os" == *ubuntu* || "$os" == *debian* ||
+            "$os" == *red\ hat* || "$os" == *fedora* || "$os" == *rocky* ||
+            "$os" == *alma* || "$os" == *centos* ]]; then
+        printf 'linux'
+    elif remote_port_open "${REMOTE_TARGET_DNS:-$REMOTE_TARGET_IP}" 445; then
+        printf 'windows'
+    elif remote_port_open "${REMOTE_TARGET_DNS:-$REMOTE_TARGET_IP}" 22; then
+        printf 'linux'
+    else
+        printf 'unknown'
+    fi
+}
+
+remote_target_host() {
+    printf '%s' "${REMOTE_TARGET_DNS:-$REMOTE_TARGET_IP}"
+}
+
+remote_ensure_ssh_user() {
+    [[ -n "$REMOTE_SSH_USER" ]] && return 0
+    local default_user="${ADMIN_USER:-Administrator}"
+    [[ -n "${DOMAIN:-}" ]] && default_user="${default_user}@${DOMAIN}"
+    REMOTE_SSH_USER="$(ask 'Remote SSH login identity' "$default_user")"
+    [[ -n "$REMOTE_SSH_USER" ]]
+}
+
+remote_ssh_exec() {
+    local command="$1" host=""
+    host="$(remote_target_host)"
+    remote_ensure_ssh_user || return 1
+    command_exists ssh || {
+        msg_warn "OpenSSH client is not installed on this controller."
+        return 1
+    }
+
+    ssh \
+        -tt \
+        -o ConnectTimeout=6 \
+        -o ServerAliveInterval=10 \
+        -o StrictHostKeyChecking=accept-new \
+        -l "$REMOTE_SSH_USER" \
+        "$host" \
+        "$command"
+}
+
+remote_ssh_capture() {
+    local command="$1" host=""
+    host="$(remote_target_host)"
+    remote_ensure_ssh_user || return 1
+    command_exists ssh || return 1
+
+    ssh \
+        -o ConnectTimeout=6 \
+        -o ServerAliveInterval=10 \
+        -o StrictHostKeyChecking=accept-new \
+        -l "$REMOTE_SSH_USER" \
+        "$host" \
+        "$command"
+}
+
+remote_ps_encoded() {
+    local ps_script="$1"
+    command_exists iconv || return 1
+    command_exists base64 || return 1
+    printf '%s' "$ps_script" | iconv -f UTF-8 -t UTF-16LE | base64 -w0
+}
+
+remote_windows_ssh_ps() {
+    local ps_script="$1" encoded=""
+    encoded="$(remote_ps_encoded "$ps_script")" || {
+        msg_warn "iconv/base64 is required for safe PowerShell-over-SSH command encoding."
+        return 1
+    }
+    remote_ssh_exec "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
+}
+
+remote_windows_ssh_ps_capture() {
+    local ps_script="$1" encoded=""
+    encoded="$(remote_ps_encoded "$ps_script")" || return 1
+    remote_ssh_capture "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
+}
+
+remote_show_readiness() {
+    remote_ensure_target || return 1
+    local host kind port22=closed port445=closed port5985=closed port5986=closed
+    host="$(remote_target_host)"
+    kind="$(remote_target_kind)"
+
+    remote_port_open "$host" 22 && port22=open
+    remote_port_open "$host" 445 && port445=open
+    remote_port_open "$host" 5985 && port5985=open
+    remote_port_open "$host" 5986 && port5986=open
+
+    section "REMOTE ENDPOINT READINESS"
+    printf '  %-17s %s\n' "Account" "$REMOTE_TARGET_ACCOUNT"
+    printf '  %-17s %s\n' "DNS" "${REMOTE_TARGET_DNS:-unresolved}"
+    printf '  %-17s %s\n' "IP" "${REMOTE_TARGET_IP:-unresolved}"
+    printf '  %-17s %s\n' "AD OS hint" "${REMOTE_TARGET_OS:-unknown}"
+    printf '  %-17s %s\n' "Detected family" "$kind"
+    printf '\n'
+    printf '  %-17s %s\n' "SSH / 22" "$port22"
+    printf '  %-17s %s\n' "SMB-RPC / 445" "$port445"
+    printf '  %-17s %s\n' "WinRM / 5985" "$port5985"
+    printf '  %-17s %s\n' "WinRM TLS / 5986" "$port5986"
+
+    if [[ "$kind" == windows ]]; then
+        if [[ "$port22" == open ]]; then
+            result PASS "Windows control path" "OpenSSH available" "SSH remote operations"
+        elif [[ "$port445" == open && $(command -v net 2>/dev/null || true) ]]; then
+            result WARN "Windows control path" "SMB/RPC only" "restart/shutdown available; full session control needs SSH/Windows management host"
+        else
+            result WARN "Windows control path" "no usable transport" "enable WinRM on a Windows management host or OpenSSH on endpoint"
+        fi
+    elif [[ "$kind" == linux ]]; then
+        [[ "$port22" == open ]] \
+            && result PASS "Linux control path" "SSH available" "remote operations" \
+            || result WARN "Linux control path" "SSH closed" "enable sshd with delegated sudo policy"
+    else
+        result WARN "Endpoint family" "unknown" "review AD operatingSystem and transport"
+    fi
+
+    remote_ops_audit "readiness" "OK" "ssh=$port22 smb=$port445 winrm=$port5985/$port5986"
+}
+
+remote_show_sessions() {
+    remote_ensure_target || return 1
+    local kind host
+    kind="$(remote_target_kind)"
+    host="$(remote_target_host)"
+
+    section "REMOTE USER SESSIONS"
+    case "$kind" in
+        windows)
+            if remote_port_open "$host" 22; then
+                if remote_windows_ssh_ps '& quser.exe 2>&1'; then
+                    remote_ops_audit "sessions" "OK" "windows-ssh"
+                else
+                    remote_ops_audit "sessions" "FAIL" "windows-ssh"
+                    return 1
+                fi
+            else
+                msg_warn "Windows session enumeration from the Debian controller requires OpenSSH on the endpoint."
+                msg_info "Use the Windows Server control plane for native WinRM/RDS session management."
+                return 1
+            fi
+            ;;
+        linux)
+            if remote_port_open "$host" 22; then
+                remote_ssh_exec 'loginctl list-sessions --no-legend 2>/dev/null || who'
+                remote_ops_audit "sessions" "OK" "linux-ssh"
+            else
+                msg_warn "SSH is unavailable on the Linux endpoint."
+                return 1
+            fi
+            ;;
+        *)
+            msg_warn "Endpoint OS family is unknown."
+            return 1
+            ;;
+    esac
+}
+
+remote_send_message() {
+    remote_ensure_target || return 1
+    local kind host message msg64 ps
+    kind="$(remote_target_kind)"
+    host="$(remote_target_host)"
+    message="$(ask 'Message to interactive users')"
+    [[ -n "$message" ]] || return 0
+    msg64="$(printf '%s' "$message" | base64 -w0)"
+
+    case "$kind" in
+        windows)
+            remote_port_open "$host" 22 || {
+                msg_warn "Windows messaging from Debian requires OpenSSH on the endpoint."
+                return 1
+            }
+            ps="\$m=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$msg64')); & msg.exe * /time:60 \$m"
+            if remote_windows_ssh_ps "$ps"; then
+                remote_ops_audit "message" "OK" "windows"
+            else
+                remote_ops_audit "message" "FAIL" "windows"
+                return 1
+            fi
+            ;;
+        linux)
+            remote_port_open "$host" 22 || return 1
+            if remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); if [ \"\$(id -u)\" -eq 0 ]; then printf '%s\n' \"\$m\" | wall; else printf '%s\n' \"\$m\" | sudo wall; fi"; then
+                remote_ops_audit "message" "OK" "linux"
+            else
+                remote_ops_audit "message" "FAIL" "linux"
+                return 1
+            fi
+            ;;
+        *) msg_warn "Unknown endpoint family."; return 1 ;;
+    esac
+}
+
+remote_logoff_session() {
+    remote_ensure_target || return 1
+    local kind host session
+    kind="$(remote_target_kind)"
+    host="$(remote_target_host)"
+
+    remote_show_sessions || return 1
+    session="$(ask 'Session ID to terminate' '')"
+    [[ "$session" =~ ^[A-Za-z0-9_.-]+$ ]] || {
+        msg_warn "Invalid session ID."
+        return 1
+    }
+
+    confirm_high_risk "Terminate remote session '$session' on ${REMOTE_TARGET_DNS:-$REMOTE_TARGET_ACCOUNT}" || return 0
+
+    case "$kind" in
+        windows)
+            [[ "$session" =~ ^[0-9]+$ ]] || {
+                msg_warn "Windows logoff requires a numeric session ID."
+                return 1
+            }
+            if remote_windows_ssh_ps "& logoff.exe $session"; then
+                remote_ops_audit "logoff" "OK" "session=$session"
+            else
+                remote_ops_audit "logoff" "FAIL" "session=$session"
+                return 1
+            fi
+            ;;
+        linux)
+            if remote_ssh_exec "if [ \"\$(id -u)\" -eq 0 ]; then loginctl terminate-session '$session'; else sudo loginctl terminate-session '$session'; fi"; then
+                remote_ops_audit "logoff" "OK" "session=$session"
+            else
+                remote_ops_audit "logoff" "FAIL" "session=$session"
+                return 1
+            fi
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+remote_diagnostics() {
+    remote_ensure_target || return 1
+    local kind host
+    kind="$(remote_target_kind)"
+    host="$(remote_target_host)"
+    section "REMOTE DIAGNOSTICS"
+
+    case "$kind" in
+        windows)
+            remote_port_open "$host" 22 || {
+                msg_warn "Full Windows diagnostics from Debian require OpenSSH on the endpoint."
+                return 1
+            }
+            local ps_diag=""
+            ps_diag="$(cat <<'PS'
+$os = Get-CimInstance Win32_OperatingSystem
+[pscustomobject]@{
+  Computer = $env:COMPUTERNAME
+  Caption = $os.Caption
+  Version = $os.Version
+  LastBoot = $os.LastBootUpTime
+  FreeMemoryMB = [math]::Round($os.FreePhysicalMemory / 1024, 0)
+} | Format-List
+Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+  Where-Object {$_.IPAddress -notlike '169.254.*'} |
+  Select-Object InterfaceAlias,IPAddress,PrefixLength |
+  Format-Table -AutoSize
+Get-Service WinRM,Dnscache,Netlogon -ErrorAction SilentlyContinue |
+  Select-Object Name,Status,StartType |
+  Format-Table -AutoSize
+PS
+)"
+            remote_windows_ssh_ps "$ps_diag"
+            ;;
+        linux)
+            remote_port_open "$host" 22 || return 1
+            remote_ssh_exec "printf 'HOST\n'; hostnamectl 2>/dev/null || hostname; printf '\nUPTIME\n'; uptime; printf '\nFILESYSTEM\n'; df -h -x tmpfs -x devtmpfs; printf '\nMEMORY\n'; free -h 2>/dev/null || true; printf '\nFAILED UNITS\n'; systemctl --failed --no-pager 2>/dev/null || true; printf '\nNETWORK\n'; ip -brief address 2>/dev/null || true"
+            ;;
+        *) msg_warn "Unknown endpoint family."; return 1 ;;
+    esac
+
+    remote_ops_audit "diagnostics" "OK" "$kind"
+}
+
+remote_service_control() {
+    remote_ensure_target || return 1
+    local kind host service
+    kind="$(remote_target_kind)"
+    host="$(remote_target_host)"
+    service="$(ask 'Service/unit name')"
+
+    [[ "$service" =~ ^[A-Za-z0-9@_.:-]+$ ]] || {
+        msg_warn "Invalid service/unit name."
+        return 1
+    }
+
+    case "$kind" in
+        windows)
+            remote_port_open "$host" 22 || {
+                msg_warn "Windows service control from Debian requires OpenSSH on the endpoint."
+                return 1
+            }
+            remote_windows_ssh_ps "Get-Service -Name '$service' -ErrorAction Stop | Format-List Name,DisplayName,Status,StartType"
+            if confirm "Restart '$service' on the remote Windows endpoint?" N; then
+                confirm_high_risk "Restart remote Windows service '$service'" || return 0
+                remote_windows_ssh_ps "Restart-Service -Name '$service' -ErrorAction Stop; Get-Service -Name '$service' | Format-List Name,Status"
+                remote_ops_audit "service-restart" "OK" "$service"
+            fi
+            ;;
+        linux)
+            remote_port_open "$host" 22 || return 1
+            remote_ssh_exec "systemctl status --no-pager --full '$service' 2>&1 || true"
+            if confirm "Restart '$service' on the remote Linux endpoint?" N; then
+                confirm_high_risk "Restart remote Linux unit '$service'" || return 0
+                remote_ssh_exec "if [ \"\$(id -u)\" -eq 0 ]; then systemctl restart '$service'; else sudo systemctl restart '$service'; fi; systemctl is-active '$service'"
+                remote_ops_audit "service-restart" "OK" "$service"
+            fi
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+remote_windows_rpc_power() {
+    local reboot="$1" delay="$2" message="$3" host auth_help
+    host="$(remote_target_host)"
+    command_exists net || {
+        msg_warn "Samba net utility is unavailable."
+        return 1
+    }
+
+    ensure_kerberos_ticket "${ADMIN_USER:-Administrator}" || return 1
+
+    local -a auth_args=()
+    auth_help="$(net --help 2>&1 || true)"
+    if grep -Fq -- '--use-krb5-ccache' <<<"$auth_help"; then
+        auth_args+=(--use-kerberos=required "--use-krb5-ccache=$KRB5CCNAME")
+    else
+        auth_args+=(-k)
+    fi
+
+    local -a cmd=(net rpc shutdown "${auth_args[@]}" -S "$host" -t "$delay" -C "$message")
+    [[ "$reboot" == "yes" ]] && cmd+=(-r)
+
+    "${cmd[@]}"
+}
+
+remote_power_action() {
+    local action="$1"
+    remote_ensure_target || return 1
+
+    local kind host delay message msg64 ps
+    kind="$(remote_target_kind)"
+    host="$(remote_target_host)"
+    delay="$(ask 'Delay before action (seconds)' '60')"
+    [[ "$delay" =~ ^[0-9]+$ ]] || delay=60
+    message="$(ask 'User-visible maintenance reason' 'Administrative maintenance')"
+
+    confirm_high_risk "${action^} remote endpoint ${REMOTE_TARGET_DNS:-$REMOTE_TARGET_ACCOUNT} after ${delay}s" || return 0
+
+    case "$kind" in
+        windows)
+            if remote_port_open "$host" 22; then
+                msg64="$(printf '%s' "$message" | base64 -w0)"
+                if [[ "$action" == restart ]]; then
+                    ps="\$m=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$msg64')); & shutdown.exe /r /t $delay /c \$m"
+                else
+                    ps="\$m=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$msg64')); & shutdown.exe /s /t $delay /c \$m"
+                fi
+                remote_windows_ssh_ps "$ps" || {
+                    remote_ops_audit "$action" "FAIL" "windows-ssh"
+                    return 1
+                }
+            elif remote_port_open "$host" 445; then
+                local reboot_flag=no
+                [[ "$action" == restart ]] && reboot_flag=yes
+                remote_windows_rpc_power "$reboot_flag" "$delay" "$message" || {
+                    remote_ops_audit "$action" "FAIL" "windows-rpc"
+                    return 1
+                }
+            else
+                msg_warn "No usable Windows control transport."
+                return 1
+            fi
+            ;;
+        linux)
+            remote_port_open "$host" 22 || return 1
+            msg64="$(printf '%s' "$message" | base64 -w0)"
+            local minutes=$(( (delay + 59) / 60 ))
+            (( minutes < 1 )) && minutes=1
+            if [[ "$action" == restart ]]; then
+                remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); if [ \"\$(id -u)\" -eq 0 ]; then shutdown -r +$minutes \"\$m\"; else sudo shutdown -r +$minutes \"\$m\"; fi"
+            else
+                remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); if [ \"\$(id -u)\" -eq 0 ]; then shutdown -h +$minutes \"\$m\"; else sudo shutdown -h +$minutes \"\$m\"; fi"
+            fi
+            ;;
+        *) msg_warn "Unknown endpoint family."; return 1 ;;
+    esac
+
+    remote_ops_audit "$action" "OK" "$kind"
+    msg_success "${action^} request submitted."
+}
+
+remote_cancel_power_action() {
+    remote_ensure_target || return 1
+    local kind host
+    kind="$(remote_target_kind)"
+    host="$(remote_target_host)"
+
+    case "$kind" in
+        windows)
+            if remote_port_open "$host" 22; then
+                remote_windows_ssh_ps '& shutdown.exe /a'
+            elif remote_port_open "$host" 445 && command_exists net; then
+                ensure_kerberos_ticket "${ADMIN_USER:-Administrator}" || return 1
+                local help=""
+                help="$(net --help 2>&1 || true)"
+                if grep -Fq -- '--use-krb5-ccache' <<<"$help"; then
+                    net rpc abortshutdown --use-kerberos=required "--use-krb5-ccache=$KRB5CCNAME" -S "$host"
+                else
+                    net rpc abortshutdown -k -S "$host"
+                fi
+            else
+                return 1
+            fi
+            ;;
+        linux)
+            remote_port_open "$host" 22 || return 1
+            remote_ssh_exec "if [ \"\$(id -u)\" -eq 0 ]; then shutdown -c; else sudo shutdown -c; fi"
+            ;;
+        *) return 1 ;;
+    esac
+
+    remote_ops_audit "cancel-power" "OK" "$kind"
+}
+
+remote_export_evidence() {
+    remote_ensure_target || return 1
+    local host kind safe_target file
+    host="$(remote_target_host)"
+    kind="$(remote_target_kind)"
+    safe_target="$(tr -cs 'A-Za-z0-9._-' '_' <<<"${REMOTE_TARGET_DNS:-$REMOTE_TARGET_ACCOUNT}")"
+    file="${REMOTE_OPS_EVIDENCE_DIR}/remote-${safe_target}-$(date +%Y%m%d-%H%M%S).txt"
+
+    {
+        printf 'Remote Operations Evidence\n'
+        printf 'Generated: %s\n' "$(date -Is)"
+        printf 'Target: %s\n' "${REMOTE_TARGET_DNS:-$REMOTE_TARGET_ACCOUNT}"
+        printf 'IP: %s\n' "${REMOTE_TARGET_IP:-unknown}"
+        printf 'AD OS hint: %s\n' "${REMOTE_TARGET_OS:-unknown}"
+        printf 'Detected family: %s\n\n' "$kind"
+
+        printf 'PORTS\n'
+        local p
+        for p in 22 445 5985 5986; do
+            if remote_port_open "$host" "$p"; then
+                printf '  %s open\n' "$p"
+            else
+                printf '  %s closed/unreachable\n' "$p"
+            fi
+        done
+        printf '\nDIAGNOSTICS\n'
+
+        case "$kind" in
+            windows)
+                if remote_port_open "$host" 22; then
+                    local ps_evidence=""
+                    ps_evidence="$(cat <<'PS'
+$os = Get-CimInstance Win32_OperatingSystem
+[pscustomobject]@{
+  Computer=$env:COMPUTERNAME
+  Caption=$os.Caption
+  Version=$os.Version
+  LastBoot=$os.LastBootUpTime
+} | Format-List
+& quser.exe 2>&1
+Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+  Select-Object InterfaceAlias,IPAddress,PrefixLength |
+  Format-Table -AutoSize
+PS
+)"
+                    remote_windows_ssh_ps_capture "$ps_evidence" 2>&1 || true
+                else
+                    printf 'Full diagnostics unavailable: Windows SSH not enabled.\n'
+                fi
+                ;;
+            linux)
+                if remote_port_open "$host" 22; then
+                    remote_ssh_capture "hostnamectl 2>/dev/null || hostname; uptime; loginctl list-sessions --no-legend 2>/dev/null || who; df -h -x tmpfs -x devtmpfs; free -h 2>/dev/null || true; systemctl --failed --no-pager 2>/dev/null || true" 2>&1 || true
+                else
+                    printf 'Full diagnostics unavailable: SSH not enabled.\n'
+                fi
+                ;;
+        esac
+    } >"$file"
+
+    chmod 600 "$file"
+    remote_ops_audit "evidence-export" "OK" "$file"
+    msg_success "Evidence saved: $file"
+}
+
+remote_ops_guidance() {
+    section "REMOTE OPERATIONS SECURITY MODEL"
+    cat <<'EOF'
+  Preferred management paths
+
+    Windows controller -> Windows endpoint
+      WinRM / PowerShell Remoting using the endpoint hostname (Kerberos)
+
+    Debian controller -> Linux endpoint
+      OpenSSH + delegated sudo policy
+
+    Debian controller -> Windows endpoint
+      OpenSSH for full operations
+      Samba RPC is used only as a limited restart/shutdown fallback
+
+  Guardrails
+
+    - No credential is stored by this control plane.
+    - Remote actions are appended to remote-ops/operations.tsv.
+    - Destructive session/power actions require HIGH-risk confirmation.
+    - Arbitrary remote shell/script deployment is intentionally not exposed.
+    - Prefer JEA on Windows and restricted sudoers on Linux for delegated operators.
+    - Do not enable wide remote-management firewall scopes merely to make the panel work.
+EOF
+}
+
+remote_ops_menu() {
     while true; do
-        ui_menu_screen "AD/DC MAIN CONTROL PLANE" "Maintenance, daily operations, security, recovery and migration"
+        (( MENU_MAIN_REQUESTED )) && return 0
+
+        local target="none selected"
+        [[ -n "$REMOTE_TARGET_ACCOUNT" ]] &&
+            target="${REMOTE_TARGET_DNS:-$REMOTE_TARGET_ACCOUNT} · ${REMOTE_TARGET_OS:-unknown}"
+
+        ui_menu_screen "REMOTE OPERATIONS CENTER" "Target: $target"
+        ui_workspace_pair "T" "Target / readiness" "$C_CYAN" "S" "Active sessions" "$C_BLUE"
+        ui_workspace_pair "M" "Message users" "$C_GREEN" "L" "Log off session" "$C_YELLOW"
+        ui_workspace_pair "D" "Diagnostics" "$C_CYAN" "V" "Service control" "$C_MAGENTA"
+        ui_workspace_pair "R" "Restart endpoint" "$C_YELLOW" "X" "Shut down endpoint" "$C_RED"
+        ui_workspace_pair "C" "Cancel shutdown" "$C_GREEN" "E" "Export evidence" "$C_CYAN"
+        ui_workspace_pair "G" "Guardrails / setup" "$C_MAGENTA" "" "" "$C_CYAN"
+        ui_menu_exit
+        ui_rule
+
+        local choice
+        choice="$(ask 'Remote operation' 'T')"
+        case "${choice^^}" in
+            T) remote_select_target && remote_show_readiness; ui_pause ;;
+            S) remote_show_sessions || true; ui_pause ;;
+            M) remote_send_message || true; ui_pause ;;
+            L) remote_logoff_session || true; ui_pause ;;
+            D) remote_diagnostics || true; ui_pause ;;
+            V) remote_service_control || true; ui_pause ;;
+            R) remote_power_action restart || true; ui_pause ;;
+            X) remote_power_action shutdown || true; ui_pause ;;
+            C) remote_cancel_power_action || msg_warn "No scheduled power action could be cancelled."; ui_pause ;;
+            E) remote_export_evidence || true; ui_pause ;;
+            G) remote_ops_guidance; ui_pause ;;
+            H) MENU_MAIN_REQUESTED=1; return 0 ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid remote operation."; ui_pause ;;
+        esac
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Compact workspaces
+# ---------------------------------------------------------------------------
+
+directory_workspace_menu() {
+    while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
+        ui_menu_screen "DIRECTORY WORKSPACE" "Identity and computer lifecycle"
+        ui_workspace_pair "U" "Users" "$C_CYAN" "G" "Groups" "$C_GREEN"
+        ui_workspace_pair "C" "Computers" "$C_BLUE" "A" "Access / delegation" "$C_MAGENTA"
+        ui_menu_exit
+        ui_rule
+        local choice
+        choice="$(ask 'Directory module' 'U')"
+        case "${choice^^}" in
+            U|1) user_admin_menu ;;
+            G|2) group_admin_menu ;;
+            C|3) computer_admin_menu ;;
+            A|4) permissions_admin_menu ;;
+            H) MENU_MAIN_REQUESTED=1; return 0 ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid directory module."; ui_pause ;;
+        esac
+    done
+}
+
+insights_workspace_menu() {
+    while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
+        ui_menu_screen "INSIGHTS & HEALTH" "Current health, evidence and network detection"
+        ui_workspace_pair "V" "Validate AD/DC" "$C_GREEN" "A" "Security audit" "$C_CYAN"
+        ui_workspace_pair "I" "Suricata IDS" "$C_MAGENTA" "F" "Current findings" "$C_YELLOW"
+        ui_menu_exit
+        ui_rule
+        local choice
+        choice="$(ask 'Insights module' 'V')"
+        case "${choice^^}" in
+            V|1) set_progress_plan 1; validate_ad || true; ui_pause ;;
+            A|2) set_progress_plan 2; audit_existing; audit_security_baseline; ui_pause ;;
+            I|3) ids_menu ;;
+            F|4) summary; ui_pause ;;
+            H) MENU_MAIN_REQUESTED=1; return 0 ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid insights module."; ui_pause ;;
+        esac
+    done
+}
+
+maintenance_workspace_menu() {
+    while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
+        ui_menu_screen "MAINTENANCE & LIFECYCLE" "Recovery, packages, boot, DNS and domain lifecycle"
+        ui_workspace_pair "B" "Domain backup" "$C_GREEN" "T" "Time / Chrony" "$C_CYAN"
+        ui_workspace_pair "D" "Repair resolver" "$C_CYAN" "O" "Boot ordering" "$C_BLUE"
+        ui_workspace_pair "P" "Dependencies" "$C_GREEN" "M" "Migration" "$C_YELLOW"
+        ui_workspace_pair "C" "CLI commands" "$C_MAGENTA" "X" "Domain reset" "$C_RED"
+        ui_menu_exit
+        ui_rule
+        local choice
+        choice="$(ask 'Maintenance module' 'B')"
+        case "${choice^^}" in
+            B|1) set_progress_plan 1; create_domain_backup; ui_pause ;;
+            T|2)
+                set_progress_plan 1
+                configure_time || msg_warn "Chrony configuration was not applied."
+                ui_pause
+                ;;
+            D|3) set_progress_plan 1; repair_local_resolver_only; ui_pause ;;
+            O|4) configure_samba_boot_ordering; ui_pause ;;
+            P|5) dependency_menu ;;
+            M|6) domain_migration_menu ;;
+            C|7) install_cli_commands; ui_pause ;;
+            X|8) domain_reset_menu; (( RESET_COMPLETED )) && return 0 ;;
+            H) MENU_MAIN_REQUESTED=1; return 0 ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid maintenance module."; ui_pause ;;
+        esac
+    done
+}
+
+manage_all_modules_menu() {
+    while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
+        ui_menu_screen "ALL MODULES / CLASSIC MAP" "Full numbered module map; compact workspaces remain the default"
         ui_menu_item "1" "Audit current state" "Inventory OS, topology, services and security evidence"
         ui_menu_item "2" "Validate AD/DC health" "Functional DNS/Kerberos/LDAP/SMB/database checks"
         ui_menu_item "3" "Repair DNS / Kerberos" "Transactional Samba DNS, resolver and Kerberos recovery"
@@ -9537,6 +10319,7 @@ manage_menu() {
         ui_menu_item "18" "Domain decommission / reset" "Destroy local AD/DC state and remove assistant-managed configuration" "$C_RED"
         ui_menu_item "19" "Dependencies & packages" "Minimal required packages, repair missing tools and scoped updates" "$C_GREEN"
         ui_menu_item "20" "Network IDS / Suricata" "Optional passive IDS, AD protocol telemetry and daily security summaries" "$C_GREEN"
+        ui_menu_item "21" "Remote operations" "Cross-platform endpoint sessions, diagnostics and controlled power actions" "$C_BLUE"
         ui_menu_root_exit
         ui_rule
         local choice
@@ -9572,8 +10355,38 @@ manage_menu() {
             18) domain_reset_menu; (( RESET_COMPLETED )) && return 0 ;;
             19) dependency_menu ;;
             20) ids_menu ;;
+            21) remote_ops_menu ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
+        esac
+    done
+}
+
+
+manage_menu() {
+    while true; do
+        MENU_MAIN_REQUESTED=0
+        ui_menu_screen "AD/DC CONTROL PLANE" "Workspace navigation · letters are stable muscle-memory shortcuts"
+        ui_workspace_pair "O" "Daily operations" "$C_GREEN" "D" "Directory" "$C_CYAN"
+        ui_workspace_pair "P" "Policy / GPO" "$C_MAGENTA" "S" "Security" "$C_RED"
+        ui_workspace_pair "R" "Remote operations" "$C_BLUE" "I" "Insights / IDS" "$C_YELLOW"
+        ui_workspace_pair "M" "Maintenance" "$C_CYAN" "A" "All modules" "$C_DIM"
+        ui_menu_root_exit
+        ui_rule
+
+        local choice
+        choice="$(ask 'Workspace' 'O')"
+        case "${choice^^}" in
+            O|1) domain_admin_console ;;
+            D|2) directory_workspace_menu ;;
+            P|3) gpo_admin_menu ;;
+            S|4) security_hardening_menu ;;
+            R|5) remote_ops_menu ;;
+            I|6) insights_workspace_menu ;;
+            M|7) maintenance_workspace_menu ;;
+            A|8) manage_all_modules_menu ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid workspace."; ui_pause ;;
         esac
     done
 }
@@ -9691,6 +10504,7 @@ main() {
         reset-domain) prepare_existing_ad_context; domain_reset_menu ;;
         dependencies) detect_samba_role; load_config || true; dependency_menu ;;
         ids) prepare_existing_ad_context; ids_menu; save_config ;;
+        remote) prepare_existing_ad_context; remote_ops_menu; save_config ;;
         ids-daily) load_config || true; ids_daily_mode ;;
         install-cli) install_cli_commands ;;
         cli-info) show_cli_commands ;;

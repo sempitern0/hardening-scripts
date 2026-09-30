@@ -35,6 +35,7 @@ El objetivo no es convertir Active Directory en un «one-click installer». El o
   - [Dependencias y paquetes](#dependencias-linux)
   - [Bootstrap de un DC nuevo](#bootstrap-linux)
   - [Administración diaria](#operacion-linux)
+  - [Remote Operations Center](#remote-ops-linux)
   - [DNS y resolver local](#dns-linux)
   - [Kerberos, Samba y hardening](#hardening-linux)
   - [Group Policy · guía integrada](#gpo-linux)
@@ -50,6 +51,7 @@ El objetivo no es convertir Active Directory en un «one-click installer». El o
   - [Modos PowerShell](#modos-windows)
   - [Provisioning de un bosque nuevo](#provisioning-windows)
   - [Administración diaria](#operacion-windows)
+  - [Remote Operations Center](#remote-ops-windows)
   - [Hardening de host y protocolos AD](#hardening-windows)
   - [Backup y recuperación](#backup-windows)
   - [Dependencias y servicing](#dependencias-windows)
@@ -57,7 +59,11 @@ El objetivo no es convertir Active Directory en un «one-click installer». El o
   - [Decommission / reset](#reset-windows)
   - [Migración de dominio](#migracion-windows)
   - [Configuración manual post-instalación](#postinstalacion-windows)
-- [Unir equipos al dominio](#clientes)
+- [Client Join Assistants · unión reversible](#client-join-assistants)
+  - [Linux AD Client Assistant](#linux-client-assistant)
+  - [Windows AD Client Assistant](#windows-client-assistant)
+  - [Modelo de rollback](#client-rollback)
+- [Unir equipos al dominio · procedimiento manual](#clientes)
 - [VirtualBox, VMware y laboratorios multi-NIC](#virtualizacion)
 - [Alta disponibilidad](#alta-disponibilidad)
 - [Troubleshooting](#troubleshooting)
@@ -117,18 +123,22 @@ No está orientado a sustituir el conocimiento del administrador. Cuando una dec
 <a id="contenido-repositorio"></a>
 # Qué incluye el repositorio
 
-El repositorio mantiene dos control planes principales:
+El repositorio mantiene dos control planes de DC y dos asistentes reversibles de clientes:
 
 | Archivo | Plataforma | Línea actual | Función |
 |---|---|---:|---|
 | `debian-ad-assistant.sh` | Debian / Ubuntu Server | 5.0.x | Samba AD DC, DNS, Kerberos, Chrony, GPO, dependencias, IDS, hardening, backup, reset, migración y operación diaria |
 | `windows-server-ad-assistant.ps1` | Windows Server | 1.6.x | AD DS, DNS, GPO, hardening, dependencias, IDS/EVE, backup, demotion/reset, provisioning y migración |
+| `linux-ad-client-assistant.sh` | Linux client/member | 1.0.x | snapshot, dependencias, DNS AD, realmd/SSSD/adcli, join, validación, leave y rollback |
+| `windows-ad-client-assistant.ps1` | Windows client/member | 1.0.x | snapshot DNS/hostname, discovery, Add-Computer, secure-channel checks, leave y rollback |
 
 Revisiones utilizadas para esta edición:
 
 ```text
-Debian  : 5.0.6-reviewed
-Windows : 1.6.1-menu-resilience
+DC Debian      : 5.1.0-remote-ops-ui
+DC Windows     : 1.7.0-remote-ops-ui
+Client Linux   : 1.0.2
+Client Windows : 1.0.0
 ```
 
 La antigua guía separada:
@@ -153,6 +163,7 @@ Debian
   Samba listener/KDC boot self-heal
   revisión pipefail/SIGPIPE de rutas operativas
   fallos Kerberos/GPO contenidos sin expulsar del menú
+  Remote Operations Center y navegación compacta por workspaces
 
 Windows
   selectors e idempotencia
@@ -160,6 +171,7 @@ Windows
   supported AD DS demotion/reset
   Suricata EVE analytics + Windows Forms dashboard
   límites de recuperación para errores dentro de menús interactivos
+  Remote Operations Center WinRM/SSH y navegación compacta por workspaces
 ```
 
 Verifica siempre la versión real antes de ejecutar:
@@ -454,6 +466,7 @@ sudo bash ./debian-ad-assistant.sh --help
 | `--reset-domain` / `--decommission` | decommission/reset destructivo con recovery bundle |
 | `--dependencies` / `--deps` | inventario, reparación y actualización acotada de dependencias |
 | `--ids` / `--suricata` / `--network-ids` | IDS pasivo Suricata y analítica EVE |
+| `--remote` / `--remote-ops` / `--remote-control` | Remote Operations Center |
 | `--install-cli` | instalar/refrescar comandos `ad-*` |
 | `--cli-info` | mostrar comandos instalados |
 | `--no-color` | desactivar ANSI colors |
@@ -506,6 +519,7 @@ Shortcuts:
 | `ad-reset` | decommission/reset |
 | `ad-deps` | dependencias y paquetes |
 | `ad-ids` | IDS Suricata |
+| `ad-remote` | operaciones remotas controladas sobre endpoints del dominio |
 | `ad-audit` | auditoría |
 | `ad-validate` | validación funcional |
 | `ad-status` | estado rápido |
@@ -637,28 +651,46 @@ Main Control Plane:
 sudo adctl
 ```
 
-Módulos principales:
+La interfaz principal usa **workspaces con letras estables** en vez de ampliar indefinidamente el
+menú numérico:
 
 ```text
-Audit current state
-Validate AD/DC health
-Repair DNS / Kerberos
-Time synchronization
-Firewall policy
-Directory/admin baseline
-Baseline GPOs
-Domain backup
-SYSVOL ACL repair
-Post-install checklist
-Operations console
-Boot ordering
-CLI installation
-Resolver repair
-Domain migration
-Samba & Kerberos security
-Dependencies & packages
-Domain decommission / reset
-Network IDS / Suricata
+[O] Daily operations       [D] Directory
+[P] Policy / GPO           [S] Security
+[R] Remote operations      [I] Insights / IDS
+[M] Maintenance            [A] All modules
+[0] Exit
+```
+
+`[A] All modules` conserva el mapa numérico completo como vía de descubrimiento y compatibilidad.
+Las letras están pensadas para operación por memoria muscular.
+
+La cabecera compacta muestra en cada workspace:
+
+```text
+domain / DC / IP / interface
+operator / local-or-SSH session
+
+AD
+DNS:53
+KRB:88
+LDAP:389
+SMB:445
+KPWD:464
+TIME
+IDS
+```
+
+Los colores se reservan para significado operativo:
+
+```text
+green    healthy / normal operation
+cyan     directory / information
+blue     remote endpoint operations
+magenta  policy / advanced control
+yellow   attention / maintenance
+red      destructive / degraded
+gray     optional / unavailable
 ```
 
 Consola diaria:
@@ -667,19 +699,17 @@ Consola diaria:
 sudo ad-ops
 ```
 
-Incluye:
+Atajos:
 
 ```text
-Users
-Groups
-Computers
-Access & delegation
-Group Policy
-Security & resilience
-Validation
-Backup
-Migration
+[U] Users       [G] Groups
+[C] Computers   [A] Access / delegation
+[P] GPO         [R] Remote operations
+[S] Security    [V] Validate
+[B] Backup      [M] Migration
 ```
+
+Los números históricos siguen aceptándose donde se han mantenido como aliases internos.
 
 ### Usuarios
 
@@ -727,6 +757,82 @@ sudo ad-permissions
 ```
 
 Membresías y operaciones avanzadas `DS ACL`.
+
+---
+
+<a id="remote-ops-linux"></a>
+## Remote Operations Center Linux
+
+Acceso:
+
+```bash
+sudo ad-remote
+```
+
+o:
+
+```bash
+sudo ./debian-ad-assistant.sh --remote
+```
+
+Menú:
+
+```text
+[T] Target / readiness     [S] Active sessions
+[M] Message users          [L] Log off session
+[D] Diagnostics            [V] Service control
+[R] Restart endpoint       [X] Shut down endpoint
+[C] Cancel shutdown        [E] Export evidence
+[G] Guardrails / setup
+```
+
+El target se elige desde el inventario de equipos de AD; el operador no necesita volver a escribir
+el hostname cuando el directorio ya lo conoce.
+
+Transportes:
+
+```text
+Debian DC -> Linux endpoint
+  OpenSSH
+
+Debian DC -> Windows endpoint
+  OpenSSH para sesiones/mensajes/diagnóstico/control de servicio
+  Samba RPC como fallback limitado para restart/shutdown/cancel
+```
+
+El control plane de Debian **no añade un stack WinRM adicional** solo para conseguir paridad con
+Windows. Si un endpoint Windows no tiene OpenSSH, el panel sigue pudiendo evaluar reachability y,
+cuando RPC/SMB y permisos lo permiten, realizar operaciones de energía limitadas. Para administración
+Windows completa se prefiere el control plane Windows.
+
+Acciones destructivas:
+
+```text
+logoff
+service restart
+restart
+shutdown
+```
+
+usan confirmación de alto impacto y se registran en:
+
+```text
+/var/lib/debian-ad-assistant/remote-ops/operations.tsv
+```
+
+Evidencia:
+
+```text
+/var/lib/debian-ad-assistant/remote-ops/evidence/
+```
+
+No se expone un shell remoto arbitrario desde el menú normal. La recomendación de delegación es:
+
+```text
+Windows endpoints → JEA / roles limitados
+Linux endpoints   → sudoers limitado
+network           → SSH/WinRM solo desde redes de management
+```
 
 ---
 
@@ -2025,6 +2131,7 @@ Al cerrar esa consola, el scope `Process` desaparece.
 | `Reset` | democión soportada + cleanup post-reboot |
 | `IDS` | Suricata/EVE + dashboard nativo cuando hay GUI |
 | `IDSReport` | target no interactivo de Task Scheduler |
+| `RemoteOps` | Remote Operations Center |
 
 Parámetros adicionales:
 
@@ -2102,23 +2209,31 @@ Modo:
 .\windows-server-ad-assistant.ps1 -Mode ADAdmin
 ```
 
-Módulos:
+La navegación principal también usa workspaces compactos:
 
 ```text
-Users
-Groups & access
-Computers & OUs
-Group Policy
-AD DNS
-DC health
-Backup & recovery
-Host security
-Domain migration
-Directory protocol security
-Dependencies
-Domain decommission / reset
-Network IDS / Suricata
+[O] Daily operations       [D] Directory
+[P] Policy / DNS           [S] Security
+[R] Remote operations      [I] Insights / IDS
+[M] Maintenance            [A] All modules
+[0] Exit
 ```
+
+La cabecera muestra el rol del servidor y badges de:
+
+```text
+NTDS / AD
+DNS
+KDC / Kerberos
+Netlogon
+ADWS
+SMB
+WinRM
+Suricata
+```
+
+`[A] All modules` mantiene el mapa numérico histórico. Los submenús diarios usan letras estables
+para reducir navegación y mantener memoria muscular.
 
 ### Usuarios
 
@@ -2167,6 +2282,103 @@ SYSVOL
 FSMO
 replication
 ```
+
+---
+
+<a id="remote-ops-windows"></a>
+## Remote Operations Center Windows
+
+Modo directo:
+
+```powershell
+.\windows-server-ad-assistant.ps1 -Mode RemoteOps
+```
+
+Desde la interfaz:
+
+```text
+[R] Remote operations
+```
+
+Menú:
+
+```text
+[T] Target / readiness     [S] Active sessions
+[M] Message users          [L] Log off session
+[D] Diagnostics            [V] Service control
+[R] Restart endpoint       [X] Shut down endpoint
+[C] Cancel shutdown        [E] Export evidence
+[K] Alternate credential   [J] Guardrails / JEA
+```
+
+### Windows endpoints
+
+Ruta preferida:
+
+```text
+AD computer selector
+   ↓
+FQDN
+   ↓
+WinRM / PowerShell Remoting
+   ↓
+Kerberos when domain conditions permit
+```
+
+El panel utiliza `quser`, `msg`, `logoff` y `shutdown` donde las primitivas Windows nativas ofrecen
+la operación directa; PowerShell Remoting se utiliza para diagnóstico y operaciones más ricas.
+
+Una credencial alternativa puede mantenerse **solo en memoria durante la sesión**. No se serializa
+en el estado del control plane.
+
+### Linux endpoints
+
+El Windows Server actúa como cliente OpenSSH:
+
+```text
+Windows management server
+  → Microsoft OpenSSH Client
+  → sshd Linux
+  → delegated sudo
+```
+
+Si falta OpenSSH Client, el panel puede ofrecer instalar la capability oficial de Windows después
+de confirmación.
+
+### Seguridad operacional
+
+No se incluye un botón de “ejecutar cualquier comando como SYSTEM/root”.
+
+La política del panel es:
+
+```text
+select known endpoint
+  ↓
+known operation
+  ↓
+show impact
+  ↓
+explicit confirmation for destructive action
+  ↓
+execute
+  ↓
+audit
+```
+
+Registro:
+
+```text
+C:\ProgramData\WindowsADControlPlane\remote-ops\operations.tsv
+```
+
+Evidencia:
+
+```text
+C:\ProgramData\WindowsADControlPlane\remote-ops\evidence\
+```
+
+Para delegación real se recomienda JEA en Windows y sudoers limitado en Linux, evitando usar
+`Domain Admins` como permiso genérico de helpdesk.
 
 ---
 
@@ -2637,8 +2849,349 @@ Al volver:
 
 ---
 
+<a id="client-join-assistants"></a>
+# Client Join Assistants · unión reversible
+
+Los asistentes de cliente automatizan el procedimiento descrito manualmente en la siguiente sección
+sin convertir el join en una operación opaca.
+
+Modelo:
+
+```text
+detect
+  ↓
+snapshot pre-join
+  ↓
+install/verify minimal dependencies
+  ↓
+configure AD DNS
+  ↓
+validate SRV + time
+  ↓
+join
+  ↓
+validate machine trust
+  ↓
+reboot
+```
+
+Rollback:
+
+```text
+clean domain leave
+  ↓
+restore DNS behavior
+  ↓
+restore hostname when changed
+  ↓
+restore local identity files/settings
+  ↓
+optional removal of assistant-installed packages
+  ↓
+reboot
+```
+
+Principios:
+
+- no se almacenan passwords;
+- no se añaden repositorios de terceros;
+- DNS se cambia únicamente después de crear snapshot;
+- el asistente conserva los datos necesarios para devolver la máquina a su estado anterior;
+- una unión fallida intenta restaurar DNS/hostname automáticamente;
+- dejar el dominio y borrar configuración local son operaciones distintas;
+- no se simula una desunión Windows mediante edición manual del Registry;
+- no se elimina automáticamente una cuenta de equipo AD si el leave soportado ha fallado.
+
+<a id="linux-client-assistant"></a>
+## Linux AD Client Assistant
+
+Archivo:
+
+```text
+linux-ad-client-assistant.sh
+```
+
+Uso:
+
+```bash
+chmod +x linux-ad-client-assistant.sh
+
+sudo ./linux-ad-client-assistant.sh
+```
+
+Modos:
+
+```bash
+sudo ./linux-ad-client-assistant.sh --audit
+sudo ./linux-ad-client-assistant.sh --join
+sudo ./linux-ad-client-assistant.sh --status
+sudo ./linux-ad-client-assistant.sh --leave
+sudo ./linux-ad-client-assistant.sh --restore
+sudo ./linux-ad-client-assistant.sh --snapshots
+```
+
+Familias con instalación automática de paquetes:
+
+```text
+Debian / Ubuntu / derivados APT
+RHEL / Fedora / Rocky / Alma / derivados DNF/YUM
+```
+
+Stack mínimo:
+
+```text
+realmd
+SSSD
+adcli
+Kerberos
+NSS/PAM
+DNS diagnostic tools
+```
+
+El asistente usa únicamente los repositorios ya configurados por la distribución. No añade PPA,
+COPR, repositorios vendor ni `curl | sh`.
+
+En distribuciones no reconocidas puede continuar si:
+
+```text
+realm
+adcli
+kinit
+klist
+getent
+```
+
+ya existen.
+
+### Backends DNS
+
+Detección automática:
+
+```text
+NetworkManager
+systemd-resolved
+direct /etc/resolv.conf fallback
+```
+
+NetworkManager:
+
+```text
+snapshot ipv4/ipv6 DNS policy
+disable DHCP DNS for AD resolution
+set DC DNS
+set search domain
+reapply interface without reconnect when possible
+```
+
+`systemd-resolved`:
+
+```text
+managed resolved.conf.d drop-in
+per-link resolvectl DNS/domain
+reversible snapshot
+```
+
+El fallback de `/etc/resolv.conf` requiere confirmación explícita porque la persistencia de ese
+archivo depende de cómo administre la red la distribución.
+
+### Identity mapping
+
+El wizard pregunta:
+
+```text
+automatic SID → UID/GID mapping
+```
+
+o:
+
+```text
+RFC2307/POSIX attributes from AD
+```
+
+La segunda opción solo debe elegirse cuando el dominio ya mantiene correctamente `uidNumber`,
+`gidNumber` y el resto de atributos POSIX necesarios.
+
+### Home directories y autorización
+
+La creación automática de homes es opcional.
+
+El access policy también se mantiene separado del join:
+
+```text
+keep default
+permit user
+permit group
+permit all
+```
+
+`permit all` requiere confirmación de alto impacto.
+
+### Persistencia y recuperación
+
+```text
+/var/lib/ad-client-assistant/
+/var/backups/ad-client-assistant/
+/var/log/ad-client-assistant/
+```
+
+El snapshot conserva, según plataforma:
+
+```text
+resolver
+krb5.conf
+sssd.conf
+nsswitch.conf
+PAM session config
+NetworkManager DNS properties
+systemd-resolved managed drop-in
+hostname
+package baseline
+authselect mkhomedir state
+```
+
+Los paquetes instalados por el assistant se registran por separado. Durante un restore pueden
+eliminarse de forma explícita, pero el script nunca ejecuta un `autoremove` automático.
+
+<a id="windows-client-assistant"></a>
+## Windows AD Client Assistant
+
+Archivo:
+
+```text
+windows-ad-client-assistant.ps1
+```
+
+Ejecutar desde Windows PowerShell elevado:
+
+```powershell
+Unblock-File .\windows-ad-client-assistant.ps1
+.\windows-ad-client-assistant.ps1
+```
+
+Modos:
+
+```powershell
+.\windows-ad-client-assistant.ps1 -Mode Audit
+.\windows-ad-client-assistant.ps1 -Mode Join
+.\windows-ad-client-assistant.ps1 -Mode Status
+.\windows-ad-client-assistant.ps1 -Mode Leave
+.\windows-ad-client-assistant.ps1 -Mode Restore
+```
+
+No requiere paquetes adicionales.
+
+El wizard:
+
+```text
+detecta NIC activas
+  ↓
+permite elegir interfaz
+  ↓
+snapshot DNS + origen DHCP/static + hostname/workgroup
+  ↓
+configura DNS AD
+  ↓
+Resolve-DnsName SRV
+  ↓
+nltest DC locator
+  ↓
+Get-Credential
+  ↓
+Add-Computer
+  ↓
+reboot
+```
+
+Soporta:
+
+```text
+OUPath opcional
+computer name opcional
+varios DC/DNS
+Windows clients compatibles
+Windows Server como member server
+```
+
+Las ediciones Windows Home/Core-client que no soportan el join clásico a AD se bloquean antes de
+modificar DNS.
+
+### Restauración DNS Windows
+
+El snapshot no guarda únicamente las IP DNS visibles.
+
+También determina si existía un `NameServer` estático en la configuración TCP/IP. Por tanto:
+
+```text
+DNS originalmente DHCP
+  → Set-DnsClientServerAddress -ResetServerAddresses
+
+DNS originalmente estático
+  → restore exact previous ServerAddresses
+```
+
+Esto evita convertir accidentalmente una NIC DHCP en una NIC con DNS estático permanente después
+del rollback.
+
+### Leave Windows
+
+El camino soportado utiliza:
+
+```powershell
+Remove-Computer
+```
+
+con credencial de desunión y workgroup de retorno.
+
+Después restaura DNS y, cuando procede, el hostname original.
+
+Si el equipo todavía figura como miembro de dominio, `-Mode Restore` **no** falsifica la salida
+editando el Registry. Exige utilizar primero el leave soportado.
+
+Persistencia:
+
+```text
+C:\ProgramData\ADClientAssistant\
+```
+
+<a id="client-rollback"></a>
+## Modelo de rollback
+
+El objetivo de rollback es devolver el **cliente local** al estado inmediatamente anterior al join.
+
+Eso incluye:
+
+```text
+DNS behavior
+hostname when modified
+local identity/client config
+optional packages installed by the assistant
+```
+
+No significa que un rollback local pueda garantizar la eliminación del objeto de equipo del
+directorio si el DC no está disponible.
+
+Por eso el orden preferido es siempre:
+
+```text
+domain reachable
+  → clean leave
+  → local restore
+```
+
+y solo después:
+
+```text
+domain unavailable / failed deployment
+  → explicit local recovery
+  → inspect/remove stale computer account later
+```
+
+En Windows no se ofrece una pseudo-desunión basada en manipulación manual de estado interno.
+
+---
+
 <a id="clientes"></a>
-# Unir equipos al dominio
+# Unir equipos al dominio · procedimiento manual
 
 Esta sección parte de un dominio ya funcional. Antes de unir clientes, el DC debe superar su
 validación funcional.
@@ -3634,6 +4187,23 @@ reboot
 
 - ADSys:  
   https://ubuntu.com/docs/adsys/latest/
+
+## Remote administration
+
+- PowerShell Remoting / WinRM security:
+  https://learn.microsoft.com/powershell/scripting/security/remoting/winrm-security
+
+- Just Enough Administration (JEA):
+  https://learn.microsoft.com/powershell/scripting/security/remoting/jea/overview
+
+- OpenSSH for Windows:
+  https://learn.microsoft.com/windows-server/administration/openssh/openssh-overview
+
+- `quser`, `logoff` and `shutdown`:
+  https://learn.microsoft.com/windows-server/administration/windows-commands/
+
+- systemd `loginctl`:
+  https://www.freedesktop.org/software/systemd/man/latest/loginctl.html
 
 ## Microsoft Active Directory
 
