@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # linux-ad-client-assistant.sh
-# Version 1.1.0-resilient
+# Version 1.1.1-admin-account
 #
 # Reversible Active Directory client join assistant for Linux.
 #
@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.1.0-resilient"
+SCRIPT_VERSION="1.1.1-admin-account"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -1019,6 +1019,42 @@ validate_ad_network_ports() {
     (( hard_fail == 0 ))
 }
 
+prompt_domain_admin_account() {
+    local purpose="${1:-join}" account=""
+
+    printf '\n%bDOMAIN CREDENTIAL%b\n' "$C_BOLD" "$C_RESET"
+    printf '  Use any AD account that has the required delegated rights.\n'
+    printf '  The built-in Administrator account is not required and may be disabled.\n'
+    printf '  Examples: Godzilla | Godzilla@%s | DOMAIN\\Godzilla\n\n' "${JOIN_REALM_NAME:-REALM}"
+
+    while true; do
+        account="$(ask "AD account authorized to ${purpose}" '')"
+        if [[ -n "$account" ]]; then
+            printf '%s' "$account"
+            return 0
+        fi
+        warn "An explicit AD account is required; no Administrator default is assumed."
+    done
+}
+
+analyze_realm_join_failure() {
+    local log_file="$1" computer_name="$2"
+    [[ -r "$log_file" ]] || return 0
+
+    if grep -Fiq 'Insufficient permissions to modify computer account' "$log_file" ||
+       grep -Fiq 'unable to get access to CN=' "$log_file"; then
+        printf '\n%bJOIN PERMISSION DIAGNOSTIC%b\n' "$C_BOLD" "$C_RESET"
+        warn "The AD computer account '${computer_name}' appears to exist already, or the selected account cannot modify/create it."
+        info "Use an account with delegated computer-join rights, or inspect the existing computer object from the AD control plane."
+        info "If the object is stale, delete/reset it only after confirming it is not an active machine account."
+    fi
+
+    if grep -Fiq "Client's credentials have been revoked" "$log_file"; then
+        warn "The credential used by realmd/adcli is disabled, expired or otherwise rejected by Kerberos."
+        info "Select a different enabled AD administrator/delegated join account (for example Godzilla)."
+    fi
+}
+
 kerberos_preflight_ticket() {
     local join_user="$1" realm="$2" principal=""
     principal="$join_user"
@@ -1306,7 +1342,7 @@ join_domain_guided() {
     }
     JOIN_COMPUTER_NAME="${computer_name^^}"
 
-    join_user="$(ask 'Join account' 'Administrator')"
+    join_user="$(prompt_domain_admin_account 'join this computer to the domain')"
     ou="$(ask 'Computer OU DN (optional)' '')"
     if [[ -n "$ou" && ! "$ou" =~ ^(OU|CN)= ]]; then
         warn "OU path does not look like a distinguished name beginning with OU= or CN=."
@@ -1400,9 +1436,16 @@ join_domain_guided() {
     [[ -n "$ou" ]] && join_args+=("--computer-ou=$ou")
     join_args+=("$domain")
 
-    info "Joining with the isolated Kerberos ticket; no password is stored."
-    if ! KRB5CCNAME="FILE:${PRIVATE_KRB5CCACHE}" realm "${join_args[@]}"; then
+    info "Joining with the isolated Kerberos ticket for the selected account; no password is stored."
+    local join_log="${snap}/realm-join.log" join_rc=0
+    KRB5CCNAME="FILE:${PRIVATE_KRB5CCACHE}" \
+    KRB5_CCACHE="FILE:${PRIVATE_KRB5CCACHE}" \
+        realm "${join_args[@]}" 2>&1 | tee "$join_log"
+    join_rc=${PIPESTATUS[0]}
+
+    if (( join_rc != 0 )); then
         err "realm join failed. Rolling back network and hostname."
+        analyze_realm_join_failure "$join_log" "$JOIN_COMPUTER_NAME"
         cleanup_private_ccache
         restore_network_from_snapshot "$snap" || true
         restore_hostname_from_snapshot "$snap" || true
@@ -1582,7 +1625,7 @@ leave_domain_cleanly() {
     local domain=""
     domain="$(awk 'NR==1{print}' <<<"$realm_names")"
     local leave_user=""
-    leave_user="$(ask 'Account authorized to remove the computer from AD' 'Administrator')"
+    leave_user="$(prompt_domain_admin_account 'remove this computer from the domain')"
 
     printf '\nDomain: %s\n' "$domain"
     confirm_literal \
