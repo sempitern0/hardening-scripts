@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # linux-ad-client-assistant.sh
-# Version 1.1.1-admin-account
+# Version 1.1.2-admin-default-recovery
 #
 # Reversible Active Directory client join assistant for Linux.
 #
@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.1.1-admin-account"
+SCRIPT_VERSION="1.1.2-admin-default-recovery"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -65,6 +65,10 @@ NM_CONNECTION_UUID=""
 PRIVATE_KRB5CCACHE="${STATE_ROOT}/krb5cc-${RUN_ID}"
 JOIN_COMPUTER_NAME=""
 JOIN_REALM_NAME=""
+JOIN_TRANSACTION_ACTIVE=0
+JOIN_TRANSACTION_COMMITTED=0
+JOIN_TRANSACTION_SNAPSHOT=""
+JOIN_TRANSACTION_ROLLBACK=0
 
 # ---------------------------------------------------------------------------
 # UI / logging
@@ -93,7 +97,9 @@ init_runtime() {
     detect_active_interface
     detect_dns_backend
 
-    trap cleanup_private_ccache EXIT
+    trap on_exit_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
 }
 
 log() {
@@ -215,6 +221,135 @@ cleanup_private_ccache() {
     fi
     rm -f -- "$PRIVATE_KRB5CCACHE" >/dev/null 2>&1 || true
 }
+
+join_transaction_mark() {
+    local snap="$1" phase="$2"
+    [[ -n "$snap" && -d "$snap" ]] || return 0
+    printf 'PHASE=%q\nUPDATED_AT=%q\nPID=%q\n' \
+        "$phase" "$(date -Is)" "$$" >"${snap}/join-transaction.env"
+    chmod 0600 "${snap}/join-transaction.env" 2>/dev/null || true
+}
+
+on_exit_cleanup() {
+    local rc=$?
+    cleanup_private_ccache
+
+    if (( JOIN_TRANSACTION_ACTIVE == 1 &&
+          JOIN_TRANSACTION_COMMITTED == 0 &&
+          JOIN_TRANSACTION_ROLLBACK == 0 )) &&
+       [[ -n "$JOIN_TRANSACTION_SNAPSHOT" &&
+          -d "$JOIN_TRANSACTION_SNAPSHOT" ]]; then
+        JOIN_TRANSACTION_ROLLBACK=1
+        JOIN_TRANSACTION_ACTIVE=0
+
+        printf '\n%b[RECOVERY]%b Interrupted pre-membership join detected; restoring local pre-join configuration.\n' \
+            "$C_YELLOW" "$C_RESET" >&2
+        rollback_failed_join_local_state "$JOIN_TRANSACTION_SNAPSHOT" "noninteractive" || true
+        join_transaction_mark "$JOIN_TRANSACTION_SNAPSHOT" "INTERRUPTED_ROLLBACK"
+    fi
+
+    return "$rc"
+}
+
+latest_assistant_snapshot() {
+    local newest="" newest_mtime=0 dir mtime
+    [[ -d "$BACKUP_ROOT" ]] || return 1
+
+    for dir in "$BACKUP_ROOT"/*; do
+        [[ -d "$dir" && -f "$dir/snapshot.env" ]] || continue
+        mtime="$(stat -c '%Y' "$dir" 2>/dev/null || printf 0)"
+        if [[ "$mtime" =~ ^[0-9]+$ ]] && (( mtime > newest_mtime )); then
+            newest_mtime="$mtime"
+            newest="$dir"
+        fi
+    done
+
+    [[ -n "$newest" ]] || return 1
+    printf '%s' "$newest"
+}
+
+snapshot_domain() {
+    local snap="$1" DOMAIN=""
+    [[ -f "$snap/snapshot.env" ]] || return 1
+    # shellcheck disable=SC1090
+    . "$snap/snapshot.env"
+    printf '%s' "${DOMAIN:-}"
+}
+
+incomplete_sssd_residue_present() {
+    command_exists sss_cache || return 1
+    [[ ! -s /etc/sssd/sssd.conf ]] || return 1
+    [[ ! -s /var/lib/sss/db/config.ldb ]] || return 1
+
+    local realms=""
+    if command_exists realm; then
+        realms="$(realm list --name-only 2>/dev/null || true)"
+        [[ -z "$realms" ]] || return 1
+    fi
+
+    return 0
+}
+
+recover_incomplete_previous_join() {
+    incomplete_sssd_residue_present || return 0
+
+    local snap="" domain=""
+    snap="$(latest_assistant_snapshot || true)"
+    [[ -n "$snap" ]] || {
+        warn "SSSD tools are installed but SSSD has no configuration database."
+        warn "No assistant snapshot is available for automatic recovery."
+        return 0
+    }
+
+    domain="$(snapshot_domain "$snap" || true)"
+    if command_exists adcli && [[ -n "$domain" ]] &&
+       adcli testjoin -D "$domain" >/dev/null 2>&1; then
+        warn "The machine account still validates against AD, but local SSSD is incomplete."
+        warn "Do not remove AD client packages automatically; repair SSSD or perform a clean domain leave."
+        return 0
+    fi
+
+    printf '\n%bINCOMPLETE PREVIOUS JOIN DETECTED%b\n' "$C_BOLD" "$C_RESET"
+    warn "SSSD client tools are installed, but /etc/sssd/sssd.conf and config.ldb are not initialized."
+    info "This matches a previous join that stopped before membership completed."
+    info "Latest assistant snapshot: $snap"
+    printf '\n'
+    printf '  [1] Repair local identity state from the snapshot (recommended)\n'
+    printf '  [2] Keep the current residue and continue\n'
+    printf '  [0] Cancel\n'
+
+    local choice=""
+    choice="$(ask 'Recovery action' '1')"
+    case "$choice" in
+        1)
+            restore_identity_files "$snap"
+            restore_sssd_runtime_from_snapshot "$snap"
+
+            if [[ -s "$snap/packages-installed-by-assistant.txt" ]]; then
+                printf '\n'
+                warn "Packages added by the failed attempt are still installed."
+                info "Keeping them is useful for an immediate retry, but sss_cache may keep warning until SSSD is configured."
+                if confirm "Remove only packages added by that failed attempt and return to the pre-join package baseline?" Y; then
+                    remove_assistant_packages_now "$snap" || \
+                        warn "Some assistant-installed packages could not be removed."
+                fi
+            fi
+
+            ok "Incomplete previous join residue repaired."
+            ;;
+        2)
+            warn "Continuing with the previous SSSD residue in place."
+            ;;
+        0)
+            return 1
+            ;;
+        *)
+            warn "Invalid recovery selection."
+            return 1
+            ;;
+    esac
+}
+
 
 require_supported_init() {
     if ! command_exists systemctl || [[ ! -d /run/systemd/system ]]; then
@@ -503,6 +638,13 @@ create_prejoin_snapshot() {
     write_env_kv "$meta" NM_CONNECTION_UUID "$NM_CONNECTION_UUID"
     write_env_kv "$meta" REMOTE_SESSION "$REMOTE_SESSION"
     write_env_kv "$meta" PREJOIN_BOOT_ID "$(current_boot_id)"
+    local sssd_active="0" sssd_enabled="0"
+    systemctl is-active --quiet sssd.service 2>/dev/null && sssd_active="1"
+    systemctl is-enabled --quiet sssd.service 2>/dev/null && sssd_enabled="1"
+    write_env_kv "$meta" PREJOIN_SSSD_ACTIVE "$sssd_active"
+    write_env_kv "$meta" PREJOIN_SSSD_ENABLED "$sssd_enabled"
+    write_env_kv "$meta" PREJOIN_SSSD_CONF_PRESENT "$([[ -s /etc/sssd/sssd.conf ]] && printf 1 || printf 0)"
+    write_env_kv "$meta" PREJOIN_SSSD_CONFDB_PRESENT "$([[ -s /var/lib/sss/db/config.ldb ]] && printf 1 || printf 0)"
 
     if [[ "$DNS_BACKEND" == "NetworkManager" && -n "$NM_CONNECTION" ]]; then
         write_env_kv "$meta" NM_IPV4_IGNORE_AUTO_DNS \
@@ -726,9 +868,31 @@ remove_assistant_packages() {
         "Package removal can also remove dependent packages. No autoremove will be executed." \
         "REMOVE-PACKAGES" || return 0
 
+    remove_assistant_packages_now "$snap"
+}
+
+remove_assistant_packages_now() {
+    local snap="$1"
+    local file="${snap}/packages-installed-by-assistant.txt"
+    [[ -s "$file" ]] || return 0
+
+    local -a pkgs=() installed=()
+    mapfile -t pkgs <"$file"
+
+    local pkg
+    for pkg in "${pkgs[@]}"; do
+        [[ -n "$pkg" ]] || continue
+        pkg_installed "$pkg" && installed+=("$pkg")
+    done
+
+    ((${#installed[@]})) || {
+        info "Packages recorded for this attempt are already absent."
+        return 0
+    }
+
     case "$PKG_FAMILY" in
         apt)
-            apt-get remove -y "${pkgs[@]}" || {
+            apt-get remove -y "${installed[@]}" || {
                 warn "APT could not remove every recorded package."
                 return 1
             }
@@ -736,7 +900,7 @@ remove_assistant_packages() {
         dnf)
             local pm="dnf"
             command_exists dnf || pm="yum"
-            "$pm" remove -y "${pkgs[@]}" || {
+            "$pm" remove -y "${installed[@]}" || {
                 warn "$pm could not remove every recorded package."
                 return 1
             }
@@ -746,6 +910,8 @@ remove_assistant_packages() {
             return 1
             ;;
     esac
+
+    ok "Packages added only by the failed join attempt were removed. No autoremove was executed."
 }
 
 # ---------------------------------------------------------------------------
@@ -1020,21 +1186,16 @@ validate_ad_network_ports() {
 }
 
 prompt_domain_admin_account() {
-    local purpose="${1:-join}" account=""
+    local purpose="${1:-join}" default_account="${2:-Administrator}" account=""
 
     printf '\n%bDOMAIN CREDENTIAL%b\n' "$C_BOLD" "$C_RESET"
-    printf '  Use any AD account that has the required delegated rights.\n'
-    printf '  The built-in Administrator account is not required and may be disabled.\n'
-    printf '  Examples: Godzilla | Godzilla@%s | DOMAIN\\Godzilla\n\n' "${JOIN_REALM_NAME:-REALM}"
+    printf '  Default account: %s\n' "$default_account"
+    printf '  Press Enter to use the default, or type another delegated/enabled AD account.\n'
+    printf '  Accepted forms: user | user@%s | DOMAIN\\user\n\n' "${JOIN_REALM_NAME:-REALM}"
 
-    while true; do
-        account="$(ask "AD account authorized to ${purpose}" '')"
-        if [[ -n "$account" ]]; then
-            printf '%s' "$account"
-            return 0
-        fi
-        warn "An explicit AD account is required; no Administrator default is assumed."
-    done
+    account="$(ask "AD account authorized to ${purpose}" "$default_account")"
+    [[ -n "$account" ]] || account="$default_account"
+    printf '%s' "$account"
 }
 
 analyze_realm_join_failure() {
@@ -1051,7 +1212,7 @@ analyze_realm_join_failure() {
 
     if grep -Fiq "Client's credentials have been revoked" "$log_file"; then
         warn "The credential used by realmd/adcli is disabled, expired or otherwise rejected by Kerberos."
-        info "Select a different enabled AD administrator/delegated join account (for example Godzilla)."
+        info "Retry with Administrator or select another enabled/delegated AD account at the credential step."
     fi
 }
 
@@ -1296,6 +1457,7 @@ join_domain_guided() {
     printf '%bGUIDED DOMAIN JOIN%b\n\n' "$C_BOLD" "$C_RESET"
 
     require_supported_init || return 1
+    recover_incomplete_previous_join || return 1
 
     local existing_realms=""
     existing_realms="$(realm list --name-only 2>/dev/null || true)"
@@ -1307,7 +1469,7 @@ join_domain_guided() {
 
     identity_precheck || return 1
 
-    local domain="" dns_csv="" join_user="" ou="" requested_hostname="" computer_name="" test_user=""
+    local domain="" dns_csv="" join_user="Administrator" ou="" requested_hostname="" computer_name="" test_user=""
     local id_mapping="yes"
 
     domain="$(ask 'AD DNS domain (for example corp.example.com)' '')"
@@ -1318,7 +1480,10 @@ join_domain_guided() {
     }
 
     dns_csv="$(ask 'AD DNS server IPv4 addresses (comma separated)' '')"
-    validate_dns_list "$dns_csv" || { err "At least one valid IPv4 AD DNS server is required."; return 1; }
+    validate_dns_list "$dns_csv" || {
+        err "At least one valid IPv4 AD DNS server is required."
+        return 1
+    }
 
     local first_dns=""
     first_dns="$(dns_first "$dns_csv")"
@@ -1329,12 +1494,12 @@ join_domain_guided() {
     printf 'Current DNS      :\n'
     current_dns_summary | sed 's/^/  /'
 
-    # A zero-change direct preflight catches the most common bad DNS input early.
     preflight_ad_dns_servers "$domain" "$dns_csv" || return 1
 
     requested_hostname="$(ask 'System hostname' "$(hostnamectl --static 2>/dev/null || hostname)")"
     local short_default="${requested_hostname%%.*}"
     if ((${#short_default} > 15)); then short_default=""; fi
+
     computer_name="$(ask 'AD computer name (NetBIOS, max 15 chars)' "$short_default")"
     valid_ad_computer_name "$computer_name" || {
         err "AD computer name must be 1-15 characters, start/end alphanumeric, with hyphens only inside."
@@ -1342,7 +1507,6 @@ join_domain_guided() {
     }
     JOIN_COMPUTER_NAME="${computer_name^^}"
 
-    join_user="$(prompt_domain_admin_account 'join this computer to the domain')"
     ou="$(ask 'Computer OU DN (optional)' '')"
     if [[ -n "$ou" && ! "$ou" =~ ^(OU|CN)= ]]; then
         warn "OU path does not look like a distinguished name beginning with OU= or CN=."
@@ -1363,7 +1527,7 @@ join_domain_guided() {
     printf '  DNS backend  : %s\n' "$DNS_BACKEND"
     printf '  Hostname     : %s\n' "$requested_hostname"
     printf '  AD computer  : %s\n' "$JOIN_COMPUTER_NAME"
-    printf '  Join account : %s\n' "$join_user"
+    printf '  Join account : Administrator by default; changeable at the final credential step\n'
     printf '  OU           : %s\n' "${ou:-(default Computers container)}"
     printf '  ID mapping   : %s\n' "$id_mapping"
 
@@ -1373,57 +1537,69 @@ join_domain_guided() {
     snap="$(create_prejoin_snapshot "$domain" "$ACTIVE_IFACE")"
     info "Pre-join snapshot: $snap"
 
+    JOIN_TRANSACTION_SNAPSHOT="$snap"
+    JOIN_TRANSACTION_ACTIVE=1
+    JOIN_TRANSACTION_COMMITTED=0
+    JOIN_TRANSACTION_ROLLBACK=0
+    join_transaction_mark "$snap" "SNAPSHOT_READY"
+
     if ! install_required_packages "$snap"; then
-        err "Dependency preparation failed. No domain/network changes were committed."
+        err "Dependency preparation failed."
+        rollback_failed_join_local_state "$snap" "interactive"
         return 1
     fi
+    join_transaction_mark "$snap" "PACKAGES_READY"
 
-    # dnsutils/bind-utils is now guaranteed on supported package families.
     if ! preflight_ad_dns_servers "$domain" "$dns_csv"; then
         err "AD DNS preflight failed after dependency preparation."
+        rollback_failed_join_local_state "$snap" "interactive"
         return 1
     fi
 
     local hostname_changed="0"
-    if ! configure_hostname_if_requested "$requested_hostname"; then return 1; fi
+    if ! configure_hostname_if_requested "$requested_hostname"; then
+        rollback_failed_join_local_state "$snap" "interactive"
+        return 1
+    fi
     hostname_changed="$HOSTNAME_CHANGED_RESULT"
 
     if ! apply_domain_dns "$domain" "$dns_csv" "$ACTIVE_IFACE"; then
-        err "AD DNS configuration failed. Restoring pre-join state."
-        restore_network_from_snapshot "$snap" || true
-        restore_hostname_from_snapshot "$snap" || true
+        err "AD DNS configuration failed."
+        rollback_failed_join_local_state "$snap" "interactive"
         return 1
     fi
+    join_transaction_mark "$snap" "DNS_APPLIED"
 
     if ! validate_domain_dns "$domain" "$dns_csv"; then
-        err "Domain discovery failed. Restoring DNS and hostname."
-        restore_network_from_snapshot "$snap" || true
-        restore_hostname_from_snapshot "$snap" || true
+        err "Domain discovery failed."
+        rollback_failed_join_local_state "$snap" "interactive"
         return 1
     fi
 
     audit_time_sync || {
         warn "Time readiness is not healthy."
         confirm "Continue to Kerberos authentication anyway?" N || {
-            restore_network_from_snapshot "$snap" || true
-            restore_hostname_from_snapshot "$snap" || true
+            rollback_failed_join_local_state "$snap" "interactive"
             return 1
         }
     }
 
     validate_ad_network_ports "$domain" "$dns_csv" || {
-        err "Required AD network ports are not reachable. Restoring DNS/hostname."
-        restore_network_from_snapshot "$snap" || true
-        restore_hostname_from_snapshot "$snap" || true
+        err "Required AD network ports are not reachable."
+        rollback_failed_join_local_state "$snap" "interactive"
         return 1
     }
 
     [[ -n "$JOIN_REALM_NAME" ]] || JOIN_REALM_NAME="${domain^^}"
+
+    join_user="$(prompt_domain_admin_account 'join this computer to the domain' 'Administrator')"
+    info "Selected AD join identity: $join_user"
+
     if ! kerberos_preflight_ticket "$join_user" "$JOIN_REALM_NAME"; then
-        restore_network_from_snapshot "$snap" || true
-        restore_hostname_from_snapshot "$snap" || true
+        rollback_failed_join_local_state "$snap" "interactive"
         return 1
     fi
+    join_transaction_mark "$snap" "KERBEROS_READY"
 
     local -a join_args=(
         join
@@ -1436,54 +1612,64 @@ join_domain_guided() {
     [[ -n "$ou" ]] && join_args+=("--computer-ou=$ou")
     join_args+=("$domain")
 
-    info "Joining with the isolated Kerberos ticket for the selected account; no password is stored."
+    info "Joining with the isolated Kerberos ticket for '$join_user'; no password is stored."
     local join_log="${snap}/realm-join.log" join_rc=0
+
     KRB5CCNAME="FILE:${PRIVATE_KRB5CCACHE}" \
     KRB5_CCACHE="FILE:${PRIVATE_KRB5CCACHE}" \
         realm "${join_args[@]}" 2>&1 | tee "$join_log"
     join_rc=${PIPESTATUS[0]}
 
     if (( join_rc != 0 )); then
-        err "realm join failed. Rolling back network and hostname."
+        err "realm join failed."
         analyze_realm_join_failure "$join_log" "$JOIN_COMPUTER_NAME"
-        cleanup_private_ccache
-        restore_network_from_snapshot "$snap" || true
-        restore_hostname_from_snapshot "$snap" || true
-        warn "Installed packages are retained and are recorded in the snapshot."
+        rollback_failed_join_local_state "$snap" "interactive"
         return 1
     fi
+
     cleanup_private_ccache
 
-    # The machine account now exists. From this point onward do NOT silently
-    # restore AD DNS on validation failure; that would leave a joined machine
-    # unable to find its DC. Persist lifecycle state first.
-    record_current_state "$snap" "$domain" "$JOIN_REALM_NAME" "$ACTIVE_IFACE" "$dns_csv" "$hostname_changed" "$JOIN_COMPUTER_NAME"
+    JOIN_TRANSACTION_COMMITTED=1
+    JOIN_TRANSACTION_ACTIVE=0
+    join_transaction_mark "$snap" "MEMBERSHIP_COMMITTED"
+
+    record_current_state \
+        "$snap" "$domain" "$JOIN_REALM_NAME" "$ACTIVE_IFACE" \
+        "$dns_csv" "$hostname_changed" "$JOIN_COMPUTER_NAME"
 
     if ! systemctl enable --now sssd.service; then
         set_current_phase "JOINED_DEGRADED" || true
         err "Domain join succeeded, but SSSD failed to start. AD DNS and snapshot are retained for repair/clean leave."
-        journalctl -u sssd.service -n 60 --no-pager 2>/dev/null | tee "${snap}/sssd-failure.txt" || true
+        journalctl -u sssd.service -n 60 --no-pager 2>/dev/null |
+            tee "${snap}/sssd-failure.txt" || true
         return 1
     fi
 
-    configure_mkhomedir "$snap" || warn "Home-directory automation could not be fully configured."
-    apply_access_policy "$domain" || warn "Login authorization policy was not changed."
+    configure_mkhomedir "$snap" || \
+        warn "Home-directory automation could not be fully configured."
+    apply_access_policy "$domain" || \
+        warn "Login authorization policy was not changed."
 
     test_user="$(ask 'Optional domain user for identity lookup validation (blank to skip)' '')"
     if postjoin_acceptance "$domain" "$test_user"; then
         set_current_phase "JOIN_PENDING_REBOOT" || true
+        join_transaction_mark "$snap" "JOIN_PENDING_REBOOT"
         ok "Domain join passed immediate acceptance checks."
     else
         set_current_phase "JOINED_DEGRADED" || true
+        join_transaction_mark "$snap" "JOINED_DEGRADED"
         err "The machine account was joined, but one or more acceptance checks failed."
         warn "Do not force local rollback. Repair the issue or use a clean domain leave."
-        journalctl -u sssd.service -n 80 --no-pager 2>/dev/null >"${snap}/sssd-postjoin-journal.txt" || true
+        journalctl -u sssd.service -n 80 --no-pager 2>/dev/null \
+            >"${snap}/sssd-postjoin-journal.txt" || true
         return 1
     fi
 
     info "Snapshot retained at: $snap"
     info "A reboot is required for final acceptance and lifecycle completion."
-    if confirm "Reboot now?" N; then systemctl reboot; fi
+    if confirm "Reboot now?" N; then
+        systemctl reboot
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1511,6 +1697,10 @@ audit_readiness() {
     printf '\n'
 
     validate_required_commands || true
+    if incomplete_sssd_residue_present; then
+        warn "Incomplete previous join residue detected: sss_cache is installed but SSSD is not initialized."
+        info "Run the guided join again; it will offer snapshot-based recovery before continuing."
+    fi
     audit_time_sync || true
 
     local realms=""
@@ -1597,6 +1787,67 @@ restore_identity_files() {
     fi
 }
 
+restore_sssd_runtime_from_snapshot() {
+    local snap="$1"
+    local PREJOIN_SSSD_ACTIVE="0" PREJOIN_SSSD_ENABLED="0"
+
+    [[ -f "$snap/snapshot.env" ]] || return 0
+    # shellcheck disable=SC1090
+    . "$snap/snapshot.env"
+
+    local sssd_units=""
+    sssd_units="$(systemctl list-unit-files sssd.service --no-legend 2>/dev/null || true)"
+    if ! grep -Fq 'sssd.service' <<<"$sssd_units"; then
+        return 0
+    fi
+
+    if [[ "${PREJOIN_SSSD_ENABLED:-0}" == "1" ]]; then
+        systemctl enable sssd.service >/dev/null 2>&1 || true
+    else
+        systemctl disable sssd.service >/dev/null 2>&1 || true
+    fi
+
+    if [[ "${PREJOIN_SSSD_ACTIVE:-0}" == "1" ]]; then
+        systemctl restart sssd.service >/dev/null 2>&1 || \
+            warn "Pre-join SSSD service state could not be restored completely."
+    else
+        systemctl stop sssd.service >/dev/null 2>&1 || true
+    fi
+}
+
+rollback_failed_join_local_state() {
+    local snap="$1" mode="${2:-interactive}"
+    [[ -n "$snap" && -d "$snap" ]] || return 1
+
+    JOIN_TRANSACTION_ROLLBACK=1
+    JOIN_TRANSACTION_ACTIVE=0
+    cleanup_private_ccache
+
+    warn "Restoring local state because AD membership was not committed."
+    restore_network_from_snapshot "$snap" || warn "DNS/network rollback reported a problem."
+    restore_identity_files "$snap"
+    restore_hostname_from_snapshot "$snap" || warn "Hostname rollback reported a problem."
+    restore_sssd_runtime_from_snapshot "$snap"
+    rm -f "$CURRENT_STATE" 2>/dev/null || true
+    join_transaction_mark "$snap" "LOCAL_STATE_ROLLED_BACK"
+
+    if [[ "$mode" == "interactive" &&
+          -s "$snap/packages-installed-by-assistant.txt" ]]; then
+        printf '\n'
+        info "The failed attempt installed AD client packages that were absent before the snapshot."
+        warn "If SSSD was never configured, keeping sssd-tools can produce sss_cache/config.ldb warnings on local user operations."
+        if confirm "Remove only packages added by this failed attempt and fully return to the pre-join package baseline?" Y; then
+            remove_assistant_packages_now "$snap" || \
+                warn "Package rollback was incomplete; review the package manager output."
+        else
+            warn "Packages were retained for retry. SSSD-related tools may warn until a later join configures SSSD."
+        fi
+    fi
+
+    JOIN_TRANSACTION_ROLLBACK=0
+}
+
+
 restore_hostname_from_snapshot() {
     local snap="$1"
     local OLD_HOSTNAME=""
@@ -1625,7 +1876,7 @@ leave_domain_cleanly() {
     local domain=""
     domain="$(awk 'NR==1{print}' <<<"$realm_names")"
     local leave_user=""
-    leave_user="$(prompt_domain_admin_account 'remove this computer from the domain')"
+    leave_user="$(prompt_domain_admin_account 'remove this computer from the domain' 'Administrator')"
 
     printf '\nDomain: %s\n' "$domain"
     confirm_literal \
