@@ -137,7 +137,7 @@ Revisiones utilizadas para esta edición:
 ```text
 DC Debian      : 5.1.0-remote-ops-ui
 DC Windows     : 1.7.0-remote-ops-ui
-Client Linux   : 1.1.0-resilient
+Client Linux   : 1.1.3-resolver-convergence
 Client Windows : 1.1.0-resilient
 ```
 
@@ -2991,6 +2991,49 @@ No se añaden dependencias ni se intenta reconfigurar automáticamente OpenRC, r
 
 ### Readiness y resiliencia v1.1
 
+La revisión Linux `1.1.3-resolver-convergence` conserva las mismas dependencias que `1.1.2` y añade
+diagnóstico/reparación del camino entre el gestor de red y el resolver real del sistema.
+
+Un cliente AD **no necesita IP estática** para unirse al dominio. DHCP puede seguir gestionando
+dirección, gateway y rutas; el requisito es que el resolver efectivo del cliente utilice DNS AD
+para localizar el dominio.
+
+El assistant distingue ahora:
+
+```text
+network configuration owner
+  NetworkManager / systemd-resolved / resolv.conf
+
+actual system resolver
+  systemd-resolved / NetworkManager resolv.conf / direct resolv.conf
+```
+
+Esto cubre el caso en el que NetworkManager acepta correctamente `192.168.x.x` como DNS AD pero
+`dig`, libc o `realmd` continúan utilizando un `/etc/resolv.conf` desconectado o un
+`systemd-resolved` sin la información per-link.
+
+Cuando el DNS AD responde directamente pero el resolver del host no converge, el flujo es:
+
+```text
+direct @AD-DNS SRV query        PASS
+NetworkManager profile          PASS
+  ↓
+wait for resolver convergence
+  ↓
+systemd-resolved per-link sync
+  ↓
+flush caches
+  ↓
+system resolver SRV query
+```
+
+Si `systemd-resolved` puede descubrir AD pero `/etc/resolv.conf` no apunta al resolver activo, el
+assistant muestra el diagnóstico y puede reparar explícitamente el symlink. La modificación es
+reversible porque `/etc/resolv.conf` ya forma parte del snapshot pre-join.
+
+La revisión mantiene además la selección de cuenta administrativa al final del flujo y la
+recuperación transaccional de intentos de join incompletos.
+
 Antes de tocar DNS, el wizard realiza un **preflight directo** contra todos los servidores AD DNS
 introducidos. Cada uno debe responder al locator:
 
@@ -3073,6 +3116,10 @@ DNS a ciegas**. Mantiene AD DNS y el snapshot para poder reparar o realizar un l
 
 ### Backends DNS
 
+En máquinas virtuales con adaptador puente, DHCP es válido y normalmente preferible para clientes.
+No es necesario crear una IP estática en Netplan únicamente para hacer el domain join. El bridge
+debe permitir alcanzar los DC/DNS y el cliente debe resolver el dominio mediante esos DNS.
+
 Detección automática:
 
 ```text
@@ -3104,7 +3151,92 @@ reversible snapshot
 El fallback de `/etc/resolv.conf` requiere confirmación explícita porque la persistencia de ese
 archivo depende de cómo administre la red la distribución.
 
-### Identity mapping
+### Credencial de join e identity mapping
+
+`Administrator` vuelve a ser el valor por defecto para mantener el flujo normal de un dominio recién
+creado. La cuenta **no queda fijada**: el wizard pregunta justo en el límite final de autenticación,
+después de validar DNS, red, hora y puertos AD.
+
+```text
+DOMAIN CREDENTIAL
+
+Default account: Administrator
+Press Enter to use the default, or type another delegated/enabled AD account.
+
+AD account authorized to join this computer to the domain [Administrator]:
+```
+
+Por tanto:
+
+```text
+Enter
+  → Administrator
+
+Godzilla
+  → Godzilla
+
+join-operator@CORP.EXAMPLE.COM
+  → explicit delegated account
+```
+
+El asistente obtiene un ticket Kerberos aislado para la identidad seleccionada y expone tanto
+`KRB5CCNAME` como `KRB5_CCACHE` al proceso `realm`. La contraseña sigue siendo interactiva y no se
+persiste. El `leave` conserva el mismo comportamiento: `Administrator` por defecto con posibilidad
+de introducir otra cuenta.
+
+Si el join devuelve `Insufficient permissions to modify computer account`, el asistente distingue
+ese caso y orienta a revisar un objeto de equipo preexistente/stale o los permisos delegados antes
+de repetir el join.
+
+### Recuperación de un join interrumpido antes de crear membership
+
+v1.1.2 trata explícitamente el caso en el que un intento instala `sssd-tools`/SSSD pero termina
+antes de inicializar correctamente SSSD. Ese estado podía dejar:
+
+```text
+sss_cache installed
+/etc/sssd/sssd.conf missing
+/var/lib/sss/db/config.ldb missing
+no realm membership
+```
+
+y provocar mensajes de `sss_cache` al ejecutar herramientas locales de usuarios.
+
+El snapshot guarda ahora también el estado previo de `sssd.service`. Mientras la membership AD no
+haya sido confirmada, todos los fallos posteriores al snapshot usan un rollback unificado:
+
+```text
+failure / Ctrl+C / TERM
+  ↓
+private Kerberos cache cleanup
+  ↓
+restore DNS/network
+  ↓
+restore krb5 / keytab / SSSD / NSS / PAM
+  ↓
+restore hostname
+  ↓
+restore previous SSSD enabled/active state
+```
+
+Si el intento había instalado paquetes que no existían antes, el asistente ofrece además, con
+respuesta recomendada `Y`, eliminar **solo esos paquetes**. No ejecuta `autoremove`.
+
+Si el proceso anterior terminó de forma abrupta y dejó residuos, el siguiente `--join` detecta el
+patrón `sss_cache` sin `sssd.conf/config.ldb`, localiza el último snapshot del asistente y ofrece:
+
+```text
+[1] Repair local identity state from the snapshot
+[2] Keep the current residue and continue
+[0] Cancel
+```
+
+Esto no se aplica si `adcli testjoin` demuestra que la machine account sigue siendo válida: en ese
+caso el equipo se considera potencialmente unido/degradado y no se elimina SSSD automáticamente.
+
+Una vez que `realm join` devuelve éxito, la transacción cambia a `MEMBERSHIP_COMMITTED`. Desde ese
+punto un fallo posterior de SSSD o de acceptance **no** restaura DNS/identidad a ciegas; se conserva
+el estado `JOINED_DEGRADED` para reparación o leave limpio.
 
 El wizard pregunta:
 

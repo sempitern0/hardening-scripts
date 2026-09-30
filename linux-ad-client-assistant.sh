@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # linux-ad-client-assistant.sh
-# Version 1.1.2-admin-default-recovery
+# Version 1.1.3-resolver-convergence
 #
 # Reversible Active Directory client join assistant for Linux.
 #
@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.1.2-admin-default-recovery"
+SCRIPT_VERSION="1.1.3-resolver-convergence"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -69,6 +69,8 @@ JOIN_TRANSACTION_ACTIVE=0
 JOIN_TRANSACTION_COMMITTED=0
 JOIN_TRANSACTION_SNAPSHOT=""
 JOIN_TRANSACTION_ROLLBACK=0
+SYSTEM_RESOLVER_BACKEND=""
+RESOLV_CONF_TARGET=""
 
 # ---------------------------------------------------------------------------
 # UI / logging
@@ -96,6 +98,7 @@ init_runtime() {
     detect_os
     detect_active_interface
     detect_dns_backend
+    detect_system_resolver
 
     trap on_exit_cleanup EXIT
     trap 'exit 130' INT
@@ -132,7 +135,9 @@ header() {
     printf 'Version: %s\n' "$SCRIPT_VERSION"
     printf 'Host   : %s\n' "$(hostname 2>/dev/null || printf unknown)"
     printf 'OS     : %s\n' "${DISTRO_ID:-unknown}"
-    printf 'Network: %s / %s\n' "${ACTIVE_IFACE:-unknown}" "${DNS_BACKEND:-unknown}"
+    detect_system_resolver
+    printf 'Network: %s / config=%s / resolver=%s\n' \
+        "${ACTIVE_IFACE:-unknown}" "${DNS_BACKEND:-unknown}" "${SYSTEM_RESOLVER_BACKEND:-unknown}"
     printf '%s\n\n' '------------------------------------------------------------------------'
 }
 
@@ -580,6 +585,153 @@ detect_dns_backend() {
     fi
 }
 
+
+detect_system_resolver() {
+    SYSTEM_RESOLVER_BACKEND="resolv.conf"
+    RESOLV_CONF_TARGET="$(readlink -f /etc/resolv.conf 2>/dev/null || true)"
+    [[ -n "$RESOLV_CONF_TARGET" ]] || RESOLV_CONF_TARGET="/etc/resolv.conf"
+
+    if command_exists resolvectl &&
+       systemctl is-active --quiet systemd-resolved.service 2>/dev/null; then
+        SYSTEM_RESOLVER_BACKEND="systemd-resolved"
+        return 0
+    fi
+
+    if [[ "$RESOLV_CONF_TARGET" == "/run/NetworkManager/resolv.conf" ||
+          "$RESOLV_CONF_TARGET" == "/run/NetworkManager/no-stub-resolv.conf" ]]; then
+        SYSTEM_RESOLVER_BACKEND="NetworkManager-resolv.conf"
+    fi
+}
+
+wait_for_system_ad_dns() {
+    local domain="$1" attempts="${2:-8}" i output=""
+    for ((i=1; i<=attempts; i++)); do
+        output="$(domain_srv_query "$domain" "" || true)"
+        [[ -n "$output" ]] && return 0
+        sleep 1
+    done
+    return 1
+}
+
+resolved_can_discover_ad() {
+    local domain="$1" output=""
+    command_exists resolvectl || return 1
+    systemctl is-active --quiet systemd-resolved.service 2>/dev/null || return 1
+    output="$(resolvectl query --type=SRV "_ldap._tcp.dc._msdcs.${domain}" 2>/dev/null || true)"
+    grep -Fqi "${domain}" <<<"$output" || grep -Fqi 'service:' <<<"$output"
+}
+
+resolver_diagnostics() {
+    local domain="$1"
+    detect_system_resolver
+    printf '\nSYSTEM RESOLVER DIAGNOSTICS\n'
+    printf '  Network owner   : %s\n' "$DNS_BACKEND"
+    printf '  System resolver : %s\n' "$SYSTEM_RESOLVER_BACKEND"
+    printf '  /etc/resolv.conf: %s\n' "$RESOLV_CONF_TARGET"
+    printf '  Interface       : %s\n' "${ACTIVE_IFACE:-unknown}"
+
+    if [[ -r /etc/resolv.conf ]]; then
+        printf '  resolv.conf nameservers:\n'
+        awk '/^[[:space:]]*nameserver[[:space:]]+/{print "    "$2}' /etc/resolv.conf
+    fi
+
+    if command_exists nmcli && [[ -n "${ACTIVE_IFACE:-}" ]]; then
+        local nm_dns=""
+        nm_dns="$(nmcli -g IP4.DNS device show "$ACTIVE_IFACE" 2>/dev/null || true)"
+        printf '  NetworkManager IP4.DNS:\n'
+        if [[ -n "$nm_dns" ]]; then sed 's/^/    /' <<<"$nm_dns"; else printf '    (none)\n'; fi
+    fi
+
+    if command_exists resolvectl &&
+       systemctl is-active --quiet systemd-resolved.service 2>/dev/null; then
+        printf '  systemd-resolved link DNS:\n'
+        resolvectl dns "$ACTIVE_IFACE" 2>/dev/null | sed 's/^/    /' || true
+        printf '  systemd-resolved link domains:\n'
+        resolvectl domain "$ACTIVE_IFACE" 2>/dev/null | sed 's/^/    /' || true
+    fi
+}
+
+apply_resolved_runtime_dns() {
+    local domain="$1" dns_csv="$2" iface="$3"
+    command_exists resolvectl || return 1
+    systemctl is-active --quiet systemd-resolved.service 2>/dev/null || return 1
+    local -a dns_array=()
+    mapfile -t dns_array < <(parse_dns_csv "$dns_csv")
+    ((${#dns_array[@]})) || return 1
+    resolvectl dns "$iface" "${dns_array[@]}" || return 1
+    resolvectl domain "$iface" "$domain" "~$domain" || return 1
+    resolvectl flush-caches >/dev/null 2>&1 || true
+}
+
+repair_resolver_convergence() {
+    local domain="$1" dns_csv="$2" iface="$3"
+    detect_system_resolver
+    wait_for_system_ad_dns "$domain" 5 && return 0
+
+    warn "AD DNS is reachable directly, but the host system resolver has not converged."
+    resolver_diagnostics "$domain"
+
+    if command_exists resolvectl &&
+       systemctl is-active --quiet systemd-resolved.service 2>/dev/null; then
+        info "Applying the AD DNS to systemd-resolved on '$iface' for live convergence."
+        if apply_resolved_runtime_dns "$domain" "$dns_csv" "$iface" &&
+           wait_for_system_ad_dns "$domain" 5; then
+            ok "System resolver converged through systemd-resolved."
+            return 0
+        fi
+
+        if resolved_can_discover_ad "$domain"; then
+            detect_system_resolver
+            case "$RESOLV_CONF_TARGET" in
+                /run/systemd/resolve/stub-resolv.conf|/run/systemd/resolve/resolv.conf|/run/NetworkManager/resolv.conf)
+                    ;;
+                *)
+                    warn "systemd-resolved can discover AD, but /etc/resolv.conf is detached from the active resolver."
+                    if [[ -e /run/systemd/resolve/stub-resolv.conf ]] &&
+                       confirm "Repair /etc/resolv.conf to the systemd-resolved stub? Snapshot rollback remains available." Y; then
+                        rm -f /etc/resolv.conf || return 1
+                        ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf || return 1
+                        resolvectl flush-caches >/dev/null 2>&1 || true
+                        if wait_for_system_ad_dns "$domain" 5; then
+                            detect_system_resolver
+                            ok "System resolver repaired through systemd-resolved."
+                            return 0
+                        fi
+                    fi
+                    ;;
+            esac
+        fi
+    fi
+
+    if [[ "$DNS_BACKEND" == "NetworkManager" &&
+          -e /run/NetworkManager/resolv.conf ]]; then
+        detect_system_resolver
+        if grep -Fq "$(dns_first "$dns_csv")" /run/NetworkManager/resolv.conf 2>/dev/null &&
+           ! wait_for_system_ad_dns "$domain" 1; then
+            case "$RESOLV_CONF_TARGET" in
+                /run/NetworkManager/resolv.conf)
+                    ;;
+                *)
+                    warn "NetworkManager generated the correct AD resolver file, but /etc/resolv.conf is using another source."
+                    if confirm "Attach /etc/resolv.conf to NetworkManager's runtime resolver file? Snapshot rollback remains available." Y; then
+                        rm -f /etc/resolv.conf || return 1
+                        ln -s /run/NetworkManager/resolv.conf /etc/resolv.conf || return 1
+                        if wait_for_system_ad_dns "$domain" 5; then
+                            detect_system_resolver
+                            ok "System resolver repaired through NetworkManager."
+                            return 0
+                        fi
+                    fi
+                    ;;
+            esac
+        fi
+    fi
+
+    resolver_diagnostics "$domain"
+    return 1
+}
+
+
 # ---------------------------------------------------------------------------
 # State serialization / snapshots
 # ---------------------------------------------------------------------------
@@ -1009,6 +1161,11 @@ apply_domain_dns() {
                     return 1
                 fi
             fi
+
+            if command_exists resolvectl &&
+               systemctl is-active --quiet systemd-resolved.service 2>/dev/null; then
+                apply_resolved_runtime_dns "$domain" "$dns_csv" "$iface" ||                     warn "NetworkManager was updated, but systemd-resolved did not accept the live per-link DNS update."
+            fi
             ;;
         systemd-resolved)
             local -a dns_array=()
@@ -1098,6 +1255,7 @@ restore_network_from_snapshot() {
 
     detect_active_interface
     detect_dns_backend
+    detect_system_resolver
     ok "Pre-join DNS/network resolver state restored."
 }
 
@@ -1236,7 +1394,7 @@ kerberos_preflight_ticket() {
 }
 
 validate_domain_dns() {
-    local domain="$1" dns_csv="$2" ip="" direct="" system="" failed=0
+    local domain="$1" dns_csv="$2" ip="" direct="" failed=0
 
     if command_exists dig; then
         while IFS= read -r ip; do
@@ -1251,12 +1409,16 @@ validate_domain_dns() {
         done < <(parse_dns_csv "$dns_csv")
         (( failed == 0 )) || return 1
 
-        system="$(domain_srv_query "$domain" "" || true)"
-        if [[ -n "$system" ]]; then
+        if wait_for_system_ad_dns "$domain" 5; then
             ok "System resolver can discover AD DC locator SRV records."
         else
-            err "System resolver cannot discover the domain after DNS configuration."
-            return 1
+            warn "Direct AD DNS queries pass, but the system resolver cannot yet discover the domain."
+            if repair_resolver_convergence "$domain" "$dns_csv" "$ACTIVE_IFACE"; then
+                ok "System resolver can now discover AD DC locator SRV records."
+            else
+                err "System resolver still cannot discover the domain after resolver convergence repair."
+                return 1
+            fi
         fi
     else
         warn "dig is unavailable; relying on realmd discovery."
@@ -1271,6 +1433,7 @@ validate_domain_dns() {
     else
         err "realmd could not discover Active Directory."
         printf '%s\n' "$discovery"
+        resolver_diagnostics "$domain"
         return 1
     fi
     return 0
@@ -1684,7 +1847,10 @@ audit_readiness() {
     printf 'Package family  : %s\n' "$PKG_FAMILY"
     printf 'Init/systemd    : %s\n' "$(command_exists systemctl && [[ -d /run/systemd/system ]] && printf supported || printf unsupported)"
     printf 'Suggested iface : %s\n' "${ACTIVE_IFACE:-unknown}"
-    printf 'DNS backend     : %s\n' "$DNS_BACKEND"
+    detect_system_resolver
+    printf 'DNS config owner: %s\n' "$DNS_BACKEND"
+    printf 'System resolver : %s\n' "$SYSTEM_RESOLVER_BACKEND"
+    printf 'resolv.conf      : %s\n' "$RESOLV_CONF_TARGET"
     printf 'Remote session  : %s\n\n' "$REMOTE_SESSION"
 
     printf 'Active IPv4 interfaces:\n'
@@ -2037,6 +2203,8 @@ Recovery snapshots:
 Logs:
   $LOG_ROOT
 
+Administrator is the default join/leave account but can be overridden at the credential step.
+DHCP addressing is supported; a static client IP is not required. AD DNS is managed separately and resolver convergence is validated.
 No password is persisted, no third-party repository is added, and supported joins use a private Kerberos cache.
 EOF
 }
