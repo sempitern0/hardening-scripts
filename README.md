@@ -2,13 +2,13 @@
 
 [![Status](https://img.shields.io/badge/status-active%20development-0A7EA4)](#estado-del-proyecto)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Debian](https://img.shields.io/badge/Debian-13-A81D33?logo=debian&logoColor=white)](#debian--ubuntu--samba-active-directory-control-plane)
-[![Ubuntu](https://img.shields.io/badge/Ubuntu%20Server-26.04%20LTS-E95420?logo=ubuntu&logoColor=white)](#debian--ubuntu--samba-active-directory-control-plane)
-[![Samba AD](https://img.shields.io/badge/Samba-AD%20DC-1B4D7A)](#debian--ubuntu--samba-active-directory-control-plane)
-[![Windows Server](https://img.shields.io/badge/Windows%20Server-2019%20%7C%202022%20%7C%202025-0078D4?logo=windows&logoColor=white)](#windows-server-active-directory-control-plane)
-[![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white)](#windows-server-active-directory-control-plane)
-[![Security](https://img.shields.io/badge/security-audit--first%20%7C%20backup--first-success)](#modelo-de-seguridad)
-[![Navigation](https://img.shields.io/badge/navigation-0%3DBack%20%7C%20H%3DHome-blueviolet)](#navegación-de-los-menús)
+[![Debian](https://img.shields.io/badge/Debian-13-A81D33?logo=debian&logoColor=white)](#debian-samba-ad)
+[![Ubuntu](https://img.shields.io/badge/Ubuntu%20Server-26.04%20LTS-E95420?logo=ubuntu&logoColor=white)](#debian-samba-ad)
+[![Samba AD](https://img.shields.io/badge/Samba-AD%20DC-1B4D7A)](#debian-samba-ad)
+[![Windows Server](https://img.shields.io/badge/Windows%20Server-2019%20%7C%202022%20%7C%202025-0078D4?logo=windows&logoColor=white)](#windows-ad)
+[![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white)](#windows-ad)
+[![Security](https://img.shields.io/badge/security-audit--first%20%7C%20backup--first-success)](#modelo-seguridad)
+[![Navigation](https://img.shields.io/badge/navigation-0%3DBack%20%7C%20H%3DHome-blueviolet)](#navegacion)
 
 Dos asistentes administrativos orientados a profesionales para desplegar, auditar, operar, endurecer, recuperar y migrar entornos **Active Directory** sobre **Samba AD DC en Debian/Ubuntu** y **AD DS nativo en Windows Server**.
 
@@ -32,12 +32,15 @@ El objetivo no es convertir Active Directory en un «one-click installer». El o
   - [Descarga y ejecución](#descarga-linux)
   - [Modos del script](#modos-linux)
   - [CLI instalables](#cli-linux)
+  - [Dependencias y paquetes](#dependencias-linux)
   - [Bootstrap de un DC nuevo](#bootstrap-linux)
   - [Administración diaria](#operacion-linux)
   - [DNS y resolver local](#dns-linux)
   - [Kerberos, Samba y hardening](#hardening-linux)
-  - [Group Policy](#gpo-linux)
+  - [Group Policy · guía integrada](#gpo-linux)
   - [Ubuntu ADSys y GPO](#ubuntu-adsys)
+  - [Network IDS / Suricata](#ids-linux)
+  - [Decommission / reset](#reset-linux)
   - [Migración de dominio](#migracion-linux)
   - [Directorios, logs y estado](#estado-linux)
   - [Configuración manual post-instalación](#postinstalacion-linux)
@@ -49,9 +52,12 @@ El objetivo no es convertir Active Directory en un «one-click installer». El o
   - [Administración diaria](#operacion-windows)
   - [Hardening de host y protocolos AD](#hardening-windows)
   - [Backup y recuperación](#backup-windows)
+  - [Dependencias y servicing](#dependencias-windows)
+  - [Network IDS / Suricata](#ids-windows)
+  - [Decommission / reset](#reset-windows)
   - [Migración de dominio](#migracion-windows)
   - [Configuración manual post-instalación](#postinstalacion-windows)
-- [Clientes Windows y Linux](#clientes)
+- [Unir equipos al dominio](#clientes)
 - [VirtualBox, VMware y laboratorios multi-NIC](#virtualizacion)
 - [Alta disponibilidad](#alta-disponibilidad)
 - [Troubleshooting](#troubleshooting)
@@ -111,31 +117,59 @@ No está orientado a sustituir el conocimiento del administrador. Cuando una dec
 <a id="contenido-repositorio"></a>
 # Qué incluye el repositorio
 
+El repositorio mantiene dos control planes principales:
+
 | Archivo | Plataforma | Línea actual | Función |
 |---|---|---:|---|
-| `debian-ad-assistant.sh` | Debian / Ubuntu Server | 4.6.4 | Samba AD DC, DNS, Kerberos, Chrony, GPO, hardening, backups, migración y administración |
-| `windows-server-ad-assistant.ps1` | Windows Server | 1.3.x | AD DS, DNS, GPO, auditoría, hardening, backup, provisioning y migración |
-| `DEBIAN-AD-Assistant-GPO-Guide-v4.4.0.md` | Samba AD / GPO | guía | Formato JSON, biblioteca GPO y operación avanzada |
+| `debian-ad-assistant.sh` | Debian / Ubuntu Server | 5.0.x | Samba AD DC, DNS, Kerberos, Chrony, GPO, dependencias, IDS, hardening, backup, reset, migración y operación diaria |
+| `windows-server-ad-assistant.ps1` | Windows Server | 1.6.x | AD DS, DNS, GPO, hardening, dependencias, IDS/EVE, backup, demotion/reset, provisioning y migración |
 
-Versión Debian documentada en esta revisión:
+Revisiones utilizadas para esta edición:
 
 ```text
-4.6.4-kerberos-audit-fix
+Debian  : 5.0.6-reviewed
+Windows : 1.6.1-menu-resilience
 ```
 
-Esta revisión incluye las correcciones recientes de detección/instalación de Chrony,
-validación de sintaxis, espera de sincronización y auditoría Kerberos no interactiva.
+La antigua guía separada:
 
-Los nombres de versión pueden avanzar más rápido que esta tabla. Antes de ejecutar:
+```text
+DEBIAN-AD-Assistant-GPO-Guide-v4.4.0.md
+```
+
+se ha **integrado en este README**. Puede conservarse como documento histórico, pero la referencia
+operativa actual es [Group Policy · guía integrada](#gpo-linux).
+
+Cambios recientes relevantes:
+
+```text
+Debian
+  Chrony discovery/syntax/synchronization fixes
+  Kerberos audit no interactivo
+  selectors e idempotencia de membresías
+  dependency lifecycle (ad-deps)
+  domain reset center
+  Suricata IDS (ad-ids)
+  Samba listener/KDC boot self-heal
+  revisión pipefail/SIGPIPE de rutas operativas
+  fallos Kerberos/GPO contenidos sin expulsar del menú
+
+Windows
+  selectors e idempotencia
+  native dependency center
+  supported AD DS demotion/reset
+  Suricata EVE analytics + Windows Forms dashboard
+  límites de recuperación para errores dentro de menús interactivos
+```
+
+Verifica siempre la versión real antes de ejecutar:
 
 ```bash
-head -n 10 debian-ad-assistant.sh
+head -n 12 debian-ad-assistant.sh
 ```
 
-o:
-
 ```powershell
-Get-Content .\windows-server-ad-assistant.ps1 -TotalCount 20
+Get-Content .\windows-server-ad-assistant.ps1 -TotalCount 25
 ```
 
 ---
@@ -417,18 +451,24 @@ sudo bash ./debian-ad-assistant.sh --help
 | `--samba-security` / `--samba-hardening` | Samba + Kerberos security center |
 | `--kerberos` / `--kerberos-security` | seguridad Kerberos |
 | `--migration` / `--migrate` | Domain Migration Center |
+| `--reset-domain` / `--decommission` | decommission/reset destructivo con recovery bundle |
+| `--dependencies` / `--deps` | inventario, reparación y actualización acotada de dependencias |
+| `--ids` / `--suricata` / `--network-ids` | IDS pasivo Suricata y analítica EVE |
 | `--install-cli` | instalar/refrescar comandos `ad-*` |
 | `--cli-info` | mostrar comandos instalados |
 | `--no-color` | desactivar ANSI colors |
 | `--help` | ayuda |
+
+`--ids-daily` es un target no interactivo utilizado por el timer de reports IDS.
 
 Ejemplos:
 
 ```bash
 sudo bash ./debian-ad-assistant.sh --validate
 sudo bash ./debian-ad-assistant.sh --gpo
-sudo bash ./debian-ad-assistant.sh --samba-security
-sudo bash ./debian-ad-assistant.sh --migration
+sudo bash ./debian-ad-assistant.sh --dependencies
+sudo bash ./debian-ad-assistant.sh --ids
+sudo bash ./debian-ad-assistant.sh --reset-domain
 ```
 
 ---
@@ -436,25 +476,19 @@ sudo bash ./debian-ad-assistant.sh --migration
 <a id="cli-linux"></a>
 ## CLI instalables Linux
 
-Instalación:
+Instalar o refrescar:
 
 ```bash
 sudo bash ./debian-ad-assistant.sh --install-cli
 ```
 
-El script se instala en:
+Control plane instalado:
 
 ```text
 /usr/local/libexec/debian-ad-assistant
 ```
 
-y crea symlinks en:
-
-```text
-/usr/local/sbin/
-```
-
-Comandos:
+Shortcuts:
 
 | Comando | Función |
 |---|---|
@@ -464,42 +498,88 @@ Comandos:
 | `ad-groups` | grupos |
 | `ad-computers` | equipos |
 | `ad-permissions` | membresías y ACL |
-| `ad-gpo` | GPO multiplataforma |
+| `ad-gpo` | GPO |
 | `ad-security` | seguridad del host/DC |
-| `ad-samba` | hardening Samba + Kerberos |
+| `ad-samba` | Samba + Kerberos |
 | `ad-kerberos` | Kerberos security center |
-| `ad-migrate` | migraciones |
-| `ad-audit` | auditoría read-only |
+| `ad-migrate` | migración |
+| `ad-reset` | decommission/reset |
+| `ad-deps` | dependencias y paquetes |
+| `ad-ids` | IDS Suricata |
+| `ad-audit` | auditoría |
 | `ad-validate` | validación funcional |
 | `ad-status` | estado rápido |
 | `ad-backup` | backup del dominio |
-| `ad-tools` | catálogo y estado de shortcuts |
+| `ad-tools` | catálogo/estado de shortcuts |
 
-Ejemplos:
+> **Nota:** después de sustituir el script por una versión nueva vuelve a ejecutar
+> `--install-cli`; de lo contrario `/usr/local/libexec/debian-ad-assistant` puede seguir apuntando
+> a una copia anterior.
 
-```bash
-sudo adctl
-sudo ad-status
-sudo ad-users
-sudo ad-gpo
-sudo ad-samba
-sudo ad-migrate
+<a id="dependencias-linux"></a>
+## Dependencias y paquetes Linux
+
+El control plane evita gestores externos y mantiene un perfil mínimo.
+
+Core de un DC existente:
+
+```text
+samba-ad-dc
+krb5-user
+chrony
+ldb-tools
+smbclient
+python3
+iproute2
+bind9-dnsutils / dnsutils equivalente
 ```
 
-Verificar shortcuts:
+Bootstrap añade cuando la distribución lo separa:
 
-```bash
-sudo ad-tools
+```text
+samba-ad-provision
 ```
 
-Actualizar shortcuts después de sustituir el script:
+Opcionales:
 
-```bash
-sudo bash ./debian-ad-assistant.sh --install-cli
+```text
+ufw
+fail2ban
+suricata
+suricata-update
 ```
 
-> **Nota:**
-> Si copias una nueva versión al servidor pero no vuelves a ejecutar `--install-cli`, `/usr/local/libexec/debian-ad-assistant` puede seguir siendo la versión antigua.
+No son dependencias del core:
+
+```text
+pip
+snap
+PPA
+curl installers
+third-party APT repositories
+```
+
+Acceso:
+
+```bash
+sudo ad-deps
+```
+
+Funciones:
+
+```text
+Dependency inventory
+Install missing required
+Update required packages
+Optional security tools
+```
+
+La actualización utiliza el conjunto explícito de dependencias y `--only-upgrade`; no convierte la
+operación en un `dist-upgrade`/`full-upgrade` del servidor.
+
+Las consultas de versión/candidate/origen son informativas y no deben terminar el control plane por
+un fallo de metadatos APT. Para componentes Samba, el asistente puede proponer un backup previo y
+vuelve a validar el servicio después de actualizar.
 
 ---
 
@@ -530,8 +610,9 @@ El asistente:
 14. configura administrador delegado;
 15. prepara GPO opcionales;
 16. configura UFW/Fail2ban/sysctl cuando se autoriza;
-17. valida AD/DNS/Kerberos/LDAP/SMB/SYSVOL;
-18. genera checklist post-instalación.
+17. instala el guard de salud de listeners post-boot;
+18. valida AD/DNS/Kerberos/LDAP/SMB/SYSVOL;
+19. genera checklist post-instalación.
 
 ### Protección frente a reprovisioning
 
@@ -575,6 +656,9 @@ CLI installation
 Resolver repair
 Domain migration
 Samba & Kerberos security
+Dependencies & packages
+Domain decommission / reset
+Network IDS / Suricata
 ```
 
 Consola diaria:
@@ -920,7 +1004,7 @@ firmadas cuando la versión instalada lo soporta.
 ---
 
 <a id="gpo-linux"></a>
-## Group Policy Linux
+## Group Policy · guía integrada
 
 Acceso:
 
@@ -928,28 +1012,148 @@ Acceso:
 sudo ad-gpo
 ```
 
-Funciones:
+Esta sección absorbe la antigua **DEBIAN AD Assistant — GPO Operations Guide v4.4.0** y las
+mejoras operativas posteriores.
+
+### Menú y flujo
+
+Operaciones principales:
 
 ```text
-List GPOs + GUIDs
+List GPOs + GUIDs + status
 Inspect GPO
 Create GPO
 Platform GPO catalog
 JSON policy library
 GPO status
-List containers
+List linked containers
 Link / update
 Remove link
-Backup GPO
-GPO readiness
+Backup
+Readiness
 Delete GPO
 Legacy baseline pair
-GPO paths & manual
+Paths & manual
 ```
 
-### Estado de una GPO
+Ruta habitual:
 
-El estado y el link son conceptos independientes:
+```text
+sudo ad-gpo
+  1  List GPOs + GUIDs + status
+  4  Platform GPO catalog
+  5  JSON policy library
+  6  GPO status
+  7  List linked containers
+  8  Link/update
+  9  Remove link
+ 10  Backup
+ 11  Readiness
+ 14  Paths & manual
+```
+
+### Paths persistentes
+
+```text
+/var/lib/debian-ad-assistant/gpo/
+├── builtin/
+│   └── windows/
+│       ├── sec-powershell-logging.json
+│       ├── sec-disable-llmnr.json
+│       ├── sec-smb-guest.json
+│       ├── sec-rdp-nla.json
+│       ├── sec-screen-lock.json
+│       ├── sec-disable-alwaysinstallelevated.json
+│       ├── sec-legal-notice.json
+│       └── sec-workstation-starter-combined.json
+├── custom/
+│   └── example-custom-policy.json
+└── GPO-GUIDE.md
+```
+
+`builtin/` es gestionado por el asistente. Para editar:
+
+```text
+builtin → copy to custom → edit → validate → load
+```
+
+### Formato JSON Samba
+
+```json
+[
+  {
+    "keyname": "SOFTWARE\\Policies\\Example\\Product",
+    "valuename": "SettingName",
+    "class": "MACHINE",
+    "type": "REG_DWORD",
+    "data": 1
+  }
+]
+```
+
+`class`:
+
+```text
+MACHINE
+USER
+BOTH
+```
+
+Validar:
+
+```bash
+python3 -m json.tool policy.json
+```
+
+Merge:
+
+```bash
+samba-tool gpo load '{GUID}' --content=policy.json
+```
+
+Replace de Registry policy content:
+
+```bash
+samba-tool gpo load '{GUID}' \
+  --content=policy.json \
+  --replace
+```
+
+Eliminar valores:
+
+```bash
+samba-tool gpo remove '{GUID}' \
+  --content=remove.json
+```
+
+El asistente automatiza estas operaciones y hace backup de la GPO seleccionada cuando corresponde.
+
+### Almacenamiento real de una GPO
+
+La biblioteca JSON es material fuente. La GPO real se divide entre:
+
+```text
+LDAP
+  CN={GUID},CN=Policies,CN=System,<domain DN>
+
+SYSVOL
+  <SYSVOL>/<domain>/Policies/{GUID}/
+```
+
+No construyas ni elimines manualmente esos directorios para intentar reparar una creación fallida.
+
+### Estado enable/disable
+
+AD usa `flags`:
+
+| Valor | Estado |
+|---:|---|
+| `0` | enabled |
+| `1` | user configuration disabled |
+| `2` | computer configuration disabled |
+| `3` | all settings disabled |
+
+El estado es independiente del link:
 
 ```text
 enabled + unlinked
@@ -959,87 +1163,169 @@ user disabled
 all disabled
 ```
 
-### Biblioteca persistente
+Consulta:
 
 ```text
-/var/lib/debian-ad-assistant/gpo/
-├── builtin/
-│   └── windows/
-├── custom/
-└── GPO-GUIDE.md
+ad-gpo → GPO status
 ```
 
-Las plantillas `builtin` son administradas por el asistente.
+### Staging recomendado
 
-Para modificar una política:
+El starter pack puede prepararse como:
 
 ```text
-builtin → copy to custom → edit → validate → load
+ALL_DISABLED + UNLINKED
 ```
 
-### JSON
+Después:
 
-Ejemplo:
+1. inspeccionar;
+2. enlazar a una OU de prueba;
+3. habilitar solo la parte machine/user necesaria;
+4. probar en un cliente;
+5. ampliar scope.
 
-```json
-[
-  {
-    "keyname": "SOFTWARE\\Policies\\Example\\Product",
-    "valuename": "ExampleSetting",
-    "class": "MACHINE",
-    "type": "REG_DWORD",
-    "data": 1
-  }
-]
-```
-
-Validación:
-
-```bash
-python3 -m json.tool policy.json
-```
-
-Carga manual equivalente:
-
-```bash
-samba-tool gpo load '{GUID}' \
-  --content=/path/policy.json
-```
-
-Reemplazo:
-
-```bash
-samba-tool gpo load '{GUID}' \
-  --content=/path/policy.json \
-  --replace
-```
-
-En producción utiliza el menú del asistente, que añade backup, selección y controles de error.
-
-### Windows vs Linux
-
-El asistente separa:
+### Consumidores de GPO/policy
 
 ```text
 Windows
-  → Registry/CSE GPO
+  → Registry / Windows CSE
 
 Ubuntu ADSys
-  → Ubuntu.admx / Ubuntu.adml
+  → Ubuntu.admx / Ubuntu.adml + ADSys mapping
 
 Samba/winbind Linux
-  → samba-gpupdate / Samba CSE
+  → samba-gpupdate / Samba policy managers
 
 SSSD
-  → GPO access-control evaluation
+  → principalmente GPO access-control evaluation
 ```
 
-No asumas que una política Windows Registry será consumida por un Ubuntu ADSys client.
+No asumas que un JSON Registry Windows tiene significado directo para Linux.
+
+### Ubuntu ADSys
+
+Generar plantillas en un cliente Ubuntu con una versión ADSys compatible:
+
+```bash
+mkdir -p ~/adsys-admx
+cd ~/adsys-admx
+
+adsysctl policy admx lts-only
+```
+
+o:
+
+```bash
+adsysctl policy admx all
+```
+
+Produce:
+
+```text
+Ubuntu.admx
+Ubuntu.adml
+```
+
+Central Store:
+
+```text
+<SYSVOL>/<domain>/Policies/PolicyDefinitions/Ubuntu.admx
+<SYSVOL>/<domain>/Policies/PolicyDefinitions/en-US/Ubuntu.adml
+```
+
+Menú:
+
+```text
+ad-gpo
+  → Platform GPO catalog
+  → Ubuntu ADSys clients
+```
+
+### Samba Linux / winbind
+
+Dependiendo de la versión Samba:
+
+```bash
+samba-tool gpo manage smb_conf ...
+samba-tool gpo manage access ...
+samba-tool gpo manage openssh ...
+samba-tool gpo manage sudoers ...
+samba-tool gpo manage scripts ...
+samba-tool gpo manage motd ...
+```
+
+El asistente comprueba capacidades de runtime cuando es posible.
+
+### SSSD
+
+SSSD puede evaluar GPO para **access control**. Eso no equivale a ejecutar las CSE Registry de
+Windows. El asistente utiliza inventario LDAP/SYSVOL/GPT.INI como diagnóstico de compatibilidad.
+
+### Readiness y troubleshooting
+
+Antes de crear/modificar:
+
+```text
+ad-gpo
+  → GPO readiness
+```
+
+y:
+
+```bash
+sudo samba-tool ntacl sysvolcheck
+```
+
+Si aparece:
+
+```text
+Could not find a DC for domain
+```
+
+revisa primero DNS/resolver/DC locator.
+
+Si aparece:
+
+```text
+ACCESS_DENIED
+```
+
+revisa:
+
+```bash
+klist
+samba-tool user getgroups <usuario>
+samba-tool gpo aclcheck
+samba-tool ntacl sysvolcheck
+```
+
+No ejecutes `sysvolreset` únicamente porque una operación GPO falle.
+
+El wrapper GPO intenta conservar el menú y capturar evidencia para distinguir:
+
+```text
+DNS/DC locator
+Kerberos
+delegation/ACL
+SYSVOL
+unsupported Samba capability
+```
+
+La consola GPO ya no exige un ticket Kerberos solo para abrir el menú. Las operaciones que sí
+necesitan autenticación intentan obtener el ticket en ese momento; si falla, la operación se
+cancela de forma limpia y el control vuelve al menú.
+
+La creación de GPO sigue dependiendo del comportamiento y capacidades de la versión Samba
+instalada; esta guía no presupone que un error actual de GPO haya quedado resuelto por otras
+correcciones del control plane.
 
 ---
 
 <a id="ubuntu-adsys"></a>
 ## Ubuntu ADSys y GPO
+
+ADSys es específico de Ubuntu y **no es requisito para unir Linux al dominio**. La unión genérica está en [Unir equipos al dominio](#clientes).
 
 En un Ubuntu cliente con ADSys:
 
@@ -1089,6 +1375,101 @@ Platform GPO catalog
 ```
 
 Mantén GPO de Ubuntu y Windows separadas siempre que sea posible.
+
+---
+
+<a id="ids-linux"></a>
+## Network IDS / Suricata
+
+Suricata es opcional y no forma parte del runtime mínimo AD.
+
+```bash
+sudo ad-ids
+```
+
+Postura por defecto:
+
+```text
+passive IDS
+AF_PACKET
+sin inline drop
+sin NFQUEUE enforcement
+```
+
+Paths gestionados:
+
+```text
+/etc/suricata/debian-ad-assistant.yaml
+/etc/systemd/system/suricata.service.d/90-debian-ad-assistant.conf
+/var/log/suricata/eve.json
+```
+
+Funciones:
+
+```text
+readiness
+install/repair
+passive configuration
+sensor health
+security summary
+recent alerts
+AD protocol intelligence
+rule update
+daily local reports
+evidence export
+disable integration
+```
+
+La analítica EVE presta especial atención a DNS, Kerberos, SMB/NTLMSSP, alertas y packet drops.
+
+Reports:
+
+```text
+/var/lib/debian-ad-assistant/ids/reports/
+```
+
+Un IDS con drops elevados no debe interpretarse como evidencia de ausencia de ataques.
+
+<a id="reset-linux"></a>
+## Decommission / reset Linux
+
+```bash
+sudo ad-reset
+```
+
+Flujo:
+
+```text
+assessment
+  ↓
+DC topology
+  ↓
+explicit destructive confirmation
+  ↓
+external recovery bundle
+  ↓
+offline Samba backup when available
+  ↓
+local AD/DC state cleanup
+  ↓
+restore assistant-managed host configuration
+  ↓
+validate
+  ↓
+reboot
+```
+
+Si existen otros DC, el asistente no hace un wipe local a ciegas: exige primero una democión
+correcta del DC.
+
+Recovery root:
+
+```text
+/var/backups/debian-ad-assistant/
+```
+
+No se purgan indiscriminadamente paquetes y se conserva la configuración de IP/red salvo cambios
+que el control plane pueda atribuirse de forma segura.
 
 ---
 
@@ -1194,6 +1575,18 @@ Migración:
 
 ```text
 /var/lib/debian-ad-assistant/migration/
+```
+
+IDS:
+
+```text
+/var/lib/debian-ad-assistant/ids/
+```
+
+Recovery bundles:
+
+```text
+/var/backups/debian-ad-assistant/
 ```
 
 ---
@@ -1455,7 +1848,33 @@ sudo ad-validate
 sudo ad-samba
 ```
 
-Un DC que requiere reiniciar Samba manualmente después de cada boot todavía no está listo.
+El control plane instala un guard post-boot para listeners críticos:
+
+```text
+53
+88
+389
+445
+464
+```
+
+Si `samba-ad-dc.service` está activo pero incompleto, hace **un único restart controlado** y
+revalida.
+
+```bash
+systemctl status debian-ad-samba-health.service --no-pager -l
+
+journalctl \
+  -u debian-ad-samba-health.service \
+  -b \
+  --no-pager
+
+ss -lntup |
+  grep -E ':(53|88|389|445|464)([[:space:]]|$)'
+```
+
+Si necesita autorrepararse en cada boot, conserva el journal y busca la causa del arranque
+incompleto; el restart no debe ocultar una degradación recurrente.
 
 ---
 
@@ -1587,25 +2006,25 @@ Al cerrar esa consola, el scope `Process` desaparece.
 <a id="modos-windows"></a>
 ## Modos PowerShell
 
-Sintaxis:
-
 ```powershell
 .\windows-server-ad-assistant.ps1 -Mode <Mode>
 ```
 
-Modos:
-
 | Mode | Función |
 |---|---|
 | `Interactive` | Main Control Plane |
-| `Audit` | auditoría read-only de host + AD cuando aplica |
-| `Validate` | validación funcional de Domain Controller |
+| `Audit` | auditoría host + AD |
+| `Validate` | validación funcional DC |
 | `Harden` | hardening interactivo |
 | `Backup` | configuration change-set |
 | `ADAdmin` | consola Active Directory |
 | `Provision` | nuevo bosque / primer DC |
 | `Migration` | Domain Migration Center |
 | `DirectorySecurity` | Kerberos/LDAP/SMB protocol security |
+| `Dependencies` | features/módulos oficiales y servicing status |
+| `Reset` | democión soportada + cleanup post-reboot |
+| `IDS` | Suricata/EVE + dashboard nativo cuando hay GUI |
+| `IDSReport` | target no interactivo de Task Scheduler |
 
 Parámetros adicionales:
 
@@ -1619,21 +2038,14 @@ Ejemplos:
 
 ```powershell
 .\windows-server-ad-assistant.ps1 -Mode Validate
-
-.\windows-server-ad-assistant.ps1 `
-  -Mode Audit `
-  -ExportPath D:\AD-ControlPlane
-
-.\windows-server-ad-assistant.ps1 `
-  -Mode DirectorySecurity
-
-.\windows-server-ad-assistant.ps1 `
-  -Mode Harden `
-  -AllowRemoteFirewallChange
+.\windows-server-ad-assistant.ps1 -Mode Dependencies
+.\windows-server-ad-assistant.ps1 -Mode DirectorySecurity
+.\windows-server-ad-assistant.ps1 -Mode IDS
+.\windows-server-ad-assistant.ps1 -Mode Reset
 ```
 
-> **Advertencia:**
-> `-AllowRemoteFirewallChange` no significa «aplicar sin preguntar». Solo permite proponer cambios globales de firewall durante una sesión remota; los cambios de alto impacto siguen requiriendo confirmación.
+> **Advertencia:** `-AllowRemoteFirewallChange` no elimina confirmaciones; únicamente permite
+> proponer determinados cambios globales durante una sesión remota.
 
 ---
 
@@ -1703,6 +2115,9 @@ Backup & recovery
 Host security
 Domain migration
 Directory protocol security
+Dependencies
+Domain decommission / reset
+Network IDS / Suricata
 ```
 
 ### Usuarios
@@ -1895,6 +2310,118 @@ System State utiliza `wbadmin` cuando está disponible.
 
 > **Importante:**
 > No guardes la única copia del System State en el mismo disco físico/VM que el DC.
+
+---
+
+<a id="dependencias-windows"></a>
+## Dependencias y servicing Windows
+
+El control plane utiliza componentes Microsoft:
+
+```text
+AD-Domain-Services
+RSAT-AD-Tools
+GPMC
+RSAT-DNS-Server
+Windows-Server-Backup
+```
+
+Módulos principales:
+
+```text
+ActiveDirectory
+GroupPolicy
+DnsServer
+ADDSDeployment
+ServerManager
+NetSecurity
+```
+
+No requiere:
+
+```text
+Chocolatey
+winget
+NuGet
+PowerShell Gallery modules
+PSWindowsUpdate
+```
+
+```powershell
+.\windows-server-ad-assistant.ps1 -Mode Dependencies
+```
+
+La aplicación de updates del sistema operativo queda en Windows Update/WSUS/WUfB/Configuration
+Manager o el mecanismo corporativo equivalente.
+
+<a id="ids-windows"></a>
+## Network IDS / Suricata Windows
+
+```powershell
+.\windows-server-ad-assistant.ps1 -Mode IDS
+```
+
+El módulo puede detectar:
+
+```text
+Suricata
+Npcap
+suricata.yaml
+eve.json
+service/capture posture
+```
+
+y ofrece:
+
+```text
+sensor health
+security summary
+recent alerts
+Kerberos/SMB/NTLMSSP intelligence
+daily reports
+native Windows Forms dashboard
+```
+
+No instala silenciosamente drivers de captura en un Domain Controller.
+
+En Desktop Experience utiliza `System.Windows.Forms`; en Server Core o sesiones no interactivas
+cae a la consola.
+
+<a id="reset-windows"></a>
+## Decommission / reset Windows
+
+```powershell
+.\windows-server-ad-assistant.ps1 -Mode Reset
+```
+
+No borra manualmente `NTDS.dit` ni SYSVOL.
+
+```text
+assessment
+  ↓
+recovery bundle
+  ↓
+optional System State
+  ↓
+FSMO transfer if needed
+  ↓
+Test-ADDSDomainControllerUninstallation
+  ↓
+Uninstall-ADDSDomainController
+  ↓
+reboot
+  ↓
+post-demotion cleanup
+```
+
+Recovery root:
+
+```text
+C:\WindowsAD-ControlPlane-Recovery\
+```
+
+El DNS Server role no se elimina automáticamente porque puede contener zonas que no pertenecen a
+Active Directory.
 
 ---
 
@@ -2111,85 +2638,348 @@ Al volver:
 ---
 
 <a id="clientes"></a>
-# Clientes Windows y Linux
+# Unir equipos al dominio
 
-## Unir un Windows al dominio
+Esta sección parte de un dominio ya funcional. Antes de unir clientes, el DC debe superar su
+validación funcional.
 
-Antes:
+Modelo común:
 
-```cmd
-ipconfig /all
+```text
+CLIENT
+  DNS  → DC/DNS del dominio
+  TIME → sincronizado
+  SRV  → _ldap._tcp.dc._msdcs.<dominio>
+  JOIN → cuenta con permisos de join
 ```
 
-El DNS del adaptador debe apuntar al DC.
+No configures un DNS público/router como fallback de un miembro AD. El cliente puede elegirlo y
+perder los registros SRV del dominio.
 
-Prueba:
+## Checklist común
+
+Ejemplo:
+
+```text
+AD DNS domain : corp.example.com
+Kerberos realm: CORP.EXAMPLE.COM
+DC/DNS        : 192.168.10.10
+Join account  : cuenta delegada
+```
+
+Antes del join:
+
+1. hostname final y único;
+2. DNS del cliente apuntando a DC01/DC02;
+3. conectividad con los DC;
+4. hora sincronizada;
+5. registros SRV resolubles;
+6. credencial con permiso de join;
+7. routing/firewall compatible con AD.
+
+En el DC:
+
+```bash
+dig @127.0.0.1 \
+  _ldap._tcp.dc._msdcs.corp.example.com \
+  SRV
+
+sudo ad-validate
+```
+
+## Windows
+
+Windows Server puede unirse como member server. En clientes Windows utiliza una edición que soporte
+la unión clásica a Active Directory.
+
+DNS/SRV:
+
+```powershell
+Get-DnsClientServerAddress -AddressFamily IPv4
+
+Resolve-DnsName `
+  _ldap._tcp.dc._msdcs.corp.example.com `
+  -Type SRV
+```
+
+También:
 
 ```cmd
-nslookup dc01.corp.example.com
 nltest /dsgetdc:corp.example.com
 ```
 
-PowerShell:
+PowerShell elevado:
 
 ```powershell
 Add-Computer `
-  -DomainName corp.example.com `
-  -Credential CORP\Administrator `
-  -Restart
+  -DomainName 'corp.example.com' `
+  -Credential (Get-Credential)
+
+Restart-Computer
 ```
 
-En producción utiliza una cuenta delegada para joins, no necesariamente Domain Admin.
+OU explícita:
 
----
+```powershell
+Add-Computer `
+  -DomainName 'corp.example.com' `
+  -OUPath 'OU=Workstations,DC=corp,DC=example,DC=com' `
+  -Credential (Get-Credential)
 
-## Cliente Ubuntu con realmd/SSSD
-
-Ejemplo conceptual:
-
-```bash
-sudo apt update
-sudo apt install realmd sssd-ad sssd-tools adcli krb5-user
-
-realm discover corp.example.com
-
-sudo realm join \
-  corp.example.com \
-  -U JoinAccount
-
-realm list
-id 'user@corp.example.com'
+Restart-Computer
 ```
 
-La configuración exacta puede variar por distribución y política.
+GUI genérica:
 
----
-
-## Cliente Ubuntu ADSys
-
-Después de unir el equipo:
-
-```bash
-sudo apt install adsys
+```text
+System / System Properties
+  → Computer Name
+  → Change
+  → Member of: Domain
+  → corp.example.com
+  → credentials
+  → reboot
 ```
 
 Validación:
 
-```bash
-adsysctl policy applied
+```powershell
+(Get-CimInstance Win32_ComputerSystem).Domain
+Test-ComputerSecureChannel -Verbose
 ```
 
-Actualizar policy:
+Desde el DC Samba:
 
 ```bash
-sudo adsysctl update -m
+sudo ad-computers
 ```
 
-Para usuario:
+## Linux genérico: realmd + SSSD
+
+Para un miembro Linux normal, el stack portable es:
+
+```text
+realmd
+SSSD con AD provider
+adcli
+Kerberos client
+NSS/PAM integration
+```
+
+Winbind es una alternativa cuando el servidor necesita integración Samba específica.
+
+### Familia Debian
+
+Instala los equivalentes disponibles en tu release:
 
 ```bash
-adsysctl update
+sudo apt update
+
+sudo apt install \
+  realmd \
+  sssd-ad \
+  sssd-tools \
+  adcli \
+  krb5-user \
+  libnss-sss \
+  libpam-sss
 ```
+
+### Familia RHEL / Fedora
+
+Stack habitual:
+
+```bash
+sudo dnf install \
+  samba-common-tools \
+  realmd \
+  oddjob \
+  oddjob-mkhomedir \
+  sssd \
+  adcli \
+  krb5-workstation
+```
+
+### Otras distribuciones
+
+No copies literalmente nombres de paquetes de Debian o RHEL.
+
+Busca los equivalentes de:
+
+```text
+realmd
+SSSD + AD provider
+adcli
+Kerberos client
+NSS/PAM SSSD integration
+home-directory helper (si la política lo requiere)
+DNS diagnostic tools
+```
+
+El flujo posterior es el mismo.
+
+### Descubrimiento
+
+Configura primero el DNS del host para utilizar los DC.
+
+```bash
+realm discover --verbose corp.example.com
+```
+
+Debería identificar Active Directory y un cliente soportado.
+
+Diagnóstico SRV:
+
+```bash
+dig \
+  _ldap._tcp.dc._msdcs.corp.example.com \
+  SRV
+```
+
+Si `realm discover` falla, corrige DNS/hora antes de hacer join.
+
+### Join con SSSD
+
+```bash
+sudo realm join \
+  --verbose \
+  --client-software=sssd \
+  -U JoinAccount \
+  corp.example.com
+```
+
+OU cuando tu `realmd` lo soporte:
+
+```bash
+sudo realm join \
+  --verbose \
+  --client-software=sssd \
+  --computer-ou='OU=Linux,OU=Servers,DC=corp,DC=example,DC=com' \
+  -U JoinAccount \
+  corp.example.com
+```
+
+También puedes usar un TGT:
+
+```bash
+kinit JoinAccount@CORP.EXAMPLE.COM
+klist
+
+sudo realm join \
+  --verbose \
+  --client-software=sssd \
+  corp.example.com
+```
+
+No incrustes contraseñas en scripts de join.
+
+### Validación Linux
+
+```bash
+realm list
+sudo adcli testjoin
+
+getent passwd 'usuario@corp.example.com'
+id 'usuario@corp.example.com'
+
+klist -k /etc/krb5.keytab
+systemctl status sssd --no-pager
+```
+
+Comprueba también la cuenta de máquina desde:
+
+```bash
+sudo ad-computers
+```
+
+### Autorización de login
+
+Estar unido al dominio y permitir logon son decisiones distintas.
+
+Ejemplos:
+
+```bash
+sudo realm permit 'usuario@corp.example.com'
+```
+
+o:
+
+```bash
+sudo realm permit -g 'grupo@corp.example.com'
+```
+
+También puedes delegar el access control a SSSD/GPO/grupos según el diseño.
+
+### Home directories
+
+La creación automática de home depende de PAM/oddjob y la familia de la distribución. Decide antes:
+
+```text
+username format
+use_fully_qualified_names
+home layout
+offline credentials
+access_provider
+ID mapping
+```
+
+### ID mapping vs RFC2307
+
+Si AD ya contiene:
+
+```text
+uidNumber
+gidNumber
+unixHomeDirectory
+loginShell
+```
+
+puedes diseñar SSSD para consumir esos IDs en vez del mapping automático. No mezcles ambos modelos
+sin planificación si existen permisos de filesystem basados en UID/GID.
+
+### Winbind como alternativa
+
+Para Samba member servers puede resultar más apropiado:
+
+```text
+realmd
+Samba/Winbind
+Kerberos
+```
+
+No cambies de SSSD a Winbind para ocultar un problema de DNS/Kerberos.
+
+## Linux y Group Policy
+
+El join Linux no implica aplicar automáticamente todas las GPO Windows:
+
+```text
+SSSD
+  → GPO access-control evaluation
+
+Samba/winbind + samba-gpupdate
+  → policy managers soportados por Samba
+
+Ubuntu ADSys
+  → mapping/templates específicos de Ubuntu
+```
+
+## Post-join común
+
+Tras unir cualquier equipo:
+
+```text
+1. validar DNS/SRV
+2. validar hora
+3. comprobar cuenta de equipo
+4. probar autenticación
+5. comprobar autorización
+6. probar policy/GPO primero en OU de test
+7. reiniciar
+8. volver a validar secure channel / realm membership
+```
+
+`hosts`/`/etc/hosts` no sustituye DNS SRV de Active Directory.
 
 ---
 
@@ -2295,6 +3085,43 @@ Buenas prácticas:
 
 <a id="troubleshooting"></a>
 # Troubleshooting
+
+## Linux: Samba está `active` pero falta el listener 88 después del boot
+
+```bash
+systemctl status samba-ad-dc --no-pager -l
+
+ss -lntup |
+  grep -E ':(53|88|389|445|464)([[:space:]]|$)'
+```
+
+El control plane utiliza:
+
+```text
+debian-ad-network-ready.service
+debian-ad-samba-health.service
+```
+
+El primer servicio espera la identidad de red. El segundo valida los listeners y, solo si Samba
+queda degradado, realiza un único restart.
+
+```bash
+journalctl \
+  -u debian-ad-samba-health.service \
+  -b \
+  --no-pager
+```
+
+Si el self-heal ocurre repetidamente, revisa también:
+
+```bash
+journalctl -u samba-ad-dc -b --no-pager
+```
+
+La autorreparación evita dejar el DC inutilizable, pero no debe ocultar una causa recurrente.
+
+---
+
 
 ## Linux: `/etc/resolv.conf` apunta a un stub roto
 
@@ -2719,8 +3546,12 @@ status
 validate
 backup
 GPO
+dependencies
+Suricata IDS
+domain reset assessment
 migration
 safe hardening
+boot listener self-heal
 ```
 
 ---
@@ -2769,8 +3600,12 @@ GPO-managed firewall
 new forest
 existing forest
 GPO operations
+Dependencies
+IDS console + GUI fallback
+Reset assessment
 migration
 DirectorySecurity
+recoverable menu errors
 reboot
 ```
 
@@ -2787,35 +3622,51 @@ reboot
 - `smb.conf`:  
   https://www.samba.org/samba/docs/current/man-html/smb.conf.5.html
 
+## Linux domain membership
+
+- Debian `realm(8)`:  
+  https://manpages.debian.org/trixie/realmd/realm.8.en.html
+
+- Red Hat · integración directa con Active Directory mediante SSSD/realmd:  
+  https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/
+
 ## Ubuntu / ADSys
 
-- ADSys documentation:  
+- ADSys:  
   https://ubuntu.com/docs/adsys/latest/
-
-- Set up AD for Ubuntu clients:  
-  https://ubuntu.com/docs/adsys/latest/how-to/set-up-ad/
 
 ## Microsoft Active Directory
 
+- Join computer to domain:  
+  https://learn.microsoft.com/windows-server/identity/ad-ds/manage/join-computer-to-domain
+
 - AD DS deployment:  
-  https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/deploy/install-active-directory-domain-services--level-100-
+  https://learn.microsoft.com/windows-server/identity/ad-ds/deploy/
 
 - `Install-ADDSForest`:  
-  https://learn.microsoft.com/en-us/powershell/module/addsdeployment/install-addsforest
+  https://learn.microsoft.com/powershell/module/addsdeployment/install-addsforest
+
+- `Uninstall-ADDSDomainController`:  
+  https://learn.microsoft.com/powershell/module/addsdeployment/uninstall-addsdomaincontroller
 
 - LDAP signing/channel binding:  
-  https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/ldap-signing
+  https://learn.microsoft.com/windows-server/identity/ad-ds/ldap-signing
 
 - SMB signing:  
-  https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-signing-overview
+  https://learn.microsoft.com/windows-server/storage/file-server/smb-signing-overview
+
+## Suricata
+
+- Documentation:  
+  https://docs.suricata.io/
+
+- EVE JSON:  
+  https://docs.suricata.io/en/latest/output/eve/eve-json-format.html
 
 ## Microsoft hardening
 
 - Windows Security Baselines:  
   https://learn.microsoft.com/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines
-
-- Security Compliance Toolkit:  
-  https://learn.microsoft.com/windows/security/operating-system-security/device-management/windows-security-configuration-framework/security-compliance-toolkit-10
 
 ## CIS
 

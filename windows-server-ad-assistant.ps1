@@ -1,7 +1,7 @@
 ﻿#requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Windows Server AD Control Plane - v1.6.0-suricata-ids-gui
+    Windows Server AD Control Plane - v1.6.1-menu-resilience
 
 .DESCRIPTION
     Professional, audit-first assistant for Windows Server and Active Directory.
@@ -41,16 +41,16 @@
       IDSReport          Non-interactive 24h IDS report target for Task Scheduler
 
 .EXAMPLE
-    .\windows-server-ad-v1.6.0-suricata-ids-gui.ps1
+    .\windows-server-ad-v1.6.1-menu-resilience.ps1
 
 .EXAMPLE
-    .\windows-server-ad-v1.6.0-suricata-ids-gui.ps1 -Mode Audit
+    .\windows-server-ad-v1.6.1-menu-resilience.ps1 -Mode Audit
 
 .EXAMPLE
-    .\windows-server-ad-v1.6.0-suricata-ids-gui.ps1 -Mode ADAdmin
+    .\windows-server-ad-v1.6.1-menu-resilience.ps1 -Mode ADAdmin
 
 .EXAMPLE
-    .\windows-server-ad-v1.6.0-suricata-ids-gui.ps1 -Mode Validate
+    .\windows-server-ad-v1.6.1-menu-resilience.ps1 -Mode Validate
 
 .NOTES
     Validate in a lab before production deployment.
@@ -78,7 +78,7 @@ $ErrorActionPreference = 'Stop'
 # ===========================================================================
 
 $script:ProductName = 'Windows Server AD Control Plane'
-$script:Version = '1.6.0-suricata-ids-gui'
+$script:Version = '1.6.1-menu-resilience'
 $script:Started = Get-Date
 
 $script:Results = New-Object 'System.Collections.Generic.List[object]'
@@ -968,6 +968,7 @@ function Show-DependencyMenu {
         Write-MenuNavigation
         Write-Rule
 
+        try {
         switch (Read-MenuChoice -Default '1') {
             '1' { Show-WindowsDependencyAudit; Pause-ControlPlane }
             '2' { Repair-WindowsDependencies -Profile ExistingDC; Pause-ControlPlane }
@@ -981,6 +982,13 @@ function Show-DependencyMenu {
             'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
+        }
+        }
+        catch {
+            $message = $_.Exception.Message
+            Write-Console ('Show-DependencyMenu: operation failed: {0}' -f $message) Red
+            Write-Log ('Recoverable menu error in Show-DependencyMenu: {0}' -f $message) ERROR
+            Pause-ControlPlane
         }
     }
 }
@@ -1780,6 +1788,7 @@ function Show-DirectorySecurityMenu {
         Write-MenuNavigation
         Write-Rule
 
+        try {
         switch (Read-MenuChoice -Default '1') {
             '1' { Audit-DirectoryProtocolSecurity; Pause-ControlPlane }
             '2' { Remediate-SmbSigningStrict; Pause-ControlPlane }
@@ -1794,6 +1803,13 @@ function Show-DirectorySecurityMenu {
             'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
+        }
+        }
+        catch {
+            $message = $_.Exception.Message
+            Write-Console ('Show-DirectorySecurityMenu: operation failed: {0}' -f $message) Red
+            Write-Log ('Recoverable menu error in Show-DirectorySecurityMenu: {0}' -f $message) ERROR
+            Pause-ControlPlane
         }
     }
 }
@@ -4850,6 +4866,7 @@ function Show-DomainMigrationMenu {
         Write-MenuNavigation
         Write-Rule
 
+        try {
         switch (Read-MenuChoice -Prompt 'Select migration module' -Default '1') {
             '1' { Invoke-MigrationAssessment; Pause-ControlPlane }
             '2' { Show-MigrationPlan; Pause-ControlPlane }
@@ -4864,6 +4881,13 @@ function Show-DomainMigrationMenu {
             'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
+        }
+        }
+        catch {
+            $message = $_.Exception.Message
+            Write-Console ('Show-DomainMigrationMenu: operation failed: {0}' -f $message) Red
+            Write-Log ('Recoverable menu error in Show-DomainMigrationMenu: {0}' -f $message) ERROR
+            Pause-ControlPlane
         }
     }
 }
@@ -5417,6 +5441,7 @@ function Show-DomainResetMenu {
         Write-MenuNavigation
         Write-Rule
 
+        try {
         switch (Read-MenuChoice -Default '1') {
             '1' { Show-DomainResetAssessment; Pause-ControlPlane }
             '2' {
@@ -5428,6 +5453,13 @@ function Show-DomainResetMenu {
             'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
+        }
+        }
+        catch {
+            $message = $_.Exception.Message
+            Write-Console ('Show-DomainResetMenu: operation failed: {0}' -f $message) Red
+            Write-Log ('Recoverable menu error in Show-DomainResetMenu: {0}' -f $message) ERROR
+            Pause-ControlPlane
         }
 
         if ($script:ResetCompleted) { return }
@@ -6498,6 +6530,7 @@ function Show-WindowsIdsMenu {
         Write-MenuNavigation
         Write-Rule
 
+        try {
         switch (Read-MenuChoice -Default '1') {
             '1' { Show-WindowsIdsReadiness; Pause-ControlPlane }
             '2' { Show-WindowsIdsSensorHealth; Pause-ControlPlane }
@@ -6552,6 +6585,13 @@ function Show-WindowsIdsMenu {
             'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
+        }
+        }
+        catch {
+            $message = $_.Exception.Message
+            Write-Console ('Show-WindowsIdsMenu: operation failed: {0}' -f $message) Red
+            Write-Log ('Recoverable menu error in Show-WindowsIdsMenu: {0}' -f $message) ERROR
+            Pause-ControlPlane
         }
     }
 }
@@ -6833,6 +6873,7 @@ function Show-AdOperationsMenu {
         Write-MenuNavigation
         Write-Rule
 
+        try {
         switch (Read-MenuChoice -Prompt 'Select module' -Default '1') {
             '1' { Show-UserMenu }
             '2' { Show-GroupMenu }
@@ -6850,6 +6891,13 @@ function Show-AdOperationsMenu {
             'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
+        }
+        }
+        catch {
+            $message = $_.Exception.Message
+            Write-Console ('Show-AdOperationsMenu: operation failed: {0}' -f $message) Red
+            Write-Log ('Recoverable menu error in Show-AdOperationsMenu: {0}' -f $message) ERROR
+            Pause-ControlPlane
         }
     }
 }
@@ -6885,6 +6933,7 @@ function Show-MainMenu {
         Write-MenuItem '0' 'Exit' 'Close control plane' Danger
         Write-Rule
 
+        try {
         switch (Read-MenuChoice -Prompt 'Select module' -Default '1') {
             '1' {
                 $script:Results.Clear()
@@ -6932,6 +6981,13 @@ function Show-MainMenu {
             '12' { Show-WindowsIdsMenu }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
+        }
+        }
+        catch {
+            $message = $_.Exception.Message
+            Write-Console ('Show-MainMenu: operation failed: {0}' -f $message) Red
+            Write-Log ('Recoverable menu error in Show-MainMenu: {0}' -f $message) ERROR
+            Pause-ControlPlane
         }
     }
 }

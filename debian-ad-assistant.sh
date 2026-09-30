@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 5.0.2-samba-kdc-boot-selfheal
+# Version 5.0.6-reviewed
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -43,7 +43,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.0.2-samba-kdc-boot-selfheal"
+SCRIPT_VERSION="5.0.6-reviewed"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -661,6 +661,40 @@ is_valid_ad_username() {
     case "${value,,}" in administrator|guest|krbtgt) return 1 ;; esac
 }
 
+
+resolver_has_ipv4() {
+    local name="$1" expected="$2" output=""
+    output="$(getent ahostsv4 "$name" 2>/dev/null || true)"
+    [[ -n "$output" ]] || return 1
+
+    awk -v ip="$expected" '
+        $1 == ip { found=1 }
+        END { exit(found ? 0 : 1) }
+    ' <<<"$output"
+}
+
+dns_server_has_a_record() {
+    local server="$1" name="$2" expected="$3" output=""
+    output="$(dig +time=3 +tries=1 @"$server" "$name" A +short 2>/dev/null || true)"
+    grep -Fxq -- "$expected" <<<"$output"
+}
+
+samba_group_has_member() {
+    local group="$1" member="$2" output=""
+    if ! output="$(samba-tool group listmembers "$group" 2>/dev/null)"; then
+        return 1
+    fi
+    grep -Fxiq -- "$member" <<<"$output"
+}
+
+command_help_contains() {
+    local needle="$1"
+    shift
+    local output=""
+    output="$("$@" 2>&1 || true)"
+    grep -Fq -- "$needle" <<<"$output"
+}
+
 domain_dn() {
     printf '%s' "$1" | awk -F. '{for(i=1;i<=NF;i++)printf "DC=%s%s",$i,(i<NF?",":"")}'
 }
@@ -726,18 +760,24 @@ discover_network_topology() {
     AD_CIDR=""
     MGMT_IFACE=""
 
-    local default_line
-    default_line="$(ip -4 route show default 2>/dev/null | head -n1 || true)"
-    WAN_IFACE="$(awk '{for(i=1;i<=NF;i++)if($i=="dev"){print $(i+1);exit}}' <<<"$default_line")"
-    DEFAULT_GW="$(awk '{for(i=1;i<=NF;i++)if($i=="via"){print $(i+1);exit}}' <<<"$default_line")"
+    local routes="" default_line=""
+    routes="$(ip -4 route show default 2>/dev/null || true)"
+    default_line="$(awk 'NR==1{print}' <<<"$routes")"
+
+    WAN_IFACE="$(awk '{for(i=1;i<=NF;i++)if($i=="dev"){print $(i+1); break}}' <<<"$default_line")"
+    DEFAULT_GW="$(awk '{for(i=1;i<=NF;i++)if($i=="via"){print $(i+1); break}}' <<<"$default_line")"
 
     if [[ -n "$WAN_IFACE" ]]; then
-        WAN_CIDR="$(ip -4 -o addr show dev "$WAN_IFACE" scope global 2>/dev/null | awk 'NR==1{print $4}' || true)"
+        local wan_addresses=""
+        wan_addresses="$(ip -4 -o addr show dev "$WAN_IFACE" scope global 2>/dev/null || true)"
+        WAN_CIDR="$(awk 'NR==1{print $4}' <<<"$wan_addresses")"
         WAN_IP="${WAN_CIDR%%/*}"
     fi
 
     local -a global_ifaces=()
-    mapfile -t global_ifaces < <(ip -4 -o addr show scope global 2>/dev/null | awk '{print $2}' | sort -u)
+    local global_addresses=""
+    global_addresses="$(ip -4 -o addr show scope global 2>/dev/null || true)"
+    mapfile -t global_ifaces < <(awk '{print $2}' <<<"$global_addresses" | sort -u)
 
     if ((${#global_ifaces[@]} == 0)); then
         NETWORK_MODE="no-ipv4"
@@ -754,13 +794,19 @@ discover_network_topology() {
         [[ -n "$AD_IFACE" ]] || AD_IFACE="$WAN_IFACE"
     fi
 
-    AD_CIDR="$(ip -4 -o addr show dev "$AD_IFACE" scope global 2>/dev/null | awk 'NR==1{print $4}' || true)"
+    local ad_addresses=""
+    ad_addresses="$(ip -4 -o addr show dev "$AD_IFACE" scope global 2>/dev/null || true)"
+    AD_CIDR="$(awk 'NR==1{print $4}' <<<"$ad_addresses")"
     AD_IP="${AD_CIDR%%/*}"
 
     if [[ $REMOTE_SESSION -eq 1 && -n "$SSH_LOCAL_IP" && -n "$SSH_CLIENT_IP" ]]; then
-        MGMT_IFACE="$(ip -4 route get "$SSH_CLIENT_IP" from "$SSH_LOCAL_IP" 2>/dev/null |
-            awk '{for(i=1;i<=NF;i++)if($i=="dev"){print $(i+1);exit}}' || true)"
+        local route_to_client=""
+        route_to_client="$(ip -4 route get "$SSH_CLIENT_IP" from "$SSH_LOCAL_IP" 2>/dev/null || true)"
+        MGMT_IFACE="$(awk 'NR==1{
+            for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); break}
+        }' <<<"$route_to_client")"
     fi
+
     [[ -n "$MGMT_IFACE" ]] || MGMT_IFACE="${WAN_IFACE:-$AD_IFACE}"
 
     PRIMARY_IFACE="$AD_IFACE"
@@ -1281,11 +1327,16 @@ collect_identity() {
     is_valid_ipv4 "$DC_IP" || die "Invalid IPv4: $DC_IP"
     is_valid_netbios "$NETBIOS_DOMAIN" || die "Invalid NetBIOS domain."
 
-    ip -4 addr show dev "$AD_IFACE" | grep -Fq " ${DC_IP}/" ||
+    local iface_addresses=""
+    iface_addresses="$(ip -4 addr show dev "$AD_IFACE" 2>/dev/null || true)"
+    grep -Fq " ${DC_IP}/" <<<"$iface_addresses" ||
         die "DC IP $DC_IP is not assigned to $AD_IFACE. Configure the static IP first."
 
-    AD_CIDR="$(ip -4 -o addr show dev "$AD_IFACE" scope global |
-        awk -v ip="$DC_IP" '$4 ~ "^"ip"/" {print $4;exit}')"
+    local iface_global=""
+    iface_global="$(ip -4 -o addr show dev "$AD_IFACE" scope global 2>/dev/null || true)"
+    AD_CIDR="$(awk -v ip="$DC_IP" '
+        $4 ~ "^"ip"/" && !seen { print $4; seen=1 }
+    ' <<<"$iface_global")"
     [[ -n "$AD_CIDR" ]] || AD_CIDR="$(ip -4 -o addr show dev "$AD_IFACE" scope global | awk 'NR==1{print $4}')"
     AD_IP="$DC_IP"
     PRIMARY_IFACE="$AD_IFACE"
@@ -1370,7 +1421,7 @@ validate_local_identity_preflight() {
 
     [[ "${short,,}" == "$DC_HOSTNAME" ]] || { fail_msg "hostname -s='$short', expected '$DC_HOSTNAME'."; return 1; }
     [[ "${fqdn,,}" == "$DC_FQDN" ]] || { fail_msg "hostname -f='$fqdn', expected '$DC_FQDN'."; return 1; }
-    getent ahostsv4 "$DC_FQDN" | awk '{print $1}' | grep -Fxq "$DC_IP" ||
+    resolver_has_ipv4 "$DC_FQDN" "$DC_IP" ||
         { fail_msg "$DC_FQDN does not resolve locally to $DC_IP."; return 1; }
 
     result PASS "Local hostname" "$short" "$DC_HOSTNAME"
@@ -1746,10 +1797,14 @@ chrony_main_config() {
 }
 
 chrony_service_unit() {
-    local unit=""
+    local unit="" output=""
+
     for unit in chrony.service chronyd.service; do
-        if systemctl list-unit-files --type=service --no-legend "$unit" 2>/dev/null |
-            awk '{print $1}' | grep -Fxq "$unit"; then
+        output="$(systemctl list-unit-files --type=service --no-legend "$unit" 2>/dev/null || true)"
+        if awk -v target="$unit" '
+            $1 == target { found=1 }
+            END { exit(found ? 0 : 1) }
+        ' <<<"$output"; then
             printf '%s' "$unit"
             return 0
         fi
@@ -1758,7 +1813,7 @@ chrony_service_unit() {
     # Debian/Ubuntu use chrony.service. Return the expected unit even when
     # systemd metadata is temporarily unavailable so diagnostics stay useful.
     if [[ "$DISTRO_ID" == "debian" || "$DISTRO_ID" == "ubuntu" ]]; then
-        printf 'chrony.service'
+        printf '%s' "chrony.service"
         return 0
     fi
 
@@ -2061,11 +2116,17 @@ chrony_supports_ntp_signd() {
 
 
 chrony_tracking_leap_status() {
-    local client=""
+    local client="" output=""
     client="$(chronyc_binary 2>/dev/null || true)"
     [[ -n "$client" ]] || return 1
-    "$client" -n tracking 2>/dev/null |
-        awk -F': ' '/^Leap status[[:space:]]*:/{print $2;exit}'
+
+    output="$("$client" -n tracking 2>/dev/null || true)"
+    awk -F': ' '
+        /^Leap status[[:space:]]*:/ && !seen {
+            print $2
+            seen=1
+        }
+    ' <<<"$output"
 }
 
 chrony_selected_source_count() {
@@ -3216,7 +3277,7 @@ repair_local_resolver_only() {
         return 1
     }
 
-    dig +time=3 +tries=1 @127.0.0.1 "$DC_FQDN" A +short 2>/dev/null | grep -Fxq "$DC_IP" || {
+    dns_server_has_a_record 127.0.0.1 "$DC_FQDN" "$DC_IP" || {
         fail_msg "Samba DNS does not resolve $DC_FQDN to $DC_IP."
         return 1
     }
@@ -3243,7 +3304,7 @@ repair_local_resolver_only() {
         return 1
     fi
 
-    if ! getent ahostsv4 "$DC_FQDN" | awk '{print $1}' | grep -Fxq "$DC_IP"; then
+    if ! resolver_has_ipv4 "$DC_FQDN" "$DC_IP"; then
         rollback_dns_transaction "system resolver cannot resolve the DC through Samba DNS"
         return 1
     fi
@@ -3288,14 +3349,29 @@ rollback_dns_transaction() {
 }
 
 detect_dns_forwarder() {
-    local existing candidates
-    existing="$(testparm -s --parameter-name='dns forwarder' 2>/dev/null | awk 'NF{print $1;exit}' || true)"
-    if is_valid_ipv4 "$existing" && [[ "$existing" != 127.0.0.1 && "$existing" != 127.0.0.53 ]]; then
+    local existing="" candidates="" output=""
+
+    output="$(testparm -s --parameter-name='dns forwarder' 2>/dev/null || true)"
+    existing="$(awk 'NF && !seen {print $1; seen=1}' <<<"$output")"
+    if is_valid_ipv4 "$existing" &&
+       [[ "$existing" != 127.0.0.1 && "$existing" != 127.0.0.53 ]]; then
         printf '%s' "$existing"
         return
     fi
-    candidates="$(awk '/^[[:space:]]*nameserver[[:space:]]+/{print $2}' /etc/resolv.conf 2>/dev/null || true)"
-    printf '%s\n' "$candidates" | grep -Ev '^(127\.0\.0\.1|127\.0\.0\.53)$' | head -n1 || true
+
+    candidates="$(awk '
+        /^[[:space:]]*nameserver[[:space:]]+/ {print $2}
+    ' /etc/resolv.conf 2>/dev/null || true)"
+
+    awk '
+        $0 != "127.0.0.1" &&
+        $0 != "127.0.0.53" &&
+        NF &&
+        !seen {
+            print
+            seen=1
+        }
+    ' <<<"$candidates"
 }
 
 samba_dns_stack_healthy() {
@@ -3307,13 +3383,13 @@ samba_dns_stack_healthy() {
     grep -Eq '^[[:space:]]*nameserver[[:space:]]+127\.0\.0\.1([[:space:]]|$)' /etc/resolv.conf || return 1
     grep -Eiq "^[[:space:]]*(search|domain)[[:space:]].*${DOMAIN//./\\.}" /etc/resolv.conf || return 1
 
-    dig +time=3 +tries=1 @127.0.0.1 "$DC_FQDN" A +short 2>/dev/null | grep -Fxq "$DC_IP" || return 1
+    dns_server_has_a_record 127.0.0.1 "$DC_FQDN" "$DC_IP" || return 1
 
     local srv
     srv="$(dig +time=3 +tries=1 @127.0.0.1 +short SRV "_ldap._tcp.dc._msdcs.${DOMAIN}" 2>/dev/null || true)"
     grep -Fiq "$DC_FQDN" <<<"$srv" || return 1
 
-    getent ahostsv4 "$DC_FQDN" | awk '{print $1}' | grep -Fxq "$DC_IP" || return 1
+    resolver_has_ipv4 "$DC_FQDN" "$DC_IP" || return 1
     validate_system_dc_locator || return 1
 }
 
@@ -3377,10 +3453,10 @@ commit_samba_dns_resolver() {
         return 1
     }
 
-    dig +time=3 +tries=1 @127.0.0.1 "$DC_FQDN" A +short | grep -Fxq "$DC_IP" ||
+    dns_server_has_a_record 127.0.0.1 "$DC_FQDN" "$DC_IP" ||
         die "Samba DNS does not resolve $DC_FQDN to $DC_IP."
 
-    local srv
+    local srv=""
     srv="$(dig +time=3 +tries=1 @127.0.0.1 +short SRV "_ldap._tcp.dc._msdcs.${DOMAIN}" 2>/dev/null || true)"
     if ! grep -Fiq "$DC_FQDN" <<<"$srv"; then
         command_exists samba_dnsupdate && samba_dnsupdate --verbose >>"$LOG_FILE" 2>&1 || true
@@ -3389,13 +3465,15 @@ commit_samba_dns_resolver() {
     grep -Fiq "$DC_FQDN" <<<"$srv" ||
         die "Samba DNS is missing the AD DC locator SRV record for $DOMAIN."
 
-    dig +time=4 +tries=1 @127.0.0.1 raw.githubusercontent.com A +short | grep -Eq '^[0-9]' ||
+    local external_answer=""
+    external_answer="$(dig +time=4 +tries=1 @127.0.0.1 raw.githubusercontent.com A +short 2>/dev/null || true)"
+    grep -Eq '^[0-9]' <<<"$external_answer" ||
         die "Samba DNS forwarding is not working."
 
     systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
     write_ad_resolv_conf || return 1
 
-    getent ahostsv4 "$DC_FQDN" | awk '{print $1}' | grep -Fxq "$DC_IP" ||
+    resolver_has_ipv4 "$DC_FQDN" "$DC_IP" ||
         die "System resolver cannot resolve $DC_FQDN through /etc/resolv.conf."
 
     validate_system_dc_locator ||
@@ -3448,10 +3526,13 @@ configure_time() {
     }
 
     TIMEZONE="$(ask 'Timezone' "${TIMEZONE:-Europe/London}")"
-    if command_exists timedatectl &&
-       ! timedatectl list-timezones 2>/dev/null | grep -Fxq "$TIMEZONE"; then
-        msg_warn "Unknown timezone: $TIMEZONE"
-        return 1
+    if command_exists timedatectl; then
+        local timezone_catalog=""
+        timezone_catalog="$(timedatectl list-timezones 2>/dev/null || true)"
+        if ! grep -Fxq -- "$TIMEZONE" <<<"$timezone_catalog"; then
+            msg_warn "Unknown timezone: $TIMEZONE"
+            return 1
+        fi
     fi
 
     NTP_POOL="$(ask 'NTP pool/server' "${NTP_POOL:-pool.ntp.org}")"
@@ -3655,7 +3736,7 @@ harden_delegated_admin() {
 
     local auth_user="$INITIAL_AUTH_USER"
     if samba-tool user show "$ADMIN_USER" >/dev/null 2>&1 &&
-       samba-tool group listmembers "Domain Admins" 2>/dev/null | grep -Fxqi "$ADMIN_USER"; then
+       samba_group_has_member "Domain Admins" "$ADMIN_USER"; then
         auth_user="$ADMIN_USER"
     fi
 
@@ -3670,12 +3751,12 @@ harden_delegated_admin() {
     samba-tool group show AdministradoresTI >/dev/null 2>&1 ||
         samba-tool group add AdministradoresTI >/dev/null
 
-    samba-tool group listmembers "Domain Admins" 2>/dev/null | grep -Fxqi "$ADMIN_USER" ||
+    samba_group_has_member "Domain Admins" "$ADMIN_USER" ||
         samba-tool group addmembers "Domain Admins" "$ADMIN_USER" >/dev/null
-    samba-tool group listmembers AdministradoresTI 2>/dev/null | grep -Fxqi "$ADMIN_USER" ||
+    samba_group_has_member AdministradoresTI "$ADMIN_USER" ||
         samba-tool group addmembers AdministradoresTI "$ADMIN_USER" >/dev/null
     if samba-tool group show "Group Policy Creator Owners" >/dev/null 2>&1; then
-        if ! samba-tool group listmembers "Group Policy Creator Owners" 2>/dev/null | grep -Fxqi "$ADMIN_USER"; then
+        if ! samba_group_has_member "Group Policy Creator Owners" "$ADMIN_USER"; then
             if confirm "Add '$ADMIN_USER' to 'Group Policy Creator Owners' for explicit GPO administration rights?" Y; then
                 samba-tool group addmembers "Group Policy Creator Owners" "$ADMIN_USER" >/dev/null
                 change APPLIED "Added $ADMIN_USER to Group Policy Creator Owners"
@@ -3692,7 +3773,7 @@ harden_delegated_admin() {
         result PASS "Delegated admin LDAP ticket" "ldap/${DC_FQDN}" "acquired"
     fi
 
-    samba-tool group listmembers "Domain Admins" | grep -Fxqi "$ADMIN_USER" ||
+    samba_group_has_member "Domain Admins" "$ADMIN_USER" ||
         die "$ADMIN_USER is not confirmed in Domain Admins."
     result PASS "Delegated admin" "$ADMIN_USER" "Kerberos + Domain Admins verified"
 
@@ -3800,7 +3881,7 @@ samba_gpo() {
     local -a target_args=()
     [[ -n "${DC_FQDN:-}" ]] && target_args=(-H "ldap://${DC_FQDN}")
 
-    if samba-tool --help 2>&1 | grep -Fq -- '--use-krb5-ccache'; then
+    if command_help_contains '--use-krb5-ccache' samba-tool --help; then
         KRB5CCNAME="$KRB5CCNAME" samba-tool --use-krb5-ccache="$KRB5CCNAME" \
             gpo "$@" "${target_args[@]}"
     else
@@ -3836,12 +3917,12 @@ gpo_readiness_diagnostics() {
     printf '  Kerberos principal : %s\n' "$(KRB5CCNAME="$KRB5CCNAME" klist 2>/dev/null | awk -F': ' '/Default principal:/{print $2;exit}' || printf 'none')" >&2
 
     if [[ -n "${ADMIN_USER:-}" ]]; then
-        if samba-tool group listmembers 'Domain Admins' 2>/dev/null | grep -Fxqi "$ADMIN_USER"; then
+        if samba_group_has_member 'Domain Admins' "$ADMIN_USER"; then
             printf '  Domain Admins       : member\n' >&2
         else
             printf '  Domain Admins       : NOT a direct member\n' >&2
         fi
-        if samba-tool group listmembers 'Group Policy Creator Owners' 2>/dev/null | grep -Fxqi "$ADMIN_USER"; then
+        if samba_group_has_member 'Group Policy Creator Owners' "$ADMIN_USER"; then
             printf '  GPO Creator Owners  : member\n' >&2
         else
             printf '  GPO Creator Owners  : not a direct member\n' >&2
@@ -3871,7 +3952,12 @@ gpo_readiness_diagnostics() {
 
 create_gpo_safe() {
     local name="$1" output="" guid="" rc=0
-    ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"
+
+    if ! ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"; then
+        msg_warn "Kerberos authentication is unavailable; GPO creation was not attempted."
+        gpo_readiness_diagnostics "Kerberos authentication failed before creation of GPO '$name'."
+        return 1
+    fi
 
     if capture_samba_gpo output create "$name"; then
         printf '%s\n' "$output" >>"$LOG_FILE"
@@ -3897,14 +3983,20 @@ create_gpo_safe() {
 }
 
 user_dn_from_samba() {
-    local user="$1"
-    samba-tool user show "$user" 2>/dev/null | awk -F': ' '/^dn: /{print $2;exit}'
+    local user="$1" output=""
+    output="$(samba-tool user show "$user" 2>/dev/null || true)"
+    awk -F': ' '
+        /^dn: / && !seen {
+            print $2
+            seen=1
+        }
+    ' <<<"$output"
 }
 
 ldbmodify_with_assistant_ticket() {
     local ldif_file="$1"
     local url="ldap://${DC_FQDN}"
-    if ldbmodify --help 2>&1 | grep -Fq -- '--use-krb5-ccache'; then
+    if command_help_contains '--use-krb5-ccache' ldbmodify --help; then
         KRB5CCNAME="$KRB5CCNAME" ldbmodify --use-krb5-ccache="$KRB5CCNAME" -H "$url" "$ldif_file"
     else
         KRB5CCNAME="$KRB5CCNAME" ldbmodify --use-kerberos=required -H "$url" "$ldif_file"
@@ -4046,7 +4138,10 @@ manage_gpos() {
     samba-tool gpo load --help >/dev/null 2>&1 ||
         { result SKIP "GPO load" "unsupported by installed Samba" "modern samba-tool"; return 0; }
 
-    ensure_kerberos_ticket "$ADMIN_USER"
+    if ! ensure_kerberos_ticket "$ADMIN_USER"; then
+        result FAIL "GPO authentication"             "Kerberos ticket unavailable for ${ADMIN_USER:-unknown}"             "repair Kerberos/KDC then retry"
+        return 1
+    fi
     write_gpo_sources
 
     local user_guid="" machine_guid="" base_dn output=""
@@ -4117,7 +4212,9 @@ configure_ufw() {
     ufw allow in on "$AD_IFACE" from "$AD_CLIENT_CIDR" to "$DC_IP" port 49152:65535 proto tcp >/dev/null
     ufw --force enable >/dev/null
 
-    result PASS "UFW" "$(ufw status | head -n1)" "active"
+    local ufw_status=""
+    ufw_status="$(ufw status 2>/dev/null || true)"
+    result PASS "UFW" "$(awk 'NR==1{print}' <<<"$ufw_status")" "active"
     result PASS "AD firewall scope" "$AD_IFACE / $AD_CLIENT_CIDR" "trusted network only"
 }
 
@@ -4213,8 +4310,10 @@ validate_ad() {
         && result PASS "smb.conf" "valid" "valid" \
         || { result FAIL "smb.conf" "invalid" "valid"; fail=1; }
 
+    local listeners=""
+    listeners="$(samba_listener_snapshot)"
     for port in 53 88 389 445 464; do
-        if ss -lntup 2>/dev/null | grep -Eq ":${port}([[:space:]]|$)"; then
+        if grep -Eq ":${port}([[:space:]]|$)" <<<"$listeners"; then
             result PASS "Listener $port" "present" "present"
         else
             result FAIL "Listener $port" "missing" "present"
@@ -4223,7 +4322,7 @@ validate_ad() {
     done
 
     if command_exists dig && [[ -n "$DOMAIN" && -n "$DC_FQDN" ]]; then
-        dig +time=3 +tries=1 @127.0.0.1 +short A "$DC_FQDN" | grep -Fxq "$DC_IP" \
+        dns_server_has_a_record 127.0.0.1 "$DC_FQDN" "$DC_IP" \
             && result PASS "DNS A" "$DC_FQDN -> $DC_IP" "correct" \
             || { result FAIL "DNS A" "unexpected/no answer" "$DC_FQDN -> $DC_IP"; fail=1; }
 
@@ -4234,7 +4333,9 @@ validate_ad() {
                 || { result FAIL "SRV $srv" "missing" "present"; fail=1; }
         done
 
-        dig +time=4 +tries=1 @127.0.0.1 raw.githubusercontent.com A +short | grep -Eq '^[0-9]' \
+        local forward_answer=""
+        forward_answer="$(dig +time=4 +tries=1 @127.0.0.1 raw.githubusercontent.com A +short 2>/dev/null || true)"
+        grep -Eq '^[0-9]' <<<"$forward_answer" \
             && result PASS "DNS forwarding" "external names resolve" "working" \
             || { result FAIL "DNS forwarding" "failed" "working"; fail=1; }
     fi
@@ -4269,9 +4370,10 @@ audit_security_baseline() {
     step "Security baseline evidence"
 
     if command_exists sshd; then
-        local rootlogin passauth
-        rootlogin="$(sshd -T 2>/dev/null | awk '$1=="permitrootlogin"{print $2;exit}' || true)"
-        passauth="$(sshd -T 2>/dev/null | awk '$1=="passwordauthentication"{print $2;exit}' || true)"
+        local rootlogin="" passauth="" sshd_effective=""
+        sshd_effective="$(sshd -T 2>/dev/null || true)"
+        rootlogin="$(awk '$1=="permitrootlogin" && !seen {print $2; seen=1}' <<<"$sshd_effective")"
+        passauth="$(awk '$1=="passwordauthentication" && !seen {print $2; seen=1}' <<<"$sshd_effective")"
         [[ "$rootlogin" == no ]] \
             && result PASS "SSH root login" "disabled" "disabled" \
             || result WARN "SSH root login" "${rootlogin:-unknown}" "review"
@@ -4311,9 +4413,13 @@ audit_existing() {
         result INFO "service:$u" "$(safe_systemctl_state "$u")" "role-dependent"
     done
 
-    command_exists ufw \
-        && result INFO "UFW" "$(ufw status | head -n1)" "reviewed" \
-        || result INFO "UFW" "not installed" "optional"
+    if command_exists ufw; then
+        local ufw_inventory=""
+        ufw_inventory="$(ufw status 2>/dev/null || true)"
+        result INFO "UFW" "$(awk 'NR==1{print}' <<<"$ufw_inventory")" "reviewed"
+    else
+        result INFO "UFW" "not installed" "optional"
+    fi
 }
 
 advanced_sysvol_repair() {
@@ -4348,7 +4454,7 @@ list_domain_computers_status() {
 
 samba_tool_option_supported() {
     local area="$1" action="$2" option="$3"
-    samba-tool "$area" "$action" --help 2>&1 | grep -Fq -- "$option"
+    command_help_contains "$option" samba-tool "$area" "$action" --help
 }
 
 list_domain_groups_indexed() {
@@ -4685,9 +4791,14 @@ select_group_member() {
 }
 
 directory_object_dn_from_samba() {
-    local area="$1" identity="$2"
-    samba-tool "$area" show "$identity" 2>/dev/null |
-        awk -F': ' '/^dn: /{print $2;exit}'
+    local area="$1" identity="$2" output=""
+    output="$(samba-tool "$area" show "$identity" 2>/dev/null || true)"
+    awk -F': ' '
+        /^dn: / && !seen {
+            print $2
+            seen=1
+        }
+    ' <<<"$output"
 }
 
 select_directory_object_dn() {
@@ -4805,13 +4916,17 @@ select_user_group_membership() {
 
 
 user_has_effective_group_membership() {
-    local user="$1" group="$2"
-    samba-tool user getgroups "$user" 2>/dev/null |
-        awk -v target="$group" '
-            BEGIN { IGNORECASE=1 }
-            $0 == target { found=1; exit }
-            END { exit(found ? 0 : 1) }
-        '
+    local user="$1" group="$2" memberships=""
+
+    if ! memberships="$(samba-tool user getgroups "$user" 2>/dev/null)"; then
+        return 1
+    fi
+
+    awk -v target="$group" '
+        BEGIN { IGNORECASE=1 }
+        $0 == target { found=1 }
+        END { exit(found ? 0 : 1) }
+    ' <<<"$memberships"
 }
 
 add_user_to_group_safe() {
@@ -6081,8 +6196,15 @@ flags: $flags
 EOF
     chmod 600 "$file"
 
-    ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"
-    ldbmodify_with_assistant_ticket "$file" >/dev/null
+    if ! ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"; then
+        msg_warn "Kerberos authentication is unavailable; GPO status was not changed."
+        return 1
+    fi
+
+    if ! ldbmodify_with_assistant_ticket "$file" >/dev/null; then
+        msg_warn "Authenticated LDAP modification failed; GPO status was not changed."
+        return 1
+    fi
 
     actual="$(get_gpo_flags "$guid")"
     [[ "$actual" == "$flags" ]] || {
@@ -6127,8 +6249,11 @@ gpo_status_menu() {
             result SKIP "GPO status" "$(gpo_flags_label "$flags")" "already selected"
         elif confirm "Change GPO status to $(gpo_flags_label "$newflags")?" N; then
             backup_gpo_safe "$guid" || true
-            set_gpo_flags "$guid" "$newflags"
-            flags="$(get_gpo_flags "$guid")"
+            if set_gpo_flags "$guid" "$newflags"; then
+                flags="$(get_gpo_flags "$guid")"
+            else
+                msg_warn "GPO status change failed cleanly; the GPO menu remains available."
+            fi
         fi
         ui_pause
     done
@@ -6622,7 +6747,13 @@ platform_gpo_catalog_menu() {
 }
 
 security_gpo_catalog_menu() {
-    ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"
+    if ! ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"; then
+        msg_warn "Kerberos authentication is unavailable; security GPO deployment cannot continue."
+        gpo_readiness_diagnostics "Kerberos authentication failed before opening the security GPO catalog."
+        ui_pause
+        return 0
+    fi
+
     samba-tool gpo load --help >/dev/null 2>&1 ||
         { msg_warn "Installed Samba does not support gpo load."; return 1; }
 
@@ -6991,7 +7122,6 @@ permissions_admin_menu() {
 }
 
 gpo_admin_menu() {
-    ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"
     initialize_gpo_library
 
     while true; do
@@ -7085,7 +7215,11 @@ gpo_admin_menu() {
                 fi
                 ui_pause
                 ;;
-            13) set_progress_plan 1; manage_gpos; ui_pause ;;
+            13)
+                set_progress_plan 1
+                manage_gpos || msg_warn "Legacy baseline GPO operation failed; review diagnostics and retry."
+                ui_pause
+                ;;
             14)
                 show_gpo_library_paths
                 printf '\n'
@@ -7629,7 +7763,7 @@ create_offline_reset_domain_backup() {
         return 2
     }
 
-    if ! samba-tool domain backup offline --help 2>&1 | grep -Fq -- '--targetdir'; then
+    if ! command_help_contains '--targetdir' samba-tool domain backup offline --help; then
         msg_warn "Installed Samba does not expose domain backup offline --targetdir."
         return 2
     fi
@@ -7806,15 +7940,18 @@ remove_assistant_managed_host_files() {
         [[ -n "$cu" ]] && systemctl restart "$cu" >/dev/null 2>&1 || true
     fi
 
-    if systemctl list-unit-files fail2ban.service --no-legend 2>/dev/null |
-        grep -q '^fail2ban\.service'; then
+    local fail2ban_units=""
+    fail2ban_units="$(systemctl list-unit-files fail2ban.service --no-legend 2>/dev/null || true)"
+    if grep -q '^fail2ban\.service' <<<"$fail2ban_units"; then
         systemctl restart fail2ban >/dev/null 2>&1 || true
     fi
 }
 
 optional_reset_ufw_after_domain_reset() {
     command_exists ufw || return 0
-    ufw status 2>/dev/null | grep -q '^Status: active' || return 0
+    local ufw_state=""
+    ufw_state="$(ufw status 2>/dev/null || true)"
+    grep -q '^Status: active' <<<"$ufw_state" || return 0
 
     printf '\n'
     msg_warn "UFW rules are not tagged by older assistant versions, so individual AD rules cannot be proven to be assistant-owned."
@@ -8807,8 +8944,21 @@ ids_generate_daily_report() {
 ids_show_reports() {
     ids_prepare_state
     local -a files=()
-    mapfile -t files < <(find "$IDS_REPORT_DIR" -maxdepth 1 -type f -name 'ids-report-*.txt' -printf '%T@|%p\n' 2>/dev/null |
-        sort -nr | cut -d'|' -f2- | head -50)
+    local report_index=""
+
+    report_index="$(
+        find "$IDS_REPORT_DIR" -maxdepth 1 -type f -name 'ids-report-*.txt' \
+            -printf '%T@|%p\n' 2>/dev/null || true
+    )"
+
+    mapfile -t files < <(
+        sort -nr <<<"$report_index" |
+            awk -F'|' 'NR<=50 {
+                $1=""
+                sub(/^\|/, "")
+                print
+            }'
+    )
 
     ((${#files[@]})) || {
         msg_info "No generated IDS reports yet."
@@ -8827,7 +8977,8 @@ ids_show_reports() {
     [[ "$choice" =~ ^[0-9]+$ ]] || return 1
     (( choice >= 1 && choice <= ${#files[@]} )) || return 0
 
-    less -R "${files[$((choice-1))]}" 2>/dev/null || cat "${files[$((choice-1))]}"
+    less -R "${files[$((choice-1))]}" 2>/dev/null ||
+        cat "${files[$((choice-1))]}"
 }
 
 ids_install_daily_timer() {
@@ -9403,7 +9554,11 @@ manage_menu() {
                 ;;
             5) set_progress_plan 1; configure_ufw; ui_pause ;;
             6) set_progress_plan 1; ensure_directory_baseline; ui_pause ;;
-            7) set_progress_plan 1; manage_gpos; ui_pause ;;
+            7)
+                set_progress_plan 1
+                manage_gpos || msg_warn "Baseline GPO operation failed; review diagnostics and retry."
+                ui_pause
+                ;;
             8) set_progress_plan 1; create_domain_backup; ui_pause ;;
             9) set_progress_plan 2; advanced_sysvol_repair; ui_pause ;;
             10) set_progress_plan 1; write_post_install_checklist; ui_pause ;;
