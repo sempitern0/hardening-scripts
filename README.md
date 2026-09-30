@@ -10,7 +10,7 @@
 [![Security](https://img.shields.io/badge/security-audit--first%20%7C%20backup--first-success)](#modelo-seguridad)
 [![Navigation](https://img.shields.io/badge/navigation-0%3DBack%20%7C%20H%3DHome-blueviolet)](#navegacion)
 
-Dos asistentes administrativos orientados a profesionales para desplegar, auditar, operar, endurecer, recuperar y migrar entornos **Active Directory** sobre **Samba AD DC en Debian/Ubuntu** y **AD DS nativo en Windows Server**.
+El repositorio reúne **dos control planes de Domain Controller y dos asistentes reversibles de cliente** para desplegar, auditar, operar, endurecer, recuperar y migrar entornos **Active Directory** sobre **Samba AD DC en Debian/Ubuntu**, **AD DS nativo en Windows Server** y sus equipos miembro Linux/Windows.
 
 El objetivo no es convertir Active Directory en un «one-click installer». El objetivo es disponer de un **control plane operativo y repetible** que detecte el estado actual, explique qué va a cambiar, cree evidencia y backups cuando corresponde, solicite confirmación en operaciones sensibles y valide el resultado.
 
@@ -127,18 +127,18 @@ El repositorio mantiene dos control planes de DC y dos asistentes reversibles de
 
 | Archivo | Plataforma | Línea actual | Función |
 |---|---|---:|---|
-| `debian-ad-assistant.sh` | Debian / Ubuntu Server | 5.0.x | Samba AD DC, DNS, Kerberos, Chrony, GPO, dependencias, IDS, hardening, backup, reset, migración y operación diaria |
-| `windows-server-ad-assistant.ps1` | Windows Server | 1.6.x | AD DS, DNS, GPO, hardening, dependencias, IDS/EVE, backup, demotion/reset, provisioning y migración |
-| `linux-ad-client-assistant.sh` | Linux client/member | 1.0.x | snapshot, dependencias, DNS AD, realmd/SSSD/adcli, join, validación, leave y rollback |
-| `windows-ad-client-assistant.ps1` | Windows client/member | 1.0.x | snapshot DNS/hostname, discovery, Add-Computer, secure-channel checks, leave y rollback |
+| `debian-ad-assistant.sh` | Debian / Ubuntu Server | 5.1.x | Samba AD DC, DNS, Kerberos, Chrony, GPO, dependencias, IDS, hardening, backup, reset, migración y operación diaria |
+| `windows-server-ad-assistant.ps1` | Windows Server | 1.7.x | AD DS, DNS, GPO, hardening, dependencias, IDS/EVE, backup, demotion/reset, provisioning y migración |
+| `linux-ad-client-assistant.sh` | Linux client/member | 1.1.x | snapshot, dependencias, DNS AD, realmd/SSSD/adcli, join, validación, leave y rollback |
+| `windows-ad-client-assistant.ps1` | Windows client/member | 1.1.x | snapshot DNS/hostname, discovery, Add-Computer, secure-channel checks, leave y rollback |
 
 Revisiones utilizadas para esta edición:
 
 ```text
 DC Debian      : 5.1.0-remote-ops-ui
 DC Windows     : 1.7.0-remote-ops-ui
-Client Linux   : 1.0.2
-Client Windows : 1.0.0
+Client Linux   : 1.1.0-resilient
+Client Windows : 1.1.0-resilient
 ```
 
 La antigua guía separada:
@@ -172,6 +172,14 @@ Windows
   Suricata EVE analytics + Windows Forms dashboard
   límites de recuperación para errores dentro de menús interactivos
   Remote Operations Center WinRM/SSH y navegación compacta por workspaces
+
+Client assistants v1.1
+  selección de interfaz consciente de ruta y multi-NIC
+  preflight de todos los DNS AD antes de modificar el resolver local
+  readiness de puertos AD sin dependencias nuevas
+  lifecycle explícito alrededor de reboot/leave
+  validación post-join reforzada
+  rollback más completo y diagnóstico accionable
 ```
 
 Verifica siempre la versión real antes de ejecutar:
@@ -2855,24 +2863,36 @@ Al volver:
 Los asistentes de cliente automatizan el procedimiento descrito manualmente en la siguiente sección
 sin convertir el join en una operación opaca.
 
-Modelo:
+Modelo v1.1:
 
 ```text
-detect
+detect host / OS / current identity state
+  ↓
+collect domain + AD DNS
+  ↓
+direct AD DNS preflight (zero local changes)
+  ↓
+route-aware NIC selection
   ↓
 snapshot pre-join
   ↓
-install/verify minimal dependencies
+install/verify the same minimal dependency set
   ↓
 configure AD DNS
   ↓
-validate SRV + time
+system resolver + DC discovery
+  ↓
+AD port + time readiness
+  ↓
+Kerberos / credential preflight
   ↓
 join
   ↓
-validate machine trust
+immediate acceptance
   ↓
-reboot
+reboot lifecycle
+  ↓
+post-reboot acceptance
 ```
 
 Rollback:
@@ -2895,6 +2915,8 @@ Principios:
 
 - no se almacenan passwords;
 - no se añaden repositorios de terceros;
+- v1.1 no aumenta el conjunto base de dependencias de los asistentes;
+- los DNS AD se consultan directamente antes de modificar el resolver local;
 - DNS se cambia únicamente después de crear snapshot;
 - el asistente conserva los datos necesarios para devolver la máquina a su estado anterior;
 - una unión fallida intenta restaurar DNS/hostname automáticamente;
@@ -2951,7 +2973,8 @@ DNS diagnostic tools
 El asistente usa únicamente los repositorios ya configurados por la distribución. No añade PPA,
 COPR, repositorios vendor ni `curl | sh`.
 
-En distribuciones no reconocidas puede continuar si:
+En distribuciones no reconocidas el modo genérico queda limitado a sistemas **systemd** y puede
+continuar si las herramientas necesarias ya existen:
 
 ```text
 realm
@@ -2959,9 +2982,94 @@ adcli
 kinit
 klist
 getent
+systemctl
+hostnamectl
+ip
 ```
 
-ya existen.
+No se añaden dependencias ni se intenta reconfigurar automáticamente OpenRC, runit o SysV.
+
+### Readiness y resiliencia v1.1
+
+Antes de tocar DNS, el wizard realiza un **preflight directo** contra todos los servidores AD DNS
+introducidos. Cada uno debe responder al locator:
+
+```text
+_ldap._tcp.dc._msdcs.<domain>
+```
+
+La selección de NIC ya no depende únicamente de la primera default route. El assistant considera la
+ruta efectiva hacia el primer DNS AD y, cuando hay varias interfaces, presenta un selector con:
+
+```text
+interface
+IPv4/prefix
+route metric
+network manager
+suggested AD route
+```
+
+Esto cubre mejor:
+
+```text
+Ethernet + Wi-Fi
+VPN
+VirtualBox / VMware multi-NIC
+management VLAN
+bridges / bonds
+```
+
+Después de aplicar DNS valida sin añadir utilidades nuevas:
+
+```text
+DNS/TCP 53
+Kerberos/TCP 88
+LDAP/TCP 389
+SMB/TCP 445        # warning si no está disponible
+```
+
+El join usa un **Kerberos credential cache privado por ejecución**. El password sigue siendo
+interactivo y no se persiste.
+
+### Hostname y computer account
+
+v1.1 separa dos conceptos:
+
+```text
+system hostname
+AD computer name / NetBIOS
+```
+
+El nombre de cuenta de equipo se valida a un máximo de 15 caracteres y se pasa explícitamente a
+`realm join --computer-name`. Un hostname Linux más largo ya no tiene que convertirse implícitamente
+en el nombre de cuenta AD.
+
+### Acceptance post-join
+
+Un `realm join` exitoso ya no equivale por sí solo a `HEALTHY`.
+
+La aceptación comprueba:
+
+```text
+realm membership
+sssctl config-check         # cuando existe
+sssd.service active
+adcli testjoin
+host principal in /etc/krb5.keytab
+system resolver AD SRV
+optional domain-user lookup
+```
+
+Estados operativos:
+
+```text
+JOIN_PENDING_REBOOT
+JOINED
+JOINED_DEGRADED
+```
+
+Si la cuenta de máquina se creó pero SSSD o la validación posterior fallan, el assistant **no restaura
+DNS a ciegas**. Mantiene AD DNS y el snapshot para poder reparar o realizar un leave limpio.
 
 ### Backends DNS
 
@@ -2976,10 +3084,12 @@ direct /etc/resolv.conf fallback
 NetworkManager:
 
 ```text
-snapshot ipv4/ipv6 DNS policy
+snapshot connection name + UUID
+snapshot ipv4/ipv6 DNS policy and DNS priority
 disable DHCP DNS for AD resolution
 set DC DNS
 set search domain
+prefer the AD DNS connection for resolver ordering
 reapply interface without reconnect when possible
 ```
 
@@ -3038,19 +3148,27 @@ El snapshot conserva, según plataforma:
 
 ```text
 resolver
+/etc/hosts evidence
 krb5.conf
-sssd.conf
+krb5.keytab
+realmd.conf
+sssd.conf + sssd/conf.d
 nsswitch.conf
 PAM session config
-NetworkManager DNS properties
+NetworkManager DNS properties + connection UUID
 systemd-resolved managed drop-in
 hostname
 package baseline
-authselect mkhomedir state
+authselect backup/state
 ```
 
 Los paquetes instalados por el assistant se registran por separado. Durante un restore pueden
 eliminarse de forma explícita, pero el script nunca ejecuta un `autoremove` automático.
+
+La línea v1.1 mantiene el mismo conjunto base de paquetes de v1.0. Las comprobaciones nuevas se
+implementan usando Bash, `ip`, `dig`, systemd y las herramientas AD que ya forman parte del stack.
+Las funciones opcionales, como `pam_mkhomedir`, no fuerzan la instalación de un paquete adicional si
+el módulo no existe en el sistema.
 
 <a id="windows-client-assistant"></a>
 ## Windows AD Client Assistant
@@ -3080,26 +3198,34 @@ Modos:
 
 No requiere paquetes adicionales.
 
-El wizard:
+El wizard v1.1:
 
 ```text
-detecta NIC activas
+domain + AD DNS input
   ↓
-permite elegir interfaz
+direct SRV preflight against every AD DNS
   ↓
-snapshot DNS + origen DHCP/static + hostname/workgroup
+route-aware NIC selection
   ↓
-configura DNS AD
+snapshot DNS + adapter GUID + hostname/workgroup
   ↓
-Resolve-DnsName SRV
+configure AD DNS
   ↓
-nltest DC locator
+Resolve-DnsName + nltest
+  ↓
+53/88/135/389/445 readiness
+  ↓
+DC time sample
   ↓
 Get-Credential
   ↓
 Add-Computer
   ↓
+JOIN_PENDING_REBOOT
+  ↓
 reboot
+  ↓
+secure-channel + DC locator acceptance
 ```
 
 Soporta:
@@ -3114,6 +3240,67 @@ Windows Server como member server
 
 Las ediciones Windows Home/Core-client que no soportan el join clásico a AD se bloquean antes de
 modificar DNS.
+
+### Network readiness y diagnostics v1.1
+
+Los servidores DNS introducidos se restringen explícitamente a IPv4 en esta línea para que input,
+snapshot y rollback utilicen el mismo modelo. Si la interfaz conserva resolvers IPv6, el assistant los
+muestra como warning para que el administrador confirme que también pueden resolver la zona AD.
+
+Cuando existen varias NIC, `Find-NetRoute` determina qué interfaz usa Windows para alcanzar el primer
+DNS AD y la propone como default del selector.
+
+Readiness de join:
+
+```text
+DNS/TCP 53
+Kerberos/TCP 88
+RPC Endpoint Mapper/TCP 135
+LDAP/TCP 389
+SMB/TCP 445
+```
+
+No se abre el firewall ni se instalan agentes para superar un fallo. El assistant muestra el componente
+que no es alcanzable y deja la decisión de red al administrador.
+
+Si `Add-Computer` falla, se conserva un tail de:
+
+```text
+C:\Windows\Debug\NetSetup.log
+```
+
+El diagnóstico reconoce específicamente el bloqueo moderno de reutilización de cuentas de equipo
+`0xAAC / NERR_AccountReuseBlockedByPolicy` y no aplica bypasses de Registry.
+
+### Lifecycle transaccional Windows
+
+v1.1 evita restaurar DNS demasiado pronto durante joins/leaves pendientes de reboot.
+
+Estados:
+
+```text
+JOIN_PENDING_REBOOT
+JOINED
+JOINED_DEGRADED
+LEAVE_PENDING_REBOOT
+RESTORE_PENDING_REBOOT
+```
+
+Después de `Remove-Computer`, el DNS AD se mantiene hasta que Windows haya reiniciado y confirme que ya
+no pertenece al dominio. Entonces el assistant restaura DNS y hostname. Si la recuperación del hostname
+requiere otro reboot, el estado se conserva hasta completarlo.
+
+El match de la NIC durante rollback usa:
+
+```text
+InterfaceGuid
+  ↓ fallback
+InterfaceIndex
+  ↓ fallback
+InterfaceAlias
+```
+
+para tolerar cambios de índice producidos por drivers, Hyper-V, USB NICs o cambios de hardware virtual.
 
 ### Restauración DNS Windows
 
@@ -3142,7 +3329,9 @@ Remove-Computer
 
 con credencial de desunión y workgroup de retorno.
 
-Después restaura DNS y, cuando procede, el hostname original.
+Después del reboot de desunión restaura DNS y, cuando procede, el hostname original. Durante
+`LEAVE_PENDING_REBOOT` mantiene deliberadamente el DNS AD para no romper la transición que Windows aún
+no ha materializado.
 
 Si el equipo todavía figura como miembro de dominio, `-Mode Restore` **no** falsifica la salida
 editando el Registry. Exige utilizar primero el leave soportado.
@@ -3152,6 +3341,27 @@ Persistencia:
 ```text
 C:\ProgramData\ADClientAssistant\
 ```
+
+### Acceptance recomendada antes de producción
+
+Prueba como mínimo:
+
+| Caso | Linux | Windows |
+|---|---:|---:|
+| DHCP + 1 NIC | sí | sí |
+| DNS/IP estático | sí | sí |
+| dos DNS AD válidos | sí | sí |
+| DNS secundario incorrecto | sí | sí |
+| multi-NIC | sí | sí |
+| VPN activa | sí | sí |
+| join remoto SSH/RDP | sí | sí |
+| reboot + status | sí | sí |
+| clean leave + reboot + restore | sí | sí |
+| DC inaccesible durante leave | sí | sí |
+| identidad previa / SSSD previo | sí | n/a |
+| computer account existente | sí | sí |
+
+---
 
 <a id="client-rollback"></a>
 ## Modelo de rollback
@@ -3164,6 +3374,8 @@ Eso incluye:
 DNS behavior
 hostname when modified
 local identity/client config
+Linux pre-join Kerberos keytab state
+Windows reboot/lifecycle state
 optional packages installed by the assistant
 ```
 

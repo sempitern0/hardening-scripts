@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # linux-ad-client-assistant.sh
-# Version 1.0.2
+# Version 1.1.0-resilient
 #
 # Reversible Active Directory client join assistant for Linux.
 #
@@ -9,7 +9,8 @@
 #   - RHEL / Fedora / Rocky / Alma and derivatives using DNF/YUM
 #
 # Generic mode:
-#   - Other distributions can continue when the required commands already exist.
+#   - Other systemd distributions can continue when the required commands already exist.
+#   - Non-systemd automated lifecycle is intentionally not supported.
 #
 # Core design:
 #   detect -> snapshot -> packages -> DNS -> discover -> join -> validate
@@ -20,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.0.2"
+SCRIPT_VERSION="1.1.0-resilient"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -60,6 +61,10 @@ DNS_BACKEND=""
 NM_CONNECTION=""
 REMOTE_SESSION=0
 HOSTNAME_CHANGED_RESULT=0
+NM_CONNECTION_UUID=""
+PRIVATE_KRB5CCACHE="${STATE_ROOT}/krb5cc-${RUN_ID}"
+JOIN_COMPUTER_NAME=""
+JOIN_REALM_NAME=""
 
 # ---------------------------------------------------------------------------
 # UI / logging
@@ -87,6 +92,8 @@ init_runtime() {
     detect_os
     detect_active_interface
     detect_dns_backend
+
+    trap cleanup_private_ccache EXIT
 }
 
 log() {
@@ -159,6 +166,195 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+
+valid_dns_domain() {
+    local name="$1" label=""
+    local -a labels=()
+    (( ${#name} >= 3 && ${#name} <= 253 )) || return 1
+    [[ "$name" == *.* && "$name" != .* && "$name" != *. && "$name" != *..* ]] || return 1
+    local old_ifs="$IFS"
+    IFS='.'
+    read -r -a labels <<<"$name"
+    IFS="$old_ifs"
+    ((${#labels[@]} >= 2)) || return 1
+    for label in "${labels[@]}"; do
+        (( ${#label} >= 1 && ${#label} <= 63 )) || return 1
+        [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || return 1
+    done
+}
+
+valid_system_hostname() {
+    local name="$1" label=""
+    local -a labels=()
+    (( ${#name} >= 1 && ${#name} <= 64 )) || return 1
+    [[ "$name" != .* && "$name" != *. && "$name" != *..* ]] || return 1
+    local old_ifs="$IFS"
+    IFS='.'
+    read -r -a labels <<<"$name"
+    IFS="$old_ifs"
+    for label in "${labels[@]}"; do
+        (( ${#label} >= 1 && ${#label} <= 63 )) || return 1
+        [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || return 1
+    done
+}
+
+valid_ad_computer_name() {
+    local name="$1"
+    (( ${#name} >= 1 && ${#name} <= 15 )) || return 1
+    [[ "$name" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,13}[A-Za-z0-9])?$ ]]
+}
+
+
+current_boot_id() {
+    cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf 'unknown'
+}
+
+cleanup_private_ccache() {
+    if command_exists kdestroy; then
+        kdestroy -c "FILE:${PRIVATE_KRB5CCACHE}" >/dev/null 2>&1 || true
+    fi
+    rm -f -- "$PRIVATE_KRB5CCACHE" >/dev/null 2>&1 || true
+}
+
+require_supported_init() {
+    if ! command_exists systemctl || [[ ! -d /run/systemd/system ]]; then
+        err "Automated join/leave requires a systemd-based Linux client."
+        warn "This build intentionally does not modify OpenRC/runit/SysV identity configuration."
+        return 1
+    fi
+}
+
+route_interface_for_target() {
+    local target="$1" route=""
+    [[ -n "$target" ]] || return 1
+    route="$(ip -4 route get "$target" 2>/dev/null || true)"
+    awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' <<<"$route"
+}
+
+active_ipv4_interfaces() {
+    local data=""
+    data="$(ip -4 -o addr show scope global 2>/dev/null || true)"
+    awk '{print $2}' <<<"$data" | awk '!seen[$0]++'
+}
+
+show_network_candidates() {
+    local iface addr route metric manager
+    while IFS= read -r iface; do
+        [[ -n "$iface" ]] || continue
+        addr="$(ip -4 -o addr show dev "$iface" scope global 2>/dev/null | awk 'NR==1{print $4}')"
+        route="$(ip -4 route show default dev "$iface" 2>/dev/null | awk 'NR==1{print}')"
+        metric="$(awk '{for(i=1;i<=NF;i++) if($i=="metric"){print $(i+1); exit}}' <<<"$route")"
+        [[ -n "$metric" ]] || metric="-"
+        manager="kernel"
+        if command_exists nmcli && systemctl is-active --quiet NetworkManager.service 2>/dev/null; then
+            local state=""
+            state="$(nmcli -g GENERAL.STATE device show "$iface" 2>/dev/null || true)"
+            [[ -n "$state" ]] && manager="NetworkManager"
+        elif command_exists networkctl && systemctl is-active --quiet systemd-networkd.service 2>/dev/null; then
+            manager="systemd-networkd"
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$iface" "${addr:--}" "$metric" "$manager"
+    done < <(active_ipv4_interfaces)
+}
+
+select_join_interface() {
+    local target_ip="${1:-}" suggested="" rows="" count=0
+
+    if [[ -n "$target_ip" ]]; then
+        suggested="$(route_interface_for_target "$target_ip" || true)"
+    fi
+    if [[ -z "$suggested" && $REMOTE_SESSION -eq 1 ]]; then
+        local ssh_ip=""
+        ssh_ip="${SSH_CLIENT:-}"
+        ssh_ip="${ssh_ip%% *}"
+        if [[ -z "$ssh_ip" ]]; then
+            ssh_ip="${SSH_CONNECTION:-}"
+            ssh_ip="${ssh_ip%% *}"
+        fi
+        [[ -n "$ssh_ip" ]] && suggested="$(route_interface_for_target "$ssh_ip" || true)"
+    fi
+    [[ -n "$suggested" ]] || suggested="$ACTIVE_IFACE"
+
+    rows="$(show_network_candidates)"
+    count="$(awk 'NF{n++}END{print n+0}' <<<"$rows")"
+    if (( count == 0 )); then
+        err "No active global IPv4 interface was detected."
+        return 1
+    fi
+
+    if (( count == 1 )); then
+        ACTIVE_IFACE="$(awk 'NF{print $1; exit}' <<<"$rows")"
+        detect_dns_backend
+        return 0
+    fi
+
+    printf '\nNETWORK INTERFACES\n'
+    local i=0 iface addr metric manager default_choice=1 line
+    while IFS=$'\t' read -r iface addr metric manager; do
+        [[ -n "$iface" ]] || continue
+        ((i++))
+        [[ "$iface" == "$suggested" ]] && default_choice="$i"
+        printf '  [%d] %-16s %-20s metric=%-6s %s' "$i" "$iface" "$addr" "$metric" "$manager"
+        [[ "$iface" == "$suggested" ]] && printf '  <- suggested route'
+        printf '\n'
+    done <<<"$rows"
+
+    local choice=""
+    choice="$(ask 'Select interface used to reach Active Directory' "$default_choice")" || return 1
+    [[ "$choice" =~ ^[0-9]+$ ]] || { err "Invalid interface selection."; return 1; }
+    ACTIVE_IFACE="$(awk -v n="$choice" 'NF{c++; if(c==n){print $1; exit}}' <<<"$rows")"
+    [[ -n "$ACTIVE_IFACE" ]] || { err "Invalid interface selection."; return 1; }
+
+    if [[ -n "$suggested" && "$ACTIVE_IFACE" != "$suggested" ]]; then
+        warn "Selected interface '$ACTIVE_IFACE' differs from the kernel route to the AD target ('$suggested')."
+        confirm "Continue without changing routing?" N || return 1
+    fi
+
+    detect_dns_backend
+    ok "Selected AD interface: $ACTIVE_IFACE ($DNS_BACKEND)."
+}
+
+identity_precheck() {
+    local findings=0
+    printf '\nIDENTITY PRECHECK\n'
+    if [[ -s /etc/sssd/sssd.conf ]]; then
+        warn "Existing /etc/sssd/sssd.conf detected."
+        findings=1
+    fi
+    if [[ -s /etc/krb5.keytab ]]; then
+        warn "Existing /etc/krb5.keytab detected. It will be snapshotted before join."
+        findings=1
+    fi
+    if grep -Eq '(^|[[:space:]])sss([[:space:]]|$)' /etc/nsswitch.conf 2>/dev/null; then
+        info "NSS already references SSSD."
+        findings=1
+    fi
+    if (( findings )); then
+        confirm "Existing identity configuration was found. Continue only after snapshot/review?" N || return 1
+    else
+        ok "No conflicting pre-existing identity configuration detected."
+    fi
+}
+
+record_assistant_package() {
+    local snap="$1" pkg="$2" file="${snap}/packages-installed-by-assistant.txt"
+    touch "$file"
+    grep -Fxq "$pkg" "$file" 2>/dev/null || printf '%s\n' "$pkg" >>"$file"
+}
+
+set_current_phase() {
+    local phase="$1"
+    [[ -f "$CURRENT_STATE" ]] || return 1
+    local tmp="${CURRENT_STATE}.tmp.$$"
+    awk -v q="PHASE=$(printf '%q' "$phase")" '
+        BEGIN{done=0}
+        /^PHASE=/{if(!done){print q; done=1}; next}
+        {print}
+        END{if(!done) print q}
+    ' "$CURRENT_STATE" >"$tmp" && mv "$tmp" "$CURRENT_STATE"
+    chmod 0600 "$CURRENT_STATE"
+}
+
 # ---------------------------------------------------------------------------
 # Platform detection
 # ---------------------------------------------------------------------------
@@ -188,34 +384,56 @@ detect_os() {
 }
 
 detect_active_interface() {
-    local routes="" first=""
-    routes="$(ip -4 route show default 2>/dev/null || true)"
-    first="$(awk 'NR==1{print}' <<<"$routes")"
-    ACTIVE_IFACE="$(awk '{
-        for(i=1;i<=NF;i++) {
-            if($i=="dev") { print $(i+1); break }
-        }
-    }' <<<"$first")"
+    local preferred="" ssh_ip=""
 
-    if [[ -z "$ACTIVE_IFACE" ]]; then
-        local addrs=""
-        addrs="$(ip -4 -o addr show scope global 2>/dev/null || true)"
-        ACTIVE_IFACE="$(awk 'NR==1{print $2}' <<<"$addrs")"
+    if [[ -n "${SSH_CLIENT:-}" || -n "${SSH_CONNECTION:-}" ]]; then
+        ssh_ip="${SSH_CLIENT:-}"
+        ssh_ip="${ssh_ip%% *}"
+        if [[ -z "$ssh_ip" ]]; then
+            ssh_ip="${SSH_CONNECTION:-}"
+            ssh_ip="${ssh_ip%% *}"
+        fi
+        [[ -n "$ssh_ip" ]] && preferred="$(route_interface_for_target "$ssh_ip" || true)"
     fi
+
+    if [[ -z "$preferred" ]]; then
+        local routes=""
+        routes="$(ip -4 route show default 2>/dev/null || true)"
+        preferred="$(awk '
+            NR==1 {best=$0; bestm=2147483647}
+            {
+                m=0
+                for(i=1;i<=NF;i++) if($i=="metric") m=$(i+1)
+                if(m < bestm){best=$0; bestm=m}
+            }
+            END{
+                n=split(best,a," ")
+                for(i=1;i<=n;i++) if(a[i]=="dev"){print a[i+1]; exit}
+            }
+        ' <<<"$routes")"
+    fi
+
+    if [[ -z "$preferred" ]]; then
+        preferred="$(active_ipv4_interfaces | awk 'NR==1{print}')"
+    fi
+    ACTIVE_IFACE="$preferred"
 }
 
 detect_dns_backend() {
     DNS_BACKEND="resolv.conf"
     NM_CONNECTION=""
+    NM_CONNECTION_UUID=""
 
     if command_exists nmcli &&
        systemctl is-active --quiet NetworkManager.service 2>/dev/null &&
        [[ -n "$ACTIVE_IFACE" ]]; then
-        local con=""
+        local con="" uuid=""
         con="$(nmcli -g GENERAL.CONNECTION device show "$ACTIVE_IFACE" 2>/dev/null || true)"
         if [[ -n "$con" && "$con" != "--" ]]; then
+            uuid="$(nmcli -g connection.uuid connection show "$con" 2>/dev/null || true)"
             DNS_BACKEND="NetworkManager"
             NM_CONNECTION="$con"
+            NM_CONNECTION_UUID="$uuid"
             return
         fi
     fi
@@ -261,15 +479,19 @@ create_prejoin_snapshot() {
     chmod 0700 "$snap"
 
     snapshot_copy /etc/resolv.conf "$snap"
+    snapshot_copy /etc/hosts "$snap"
     snapshot_copy /etc/krb5.conf "$snap"
+    snapshot_copy /etc/krb5.keytab "$snap"
+    snapshot_copy /etc/realmd.conf "$snap"
     snapshot_copy /etc/sssd/sssd.conf "$snap"
+    snapshot_copy /etc/sssd/conf.d "$snap"
     snapshot_copy /etc/nsswitch.conf "$snap"
     snapshot_copy /etc/pam.d/common-session "$snap"
     snapshot_copy /etc/pam.d/common-session-noninteractive "$snap"
     snapshot_copy /etc/systemd/resolved.conf.d/90-ad-client-assistant.conf "$snap"
 
     : >"$meta"
-    write_env_kv "$meta" SNAPSHOT_VERSION "1"
+    write_env_kv "$meta" SNAPSHOT_VERSION "2"
     write_env_kv "$meta" SNAPSHOT_PATH "$snap"
     write_env_kv "$meta" CREATED_AT "$(date -Is)"
     write_env_kv "$meta" DOMAIN "$domain"
@@ -278,7 +500,9 @@ create_prejoin_snapshot() {
     write_env_kv "$meta" DNS_BACKEND "$DNS_BACKEND"
     write_env_kv "$meta" PKG_FAMILY "$PKG_FAMILY"
     write_env_kv "$meta" NM_CONNECTION "$NM_CONNECTION"
+    write_env_kv "$meta" NM_CONNECTION_UUID "$NM_CONNECTION_UUID"
     write_env_kv "$meta" REMOTE_SESSION "$REMOTE_SESSION"
+    write_env_kv "$meta" PREJOIN_BOOT_ID "$(current_boot_id)"
 
     if [[ "$DNS_BACKEND" == "NetworkManager" && -n "$NM_CONNECTION" ]]; then
         write_env_kv "$meta" NM_IPV4_IGNORE_AUTO_DNS \
@@ -287,6 +511,8 @@ create_prejoin_snapshot() {
             "$(nmcli -g ipv4.dns connection show "$NM_CONNECTION" 2>/dev/null || true)"
         write_env_kv "$meta" NM_IPV4_DNS_SEARCH \
             "$(nmcli -g ipv4.dns-search connection show "$NM_CONNECTION" 2>/dev/null || true)"
+        write_env_kv "$meta" NM_IPV4_DNS_PRIORITY \
+            "$(nmcli -g ipv4.dns-priority connection show "$NM_CONNECTION" 2>/dev/null || true)"
         write_env_kv "$meta" NM_IPV6_IGNORE_AUTO_DNS \
             "$(nmcli -g ipv6.ignore-auto-dns connection show "$NM_CONNECTION" 2>/dev/null || true)"
         write_env_kv "$meta" NM_IPV6_DNS \
@@ -296,9 +522,12 @@ create_prejoin_snapshot() {
     fi
 
     if command_exists authselect; then
-        local authselect_state=""
-        authselect_state="$(authselect current 2>/dev/null || true)"
+        local authselect_state="" backup_name="ad-client-assistant-${RUN_ID}"
+        authselect_state="$(authselect current --raw 2>/dev/null || authselect current 2>/dev/null || true)"
         printf '%s\n' "$authselect_state" >"${snap}/authselect-before.txt"
+        if authselect backup "$backup_name" >/dev/null 2>&1; then
+            write_env_kv "$meta" AUTHSELECT_BACKUP "$backup_name"
+        fi
         if grep -Fq 'with-mkhomedir' <<<"$authselect_state"; then
             write_env_kv "$meta" AUTHSELECT_HAD_MKHOMEDIR "1"
         else
@@ -323,15 +552,19 @@ restore_snapshot_file() {
 }
 
 record_current_state() {
-    local snap="$1" domain="$2" realm="$3" iface="$4" dns_csv="$5" hostname_changed="$6"
+    local snap="$1" domain="$2" realm="$3" iface="$4" dns_csv="$5" hostname_changed="$6" computer_name="${7:-}"
     : >"$CURRENT_STATE"
     chmod 0600 "$CURRENT_STATE"
+    write_env_kv "$CURRENT_STATE" STATE_VERSION "2"
+    write_env_kv "$CURRENT_STATE" PHASE "JOIN_PENDING_REBOOT"
     write_env_kv "$CURRENT_STATE" SNAPSHOT_PATH "$snap"
     write_env_kv "$CURRENT_STATE" DOMAIN "$domain"
     write_env_kv "$CURRENT_STATE" REALM "$realm"
     write_env_kv "$CURRENT_STATE" ACTIVE_IFACE "$iface"
     write_env_kv "$CURRENT_STATE" AD_DNS_SERVERS "$dns_csv"
     write_env_kv "$CURRENT_STATE" HOSTNAME_CHANGED "$hostname_changed"
+    write_env_kv "$CURRENT_STATE" COMPUTER_NAME "$computer_name"
+    write_env_kv "$CURRENT_STATE" JOIN_BOOT_ID "$(current_boot_id)"
     write_env_kv "$CURRENT_STATE" JOINED_AT "$(date -Is)"
 }
 
@@ -389,7 +622,9 @@ pkg_installed() {
 install_required_packages() {
     local snap="$1"
     local -a required=() missing=()
+    local record="${snap}/packages-installed-by-assistant.txt"
     mapfile -t required < <(required_packages)
+    : >"$record"
 
     if [[ "$PKG_FAMILY" == "generic" ]]; then
         warn "Unsupported package family. No repository/package configuration will be changed."
@@ -403,45 +638,50 @@ install_required_packages() {
         pkg_installed "$pkg" || missing+=("$pkg")
     done
 
-    printf '%s\n' "${missing[@]}" >"${snap}/packages-installed-by-assistant.txt"
-
     if ((${#missing[@]} == 0)); then
         ok "Required AD client packages are already installed."
-        return 0
+        validate_required_commands
+        return $?
     fi
 
     info "Packages required from the distribution repositories:"
     printf '  %s\n' "${missing[@]}"
-
-    confirm "Install these packages from the currently configured official/system repositories?" Y ||
-        return 1
+    confirm "Install these packages from the currently configured official/system repositories?" Y || return 1
 
     case "$PKG_FAMILY" in
         apt)
-            apt-get update || {
-                err "apt-get update failed."
+            apt-get update || { err "apt-get update failed."; return 1; }
+            if ! DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"; then
+                for pkg in "${missing[@]}"; do
+                    pkg_installed "$pkg" && record_assistant_package "$snap" "$pkg"
+                done
+                err "APT package installation failed; any packages actually added were recorded for rollback."
                 return 1
-            }
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}" || {
-                err "APT package installation failed."
-                return 1
-            }
+            fi
             ;;
         dnf)
             local pm="dnf"
             command_exists dnf || pm="yum"
-            "$pm" install -y "${missing[@]}" || {
-                err "$pm package installation failed."
+            if ! "$pm" install -y "${missing[@]}"; then
+                for pkg in "${missing[@]}"; do
+                    pkg_installed "$pkg" && record_assistant_package "$snap" "$pkg"
+                done
+                err "$pm package installation failed; any packages actually added were recorded for rollback."
                 return 1
-            }
+            fi
             ;;
     esac
+
+    # Record only packages that were absent before and are now actually present.
+    for pkg in "${missing[@]}"; do
+        pkg_installed "$pkg" && record_assistant_package "$snap" "$pkg"
+    done
 
     validate_required_commands
 }
 
 validate_required_commands() {
-    local -a commands=(realm adcli kinit klist getent)
+    local -a commands=(realm adcli kinit klist getent systemctl hostnamectl ip)
     local missing=0 cmd
     for cmd in "${commands[@]}"; do
         if command_exists "$cmd"; then
@@ -452,7 +692,18 @@ validate_required_commands() {
         fi
     done
 
-    command_exists dig || warn "dig is unavailable; DNS validation will be reduced."
+    if [[ "$PKG_FAMILY" == "apt" || "$PKG_FAMILY" == "dnf" ]]; then
+        if command_exists dig; then
+            ok "Command available: dig"
+        else
+            err "Missing required DNS diagnostic command: dig"
+            missing=1
+        fi
+    else
+        command_exists dig || warn "dig is unavailable; generic-mode DNS validation will be reduced."
+    fi
+
+    require_supported_init || missing=1
     (( missing == 0 ))
 }
 
@@ -564,10 +815,7 @@ apply_domain_dns() {
     local dns_space=""
     dns_space="$(dns_space_list "$dns_csv")"
 
-    [[ -n "$dns_space" ]] || {
-        err "No DNS servers supplied."
-        return 1
-    }
+    [[ -n "$dns_space" ]] || { err "No DNS servers supplied."; return 1; }
 
     if (( REMOTE_SESSION )); then
         warn "Remote session detected. DNS changes should not interrupt an existing IP-based SSH session,"
@@ -576,19 +824,16 @@ apply_domain_dns() {
 
     case "$DNS_BACKEND" in
         NetworkManager)
-            [[ -n "$NM_CONNECTION" ]] || {
-                err "NetworkManager connection could not be determined."
-                return 1
-            }
+            [[ -n "$NM_CONNECTION" ]] || { err "NetworkManager connection could not be determined."; return 1; }
 
             nmcli connection modify "$NM_CONNECTION" \
                 ipv4.ignore-auto-dns yes \
                 ipv4.dns "$dns_space" \
-                ipv4.dns-search "$domain" || return 1
+                ipv4.dns-search "$domain" \
+                ipv4.dns-priority -50 || return 1
 
-            # Prevent DHCP-provided IPv6 resolvers from bypassing AD DNS.
-            nmcli connection modify "$NM_CONNECTION" \
-                ipv6.ignore-auto-dns yes || true
+            # Do not allow DHCP-provided IPv6 DNS to bypass the AD DNS policy.
+            nmcli connection modify "$NM_CONNECTION" ipv6.ignore-auto-dns yes || true
 
             if ! nmcli device reapply "$iface" >/dev/null 2>&1; then
                 warn "NetworkManager could not reapply DNS live."
@@ -602,6 +847,13 @@ apply_domain_dns() {
         systemd-resolved)
             local -a dns_array=()
             mapfile -t dns_array < <(parse_dns_csv "$dns_csv")
+            local iface_count=""
+            iface_count="$(active_ipv4_interfaces | awk 'NF{n++}END{print n+0}')"
+            if (( iface_count > 1 )); then
+                warn "Multiple IPv4 interfaces are active and systemd-resolved is not owned by NetworkManager."
+                warn "The persistent resolved.conf.d fallback is global; per-link runtime settings are also applied."
+                confirm "Apply this global AD DNS fallback on a multi-NIC host?" N || return 1
+            fi
 
             mkdir -p /etc/systemd/resolved.conf.d
             cat >/etc/systemd/resolved.conf.d/90-ad-client-assistant.conf <<EOF
@@ -620,7 +872,7 @@ EOF
             warn "The assistant will manage /etc/resolv.conf directly and restore it on rollback."
             confirm "Continue with direct /etc/resolv.conf management?" N || return 1
 
-            rm -f /etc/resolv.conf
+            local tmp="/etc/resolv.conf.ad-client-assistant.$$"
             {
                 local ip
                 while IFS= read -r ip; do
@@ -628,8 +880,9 @@ EOF
                 done < <(parse_dns_csv "$dns_csv")
                 printf 'search %s\n' "$domain"
                 printf 'options timeout:2 attempts:2\n'
-            } >/etc/resolv.conf
-            chmod 0644 /etc/resolv.conf
+            } >"$tmp" || return 1
+            chmod 0644 "$tmp"
+            mv -Tf "$tmp" /etc/resolv.conf || return 1
             ;;
     esac
 
@@ -638,30 +891,30 @@ EOF
 }
 
 restore_network_from_snapshot() {
-    local snap="$1"
-    local meta="${snap}/snapshot.env"
-    [[ -f "$meta" ]] || {
-        err "Snapshot metadata missing: $meta"
-        return 1
-    }
+    local snap="$1" meta="${snap}/snapshot.env"
+    [[ -f "$meta" ]] || { err "Snapshot metadata missing: $meta"; return 1; }
 
-    unset DNS_BACKEND NM_CONNECTION ACTIVE_IFACE
+    unset DNS_BACKEND NM_CONNECTION NM_CONNECTION_UUID ACTIVE_IFACE
     load_state_file "$meta" || return 1
 
     case "${DNS_BACKEND:-}" in
         NetworkManager)
-            if command_exists nmcli && [[ -n "${NM_CONNECTION:-}" ]]; then
-                nmcli connection modify "$NM_CONNECTION" \
-                    ipv4.ignore-auto-dns "${NM_IPV4_IGNORE_AUTO_DNS:-no}" \
-                    ipv4.dns "${NM_IPV4_DNS:-}" \
-                    ipv4.dns-search "${NM_IPV4_DNS_SEARCH:-}" || true
-
-                nmcli connection modify "$NM_CONNECTION" \
-                    ipv6.ignore-auto-dns "${NM_IPV6_IGNORE_AUTO_DNS:-no}" \
-                    ipv6.dns "${NM_IPV6_DNS:-}" \
-                    ipv6.dns-search "${NM_IPV6_DNS_SEARCH:-}" || true
-
-                nmcli device reapply "${ACTIVE_IFACE:-}" >/dev/null 2>&1 || true
+            if command_exists nmcli; then
+                local con_ref="${NM_CONNECTION_UUID:-${NM_CONNECTION:-}}"
+                if [[ -n "$con_ref" ]] && nmcli connection show "$con_ref" >/dev/null 2>&1; then
+                    nmcli connection modify "$con_ref" \
+                        ipv4.ignore-auto-dns "${NM_IPV4_IGNORE_AUTO_DNS:-no}" \
+                        ipv4.dns "${NM_IPV4_DNS:-}" \
+                        ipv4.dns-search "${NM_IPV4_DNS_SEARCH:-}" \
+                        ipv4.dns-priority "${NM_IPV4_DNS_PRIORITY:-0}" || true
+                    nmcli connection modify "$con_ref" \
+                        ipv6.ignore-auto-dns "${NM_IPV6_IGNORE_AUTO_DNS:-no}" \
+                        ipv6.dns "${NM_IPV6_DNS:-}" \
+                        ipv6.dns-search "${NM_IPV6_DNS_SEARCH:-}" || true
+                    [[ -n "${ACTIVE_IFACE:-}" ]] && nmcli device reapply "$ACTIVE_IFACE" >/dev/null 2>&1 || true
+                else
+                    warn "Original NetworkManager connection is no longer present; automatic DNS rollback is incomplete."
+                fi
             fi
             ;;
         systemd-resolved)
@@ -677,7 +930,6 @@ restore_network_from_snapshot() {
             ;;
     esac
 
-    # Re-detect because sourcing the snapshot intentionally overwrote globals.
     detect_active_interface
     detect_dns_backend
     ok "Pre-join DNS/network resolver state restored."
@@ -703,20 +955,104 @@ domain_srv_query() {
     [[ -n "$output" ]]
 }
 
-validate_domain_dns() {
-    local domain="$1" dns_csv="$2"
-    local first="" direct="" system=""
 
+preflight_ad_dns_servers() {
+    local domain="$1" dns_csv="$2" ip="" output="" failures=0
+    if ! command_exists dig; then
+        warn "dig is unavailable before dependency installation; direct DNS preflight is deferred."
+        return 0
+    fi
+    while IFS= read -r ip; do
+        [[ -n "$ip" ]] || continue
+        output="$(domain_srv_query "$domain" "$ip" || true)"
+        if [[ -n "$output" ]]; then
+            ok "Preflight: $ip is an AD-capable DNS server for $domain."
+        else
+            err "Preflight: $ip does not answer the AD DC locator SRV query."
+            failures=1
+        fi
+    done < <(parse_dns_csv "$dns_csv")
+    (( failures == 0 ))
+}
+
+ad_dc_targets_from_dns() {
+    local domain="$1" dns_csv="$2" first="" output=""
     first="$(dns_first "$dns_csv")"
+    output="$(domain_srv_query "$domain" "$first" || true)"
+    awk '{host=$4; sub(/\.$/,"",host); if(host!="" && !seen[host]++) print host}' <<<"$output"
+}
+
+tcp_port_open() {
+    local host="$1" port="$2"
+    command_exists timeout || return 2
+    timeout 3 bash -c 'exec 3<>"/dev/tcp/${1}/${2}"' _ "$host" "$port" >/dev/null 2>&1
+}
+
+validate_ad_network_ports() {
+    local domain="$1" dns_csv="$2" dc="" first_dc="" hard_fail=0
+    first_dc="$(ad_dc_targets_from_dns "$domain" "$dns_csv" | awk 'NR==1{print}')"
+    if [[ -z "$first_dc" ]]; then
+        warn "No DC hostname could be extracted from DNS SRV answers; port readiness skipped."
+        return 0
+    fi
+    dc="$first_dc"
+    printf '\nAD NETWORK READINESS (%s)\n' "$dc"
+    local item port required rc
+    for item in 'DNS:53:yes' 'Kerberos:88:yes' 'LDAP:389:yes' 'SMB:445:no'; do
+        IFS=: read -r item port required <<<"$item"
+        if tcp_port_open "$dc" "$port"; then
+            ok "$item/TCP $port reachable."
+        else
+            rc=$?
+            if (( rc == 2 )); then
+                warn "timeout command unavailable; TCP readiness cannot be tested without adding dependencies."
+                return 0
+            fi
+            if [[ "$required" == yes ]]; then
+                err "$item/TCP $port is not reachable on $dc."
+                hard_fail=1
+            else
+                warn "$item/TCP $port is not reachable; domain join may work but SMB/GPO operations can be limited."
+            fi
+        fi
+    done
+    (( hard_fail == 0 ))
+}
+
+kerberos_preflight_ticket() {
+    local join_user="$1" realm="$2" principal=""
+    principal="$join_user"
+    if [[ "$principal" == *\\* ]]; then
+        principal="${principal##*\\}"
+    fi
+    [[ "$principal" == *@* ]] || principal="${principal}@${realm}"
+
+    rm -f -- "$PRIVATE_KRB5CCACHE"
+    info "Kerberos authentication preflight for $principal."
+    info "Credential cache is isolated and will be removed after the join attempt."
+    if kinit -c "FILE:${PRIVATE_KRB5CCACHE}" "$principal"; then
+        ok "Kerberos credentials accepted."
+        return 0
+    fi
+    err "Kerberos authentication failed before realm join."
+    return 1
+}
+
+validate_domain_dns() {
+    local domain="$1" dns_csv="$2" ip="" direct="" system="" failed=0
 
     if command_exists dig; then
-        direct="$(domain_srv_query "$domain" "$first" || true)"
-        if [[ -n "$direct" ]]; then
-            ok "Direct AD DNS SRV query succeeded via $first."
-        else
-            err "The selected DNS server $first did not return AD DC locator SRV records."
-            return 1
-        fi
+        while IFS= read -r ip; do
+            [[ -n "$ip" ]] || continue
+            direct="$(domain_srv_query "$domain" "$ip" || true)"
+            if [[ -n "$direct" ]]; then
+                ok "AD DNS $ip returns DC locator SRV records."
+            else
+                err "AD DNS $ip did not return _ldap._tcp.dc._msdcs.${domain}."
+                failed=1
+            fi
+        done < <(parse_dns_csv "$dns_csv")
+        (( failed == 0 )) || return 1
 
         system="$(domain_srv_query "$domain" "" || true)"
         if [[ -n "$system" ]]; then
@@ -733,65 +1069,79 @@ validate_domain_dns() {
     discovery="$(realm discover --server-software=active-directory "$domain" 2>&1 || true)"
     if grep -Fiq 'server-software: active-directory' <<<"$discovery"; then
         ok "realmd discovered Active Directory."
+        JOIN_REALM_NAME="$(awk -F': *' 'tolower($1) ~ /^[[:space:]]*realm-name$/ {print $2; exit}' <<<"$discovery")"
+        [[ -n "$JOIN_REALM_NAME" ]] || JOIN_REALM_NAME="${domain^^}"
     else
         err "realmd could not discover Active Directory."
         printf '%s\n' "$discovery"
         return 1
     fi
-
     return 0
 }
 
 audit_time_sync() {
+    local healthy=0
     if command_exists timedatectl; then
         local synced=""
         synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
         if [[ "$synced" == "yes" ]]; then
             ok "System time reports synchronized."
-        else
-            warn "System time is not reporting NTPSynchronized=yes."
-            warn "Kerberos is sensitive to clock skew; verify NTP before troubleshooting credentials."
+            healthy=1
         fi
     fi
+    if (( ! healthy )) && command_exists chronyc; then
+        local leap=""
+        leap="$(chronyc tracking 2>/dev/null | awk -F': *' '/Leap status/{print $2; exit}')"
+        if [[ "${leap,,}" == normal ]]; then
+            ok "Chrony reports Leap status: Normal."
+            healthy=1
+        fi
+    fi
+    if (( ! healthy )); then
+        warn "System time is not reporting a healthy synchronization state."
+        warn "Kerberos is sensitive to clock skew; correct time before treating credential failures as AD issues."
+        return 1
+    fi
+    return 0
 }
 
 configure_hostname_if_requested() {
-    local requested="$1"
-    local old=""
-
+    local requested="$1" old=""
     HOSTNAME_CHANGED_RESULT=0
     old="$(hostnamectl --static 2>/dev/null || hostname)"
 
-    if [[ -z "$requested" || "$requested" == "$old" ]]; then
-        return 0
-    fi
-
-    if [[ ! "$requested" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$ ]]; then
-        err "Invalid hostname: $requested"
+    if [[ -z "$requested" || "$requested" == "$old" ]]; then return 0; fi
+    if ! valid_system_hostname "$requested"; then
+        err "Invalid system hostname: $requested"
         return 1
     fi
-
     confirm "Change hostname from '$old' to '$requested' before joining?" Y || return 1
     hostnamectl set-hostname "$requested" || return 1
-
     HOSTNAME_CHANGED_RESULT=1
     ok "Hostname changed to $requested."
 }
 
 configure_mkhomedir() {
     local snap="$1"
-
     confirm "Enable automatic home-directory creation for domain users?" Y || return 0
 
     if [[ "$PKG_FAMILY" == "apt" ]]; then
-        local pamfile="/etc/pam.d/common-session"
-        if [[ -f "$pamfile" ]] &&
-           ! grep -Fq 'pam_mkhomedir.so' "$pamfile"; then
-            printf '\nsession required pam_mkhomedir.so skel=/etc/skel/ umask=0022\n' >>"$pamfile"
-            ok "pam_mkhomedir enabled in common-session."
-        else
-            info "pam_mkhomedir already present or common-session unavailable."
+        local pam_module=""
+        pam_module="$(find /lib /usr/lib -path '*/security/pam_mkhomedir.so' -print -quit 2>/dev/null || true)"
+        if [[ -z "$pam_module" ]]; then
+            warn "pam_mkhomedir.so is not available in the current base installation."
+            warn "No extra package will be added only for this optional feature. Home creation remains unchanged."
+            return 1
         fi
+
+        local pamfile
+        for pamfile in /etc/pam.d/common-session /etc/pam.d/common-session-noninteractive; do
+            [[ -f "$pamfile" ]] || continue
+            if ! grep -Fq 'pam_mkhomedir.so' "$pamfile"; then
+                printf '\nsession optional pam_mkhomedir.so skel=/etc/skel/ umask=0022\n' >>"$pamfile"
+            fi
+        done
+        ok "pam_mkhomedir enabled idempotently using the existing PAM stack."
     elif command_exists authselect; then
         if authselect enable-feature with-mkhomedir >/dev/null 2>&1; then
             systemctl enable --now oddjobd.service >/dev/null 2>&1 || true
@@ -838,9 +1188,78 @@ apply_access_policy() {
     esac
 }
 
+
+postjoin_acceptance() {
+    local domain="$1" test_user="${2:-}" failures=0
+    printf '\nPOST-JOIN ACCEPTANCE\n'
+
+    local realm_names=""
+    realm_names="$(realm list --name-only 2>/dev/null || true)"
+    if grep -Fiqx "$domain" <<<"$realm_names"; then
+        ok "Realm membership is present."
+    else
+        err "Realm membership is not reported for $domain."
+        failures=1
+    fi
+
+    if command_exists sssctl; then
+        if sssctl config-check >/dev/null 2>&1; then
+            ok "SSSD configuration check passed."
+        else
+            err "SSSD configuration check failed."
+            sssctl config-check 2>&1 | sed 's/^/  /' || true
+            failures=1
+        fi
+    fi
+
+    if systemctl is-active --quiet sssd.service 2>/dev/null; then
+        ok "SSSD service is active."
+    else
+        err "SSSD service is not active."
+        journalctl -u sssd.service -n 40 --no-pager 2>/dev/null | sed 's/^/  /' || true
+        failures=1
+    fi
+
+    if adcli testjoin -D "$domain" >/dev/null 2>&1; then
+        ok "adcli secure machine join passed."
+    else
+        err "adcli testjoin failed."
+        failures=1
+    fi
+
+    local keytab_listing=""
+    keytab_listing="$(klist -k /etc/krb5.keytab 2>/dev/null || true)"
+    if [[ -s /etc/krb5.keytab ]] && grep -Eqi '(^|[[:space:]])host/' <<<"$keytab_listing"; then
+        ok "Machine keytab contains a host principal."
+    else
+        err "Machine keytab host principal is missing or unreadable."
+        failures=1
+    fi
+
+    if domain_srv_query "$domain" "" >/dev/null 2>&1; then
+        ok "System resolver still returns AD DC locator SRV records."
+    else
+        err "System resolver no longer returns AD DC locator SRV records."
+        failures=1
+    fi
+
+    if [[ -n "$test_user" ]]; then
+        if getent passwd "$test_user" >/dev/null 2>&1 || id "$test_user" >/dev/null 2>&1; then
+            ok "Domain identity lookup succeeded for $test_user."
+        else
+            warn "Domain identity lookup did not resolve $test_user."
+            failures=1
+        fi
+    fi
+
+    (( failures == 0 ))
+}
+
 join_domain_guided() {
     header
     printf '%bGUIDED DOMAIN JOIN%b\n\n' "$C_BOLD" "$C_RESET"
+
+    require_supported_init || return 1
 
     local existing_realms=""
     existing_realms="$(realm list --name-only 2>/dev/null || true)"
@@ -850,31 +1269,49 @@ join_domain_guided() {
         return 1
     fi
 
-    printf 'Active interface : %s\n' "${ACTIVE_IFACE:-unknown}"
+    identity_precheck || return 1
+
+    local domain="" dns_csv="" join_user="" ou="" requested_hostname="" computer_name="" test_user=""
+    local id_mapping="yes"
+
+    domain="$(ask 'AD DNS domain (for example corp.example.com)' '')"
+    domain="${domain,,}"
+    valid_dns_domain "$domain" || {
+        err "A valid DNS domain with RFC-style labels is required."
+        return 1
+    }
+
+    dns_csv="$(ask 'AD DNS server IPv4 addresses (comma separated)' '')"
+    validate_dns_list "$dns_csv" || { err "At least one valid IPv4 AD DNS server is required."; return 1; }
+
+    local first_dns=""
+    first_dns="$(dns_first "$dns_csv")"
+    select_join_interface "$first_dns" || return 1
+
+    printf '\nSelected interface: %s\n' "$ACTIVE_IFACE"
     printf 'DNS backend      : %s\n' "$DNS_BACKEND"
     printf 'Current DNS      :\n'
     current_dns_summary | sed 's/^/  /'
 
-    local domain="" realm_name="" dns_csv="" join_user="" ou="" requested_hostname=""
-    local id_mapping="yes"
+    # A zero-change direct preflight catches the most common bad DNS input early.
+    preflight_ad_dns_servers "$domain" "$dns_csv" || return 1
 
-    domain="$(ask 'AD DNS domain (for example corp.example.com)' '')"
-    [[ "$domain" =~ ^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] || {
-        err "A valid DNS domain is required."
+    requested_hostname="$(ask 'System hostname' "$(hostnamectl --static 2>/dev/null || hostname)")"
+    local short_default="${requested_hostname%%.*}"
+    if ((${#short_default} > 15)); then short_default=""; fi
+    computer_name="$(ask 'AD computer name (NetBIOS, max 15 chars)' "$short_default")"
+    valid_ad_computer_name "$computer_name" || {
+        err "AD computer name must be 1-15 characters, start/end alphanumeric, with hyphens only inside."
         return 1
     }
-    domain="${domain,,}"
+    JOIN_COMPUTER_NAME="${computer_name^^}"
 
-    realm_name="$(ask 'Kerberos realm' "${domain^^}")"
-    dns_csv="$(ask 'AD DNS server IPv4 addresses (comma separated)' '')"
-    validate_dns_list "$dns_csv" || {
-        err "At least one valid DNS server IP is required."
-        return 1
-    }
-
-    requested_hostname="$(ask 'Computer hostname' "$(hostnamectl --static 2>/dev/null || hostname)")"
     join_user="$(ask 'Join account' 'Administrator')"
     ou="$(ask 'Computer OU DN (optional)' '')"
+    if [[ -n "$ou" && ! "$ou" =~ ^(OU|CN)= ]]; then
+        warn "OU path does not look like a distinguished name beginning with OU= or CN=."
+        confirm "Use this OU value anyway?" N || return 1
+    fi
 
     printf '\nPOSIX identity model:\n'
     printf '  [1] Automatic SSSD SID -> UID/GID mapping (recommended default)\n'
@@ -885,11 +1322,11 @@ join_domain_guided() {
 
     printf '\nPlan:\n'
     printf '  Domain       : %s\n' "$domain"
-    printf '  Realm        : %s\n' "$realm_name"
     printf '  DNS          : %s\n' "$dns_csv"
     printf '  Interface    : %s\n' "$ACTIVE_IFACE"
     printf '  DNS backend  : %s\n' "$DNS_BACKEND"
     printf '  Hostname     : %s\n' "$requested_hostname"
+    printf '  AD computer  : %s\n' "$JOIN_COMPUTER_NAME"
     printf '  Join account : %s\n' "$join_user"
     printf '  OU           : %s\n' "${ou:-(default Computers container)}"
     printf '  ID mapping   : %s\n' "$id_mapping"
@@ -901,41 +1338,56 @@ join_domain_guided() {
     info "Pre-join snapshot: $snap"
 
     if ! install_required_packages "$snap"; then
-        err "Dependency preparation failed. Restoring resolver/network state."
-        restore_network_from_snapshot "$snap" || true
+        err "Dependency preparation failed. No domain/network changes were committed."
+        return 1
+    fi
+
+    # dnsutils/bind-utils is now guaranteed on supported package families.
+    if ! preflight_ad_dns_servers "$domain" "$dns_csv"; then
+        err "AD DNS preflight failed after dependency preparation."
         return 1
     fi
 
     local hostname_changed="0"
-    if ! configure_hostname_if_requested "$requested_hostname"; then
-        restore_network_from_snapshot "$snap" || true
-        return 1
-    fi
+    if ! configure_hostname_if_requested "$requested_hostname"; then return 1; fi
     hostname_changed="$HOSTNAME_CHANGED_RESULT"
 
     if ! apply_domain_dns "$domain" "$dns_csv" "$ACTIVE_IFACE"; then
         err "AD DNS configuration failed. Restoring pre-join state."
         restore_network_from_snapshot "$snap" || true
-        [[ "$hostname_changed" == "1" ]] &&
-            hostnamectl set-hostname "$(bash -c "source '$snap/snapshot.env'; printf '%s' \"\$OLD_HOSTNAME\"")" || true
+        restore_hostname_from_snapshot "$snap" || true
         return 1
     fi
-
-    audit_time_sync
 
     if ! validate_domain_dns "$domain" "$dns_csv"; then
         err "Domain discovery failed. Restoring DNS and hostname."
         restore_network_from_snapshot "$snap" || true
-        if [[ "$hostname_changed" == "1" ]]; then
-            local old=""
-            old="$(bash -c "source '$snap/snapshot.env'; printf '%s' \"\$OLD_HOSTNAME\"")"
-            [[ -n "$old" ]] && hostnamectl set-hostname "$old" || true
-        fi
+        restore_hostname_from_snapshot "$snap" || true
         return 1
     fi
 
-    printf '\nKerberos/join credentials will be requested interactively by realmd.\n'
-    printf 'No password is written to disk.\n\n'
+    audit_time_sync || {
+        warn "Time readiness is not healthy."
+        confirm "Continue to Kerberos authentication anyway?" N || {
+            restore_network_from_snapshot "$snap" || true
+            restore_hostname_from_snapshot "$snap" || true
+            return 1
+        }
+    }
+
+    validate_ad_network_ports "$domain" "$dns_csv" || {
+        err "Required AD network ports are not reachable. Restoring DNS/hostname."
+        restore_network_from_snapshot "$snap" || true
+        restore_hostname_from_snapshot "$snap" || true
+        return 1
+    }
+
+    [[ -n "$JOIN_REALM_NAME" ]] || JOIN_REALM_NAME="${domain^^}"
+    if ! kerberos_preflight_ticket "$join_user" "$JOIN_REALM_NAME"; then
+        restore_network_from_snapshot "$snap" || true
+        restore_hostname_from_snapshot "$snap" || true
+        return 1
+    fi
 
     local -a join_args=(
         join
@@ -943,52 +1395,52 @@ join_domain_guided() {
         --server-software=active-directory
         --client-software=sssd
         "--automatic-id-mapping=${id_mapping}"
-        -U "$join_user"
+        "--computer-name=${JOIN_COMPUTER_NAME}"
     )
-
     [[ -n "$ou" ]] && join_args+=("--computer-ou=$ou")
     join_args+=("$domain")
 
-    if ! realm "${join_args[@]}"; then
+    info "Joining with the isolated Kerberos ticket; no password is stored."
+    if ! KRB5CCNAME="FILE:${PRIVATE_KRB5CCACHE}" realm "${join_args[@]}"; then
         err "realm join failed. Rolling back network and hostname."
+        cleanup_private_ccache
         restore_network_from_snapshot "$snap" || true
-        if [[ "$hostname_changed" == "1" ]]; then
-            local old=""
-            old="$(bash -c "source '$snap/snapshot.env'; printf '%s' \"\$OLD_HOSTNAME\"")"
-            [[ -n "$old" ]] && hostnamectl set-hostname "$old" || true
-        fi
-        warn "Installed packages are retained. They can be removed later from Restore pre-join state."
+        restore_hostname_from_snapshot "$snap" || true
+        warn "Installed packages are retained and are recorded in the snapshot."
+        return 1
+    fi
+    cleanup_private_ccache
+
+    # The machine account now exists. From this point onward do NOT silently
+    # restore AD DNS on validation failure; that would leave a joined machine
+    # unable to find its DC. Persist lifecycle state first.
+    record_current_state "$snap" "$domain" "$JOIN_REALM_NAME" "$ACTIVE_IFACE" "$dns_csv" "$hostname_changed" "$JOIN_COMPUTER_NAME"
+
+    if ! systemctl enable --now sssd.service; then
+        set_current_phase "JOINED_DEGRADED" || true
+        err "Domain join succeeded, but SSSD failed to start. AD DNS and snapshot are retained for repair/clean leave."
+        journalctl -u sssd.service -n 60 --no-pager 2>/dev/null | tee "${snap}/sssd-failure.txt" || true
         return 1
     fi
 
-    systemctl enable --now sssd.service >/dev/null 2>&1 || true
-    configure_mkhomedir "$snap" || true
-    apply_access_policy "$domain" || true
+    configure_mkhomedir "$snap" || warn "Home-directory automation could not be fully configured."
+    apply_access_policy "$domain" || warn "Login authorization policy was not changed."
 
-    record_current_state "$snap" "$domain" "$realm_name" "$ACTIVE_IFACE" "$dns_csv" "$hostname_changed"
-
-    printf '\nValidation:\n'
-    realm list || true
-
-    if adcli testjoin -D "$domain" >/dev/null 2>&1; then
-        ok "adcli testjoin passed."
+    test_user="$(ask 'Optional domain user for identity lookup validation (blank to skip)' '')"
+    if postjoin_acceptance "$domain" "$test_user"; then
+        set_current_phase "JOIN_PENDING_REBOOT" || true
+        ok "Domain join passed immediate acceptance checks."
     else
-        warn "adcli testjoin did not pass. Review keytab/DNS/time before considering the client healthy."
+        set_current_phase "JOINED_DEGRADED" || true
+        err "The machine account was joined, but one or more acceptance checks failed."
+        warn "Do not force local rollback. Repair the issue or use a clean domain leave."
+        journalctl -u sssd.service -n 80 --no-pager 2>/dev/null >"${snap}/sssd-postjoin-journal.txt" || true
+        return 1
     fi
 
-    if getent hosts "$domain" >/dev/null 2>&1; then
-        ok "System resolver can resolve the domain name."
-    else
-        info "The domain apex itself has no resolvable host record; this is not necessarily an AD failure."
-    fi
-
-    ok "Domain join completed."
     info "Snapshot retained at: $snap"
-    info "A reboot is recommended before final login/GPO validation."
-
-    if confirm "Reboot now?" N; then
-        systemctl reboot
-    fi
+    info "A reboot is required for final acceptance and lifecycle completion."
+    if confirm "Reboot now?" N; then systemctl reboot; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1001,30 +1453,31 @@ audit_readiness() {
 
     printf 'Distribution    : %s\n' "$DISTRO_ID"
     printf 'Package family  : %s\n' "$PKG_FAMILY"
-    printf 'Active interface: %s\n' "${ACTIVE_IFACE:-unknown}"
+    printf 'Init/systemd    : %s\n' "$(command_exists systemctl && [[ -d /run/systemd/system ]] && printf supported || printf unsupported)"
+    printf 'Suggested iface : %s\n' "${ACTIVE_IFACE:-unknown}"
     printf 'DNS backend     : %s\n' "$DNS_BACKEND"
     printf 'Remote session  : %s\n\n' "$REMOTE_SESSION"
 
-    printf 'Current DNS:\n'
+    printf 'Active IPv4 interfaces:\n'
+    show_network_candidates | while IFS=$'\t' read -r iface addr metric manager; do
+        printf '  %-16s %-20s metric=%-6s %s\n' "$iface" "$addr" "$metric" "$manager"
+    done
+
+    printf '\nCurrent DNS:\n'
     current_dns_summary | sed 's/^/  /'
     printf '\n'
 
     validate_required_commands || true
-    audit_time_sync
+    audit_time_sync || true
 
     local realms=""
     realms="$(realm list --name-only 2>/dev/null || true)"
-    if [[ -n "$realms" ]]; then
-        ok "Realm membership detected: $realms"
-    else
-        info "No realm membership detected."
-    fi
+    if [[ -n "$realms" ]]; then ok "Realm membership detected: $realms"; else info "No realm membership detected."; fi
 
-    if [[ -f "$CURRENT_STATE" ]]; then
-        ok "Assistant-managed state exists: $CURRENT_STATE"
-    else
-        info "No assistant-managed join state exists."
-    fi
+    [[ -s /etc/krb5.keytab ]] && info "Existing Kerberos keytab detected: /etc/krb5.keytab"
+    [[ -s /etc/sssd/sssd.conf ]] && info "Existing SSSD configuration detected."
+
+    if [[ -f "$CURRENT_STATE" ]]; then ok "Assistant-managed state exists: $CURRENT_STATE"; else info "No assistant-managed join state exists."; fi
 }
 
 status_domain() {
@@ -1034,41 +1487,68 @@ status_domain() {
     realm list 2>/dev/null || info "No realm membership reported."
 
     if [[ -f "$CURRENT_STATE" ]]; then
-        local SNAPSHOT_PATH="" DOMAIN="" REALM="" AD_DNS_SERVERS="" HOSTNAME_CHANGED=""
+        local SNAPSHOT_PATH="" DOMAIN="" REALM="" AD_DNS_SERVERS="" HOSTNAME_CHANGED="" PHASE="" JOIN_BOOT_ID="" COMPUTER_NAME=""
         load_state_file "$CURRENT_STATE" || true
         printf '\nAssistant state:\n'
+        printf '  Phase    : %s\n' "${PHASE:-legacy/unknown}"
         printf '  Domain   : %s\n' "${DOMAIN:-unknown}"
         printf '  Realm    : %s\n' "${REALM:-unknown}"
+        printf '  Computer : %s\n' "${COMPUTER_NAME:-unknown}"
         printf '  DNS      : %s\n' "${AD_DNS_SERVERS:-unknown}"
         printf '  Snapshot : %s\n' "${SNAPSHOT_PATH:-unknown}"
 
-        if [[ -n "${DOMAIN:-}" ]] && command_exists adcli; then
-            if adcli testjoin -D "$DOMAIN" >/dev/null 2>&1; then
-                ok "Secure machine join validated by adcli."
+        if [[ "${PHASE:-}" == "JOIN_PENDING_REBOOT" && -n "${JOIN_BOOT_ID:-}" && "$(current_boot_id)" != "$JOIN_BOOT_ID" ]]; then
+            info "Post-reboot lifecycle transition detected; running final acceptance."
+            if postjoin_acceptance "$DOMAIN" ""; then
+                set_current_phase "JOINED" || true
+                PHASE="JOINED"
+                ok "Post-reboot domain acceptance passed."
             else
-                warn "adcli testjoin failed."
+                set_current_phase "JOINED_DEGRADED" || true
+                PHASE="JOINED_DEGRADED"
+                warn "Post-reboot acceptance is degraded."
             fi
+        elif [[ "${PHASE:-}" == "JOIN_PENDING_REBOOT" ]]; then
+            warn "Final lifecycle acceptance is pending a reboot."
+        elif [[ "${PHASE:-}" == "JOINED_DEGRADED" ]]; then
+            info "Re-checking previously degraded join state."
+            if postjoin_acceptance "$DOMAIN" ""; then
+                set_current_phase "JOINED" || true
+                PHASE="JOINED"
+                ok "The repaired client now passes domain acceptance."
+            fi
+        fi
+
+        if [[ -n "${DOMAIN:-}" ]] && command_exists adcli; then
+            adcli testjoin -D "$DOMAIN" >/dev/null 2>&1 \
+                && ok "Secure machine join validated by adcli." \
+                || warn "adcli testjoin failed."
         fi
     fi
 
     printf '\nResolver:\n'
     current_dns_summary | sed 's/^/  /'
-    audit_time_sync
+    audit_time_sync || true
 }
 
 restore_identity_files() {
     local snap="$1"
     restore_snapshot_file "$snap" /etc/krb5.conf
+    restore_snapshot_file "$snap" /etc/krb5.keytab
+    restore_snapshot_file "$snap" /etc/realmd.conf
     restore_snapshot_file "$snap" /etc/sssd/sssd.conf
+    restore_snapshot_file "$snap" /etc/sssd/conf.d
     restore_snapshot_file "$snap" /etc/nsswitch.conf
     restore_snapshot_file "$snap" /etc/pam.d/common-session
     restore_snapshot_file "$snap" /etc/pam.d/common-session-noninteractive
 
-    if command_exists authselect &&
-       [[ -f "${snap}/snapshot.env" ]]; then
-        local AUTHSELECT_HAD_MKHOMEDIR=""
+    if command_exists authselect && [[ -f "${snap}/snapshot.env" ]]; then
+        local AUTHSELECT_BACKUP="" AUTHSELECT_HAD_MKHOMEDIR=""
         load_state_file "${snap}/snapshot.env" || true
-        if [[ "${AUTHSELECT_HAD_MKHOMEDIR:-0}" == "0" ]]; then
+        if [[ -n "${AUTHSELECT_BACKUP:-}" ]]; then
+            authselect backup-restore "$AUTHSELECT_BACKUP" >/dev/null 2>&1 || \
+                warn "authselect backup restore failed; file-level snapshot was still restored."
+        elif [[ "${AUTHSELECT_HAD_MKHOMEDIR:-0}" == "0" ]]; then
             authselect disable-feature with-mkhomedir >/dev/null 2>&1 || true
         fi
     fi
@@ -1128,7 +1608,7 @@ leave_domain_cleanly() {
         restore_identity_files "$snap"
         restore_hostname_from_snapshot "$snap" || warn "Hostname restore reported a problem."
         rm -f "$CURRENT_STATE"
-        ok "Pre-join local state restored."
+        ok "Pre-join local state restored, including DNS, identity files and keytab."
 
         if confirm "Also offer removal of packages installed only for the AD client?" N; then
             remove_assistant_packages "$snap" || true
@@ -1146,17 +1626,11 @@ restore_prejoin_state() {
     header
     printf '%bRESTORE PRE-JOIN STATE%b\n\n' "$C_BOLD" "$C_RESET"
 
-    [[ -f "$CURRENT_STATE" ]] || {
-        err "No current assistant state exists."
-        return 1
-    }
+    [[ -f "$CURRENT_STATE" ]] || { err "No current assistant state exists."; return 1; }
 
     local SNAPSHOT_PATH="" DOMAIN=""
     load_state_file "$CURRENT_STATE" || return 1
-    [[ -n "${SNAPSHOT_PATH:-}" && -d "$SNAPSHOT_PATH" ]] || {
-        err "Recorded snapshot is unavailable."
-        return 1
-    }
+    [[ -n "${SNAPSHOT_PATH:-}" && -d "$SNAPSHOT_PATH" ]] || { err "Recorded snapshot is unavailable."; return 1; }
 
     local memberships=""
     memberships="$(realm list --name-only 2>/dev/null || true)"
@@ -1166,7 +1640,6 @@ restore_prejoin_state() {
         confirm_literal \
             "Force-local restore may leave a stale computer account in Active Directory." \
             "FORCE-LOCAL-RESTORE" || return 0
-
         realm leave "${DOMAIN:-}" >/dev/null 2>&1 || true
     fi
 
@@ -1174,10 +1647,14 @@ restore_prejoin_state() {
     restore_identity_files "$SNAPSHOT_PATH"
     restore_hostname_from_snapshot "$SNAPSHOT_PATH" || true
 
-    systemctl restart sssd.service >/dev/null 2>&1 || true
+    if [[ -s /etc/sssd/sssd.conf ]]; then
+        systemctl restart sssd.service >/dev/null 2>&1 || true
+    else
+        systemctl stop sssd.service >/dev/null 2>&1 || true
+    fi
     rm -f "$CURRENT_STATE"
 
-    ok "Local pre-join state restored."
+    ok "Local pre-join state restored, including the pre-join Kerberos keytab state."
     warn "If a forced local restore was used, check Active Directory for a stale computer account."
 
     if confirm "Also offer removal of packages installed only for the AD client?" N; then
@@ -1266,7 +1743,7 @@ Recovery snapshots:
 Logs:
   $LOG_ROOT
 
-No password is persisted and no third-party repository is added.
+No password is persisted, no third-party repository is added, and supported joins use a private Kerberos cache.
 EOF
 }
 
