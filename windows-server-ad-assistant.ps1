@@ -1,7 +1,7 @@
 ﻿#requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Windows Server AD Control Plane - v1.5.0-lifecycle-dependencies
+    Windows Server AD Control Plane - v1.6.0-suricata-ids-gui
 
 .DESCRIPTION
     Professional, audit-first assistant for Windows Server and Active Directory.
@@ -37,18 +37,20 @@
       DirectorySecurity  Kerberos/LDAP/SMB protocol security center
       Dependencies       Official Windows feature/module dependency center
       Reset              Supported AD DS demotion + post-reboot cleanup
+      IDS                Optional Suricata IDS integration, EVE analytics and native GUI dashboard
+      IDSReport          Non-interactive 24h IDS report target for Task Scheduler
 
 .EXAMPLE
-    .\windows-server-ad-v1.5.0-lifecycle-dependencies.ps1
+    .\windows-server-ad-v1.6.0-suricata-ids-gui.ps1
 
 .EXAMPLE
-    .\windows-server-ad-v1.5.0-lifecycle-dependencies.ps1 -Mode Audit
+    .\windows-server-ad-v1.6.0-suricata-ids-gui.ps1 -Mode Audit
 
 .EXAMPLE
-    .\windows-server-ad-v1.5.0-lifecycle-dependencies.ps1 -Mode ADAdmin
+    .\windows-server-ad-v1.6.0-suricata-ids-gui.ps1 -Mode ADAdmin
 
 .EXAMPLE
-    .\windows-server-ad-v1.5.0-lifecycle-dependencies.ps1 -Mode Validate
+    .\windows-server-ad-v1.6.0-suricata-ids-gui.ps1 -Mode Validate
 
 .NOTES
     Validate in a lab before production deployment.
@@ -56,7 +58,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Audit','Validate','Harden','Backup','ADAdmin','Provision','Migration','DirectorySecurity','Dependencies','Reset')]
+    [ValidateSet('Interactive','Audit','Validate','Harden','Backup','ADAdmin','Provision','Migration','DirectorySecurity','Dependencies','Reset','IDS','IDSReport')]
     [string]$Mode = 'Interactive',
 
     [string]$ExportPath = "$env:ProgramData\WindowsADControlPlane",
@@ -76,7 +78,7 @@ $ErrorActionPreference = 'Stop'
 # ===========================================================================
 
 $script:ProductName = 'Windows Server AD Control Plane'
-$script:Version = '1.5.0-lifecycle-dependencies'
+$script:Version = '1.6.0-suricata-ids-gui'
 $script:Started = Get-Date
 
 $script:Results = New-Object 'System.Collections.Generic.List[object]'
@@ -103,6 +105,10 @@ $script:MainMenuRequested = $false
 $script:ResetCompleted = $false
 $script:ResetRecoveryRoot = Join-Path $env:SystemDrive 'WindowsAD-ControlPlane-Recovery'
 $script:PreProvisionStateFile = Join-Path $ExportPath 'pre-provisioning-state.json'
+$script:IdsStatePath = Join-Path $ExportPath 'ids'
+$script:IdsReportPath = Join-Path $script:IdsStatePath 'reports'
+$script:IdsIntegrationFile = Join-Path $script:IdsStatePath 'suricata-integration.json'
+$script:IdsTaskName = 'WindowsADControlPlane-SuricataDaily'
 
 $script:UiWidth = 96
 
@@ -5428,6 +5434,1128 @@ function Show-DomainResetMenu {
     }
 }
 
+
+# ===========================================================================
+# Optional Suricata IDS integration / EVE analytics / native GUI
+# ===========================================================================
+
+function Initialize-IdsState {
+    New-Item -ItemType Directory -Path $script:IdsStatePath -Force | Out-Null
+    New-Item -ItemType Directory -Path $script:IdsReportPath -Force | Out-Null
+}
+
+function Get-ObjectPropertyValue {
+    param(
+        $Object,
+        [Parameter(Mandatory=$true)][string]$Name
+    )
+
+    if ($null -eq $Object) { return $null }
+    $prop = $Object.PSObject.Properties[$Name]
+    if ($null -eq $prop) { return $null }
+    return $prop.Value
+}
+
+function Add-CounterValue {
+    param(
+        [Parameter(Mandatory=$true)][hashtable]$Table,
+        $Key
+    )
+
+    if ($null -eq $Key) { return }
+    $text = [string]$Key
+    if ([string]::IsNullOrWhiteSpace($text)) { return }
+
+    if ($Table.ContainsKey($text)) { $Table[$text]++ }
+    else { $Table[$text] = 1 }
+}
+
+function Convert-CounterToRows {
+    param(
+        [Parameter(Mandatory=$true)][hashtable]$Table,
+        [string]$KeyName = 'Name',
+        [int]$Limit = 20
+    )
+
+    return @(
+        $Table.GetEnumerator() |
+            Sort-Object Value -Descending |
+            Select-Object -First $Limit |
+            ForEach-Object {
+                $row = [ordered]@{ Count = [int]$_.Value }
+                $row[$KeyName] = [string]$_.Key
+                [pscustomobject]$row
+            }
+    )
+}
+
+function Get-WindowsSuricataService {
+    try {
+        return Get-CimInstance Win32_Service -ErrorAction Stop |
+            Where-Object {
+                $_.Name -match 'suricata' -or
+                $_.DisplayName -match 'suricata'
+            } |
+            Select-Object -First 1
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-WindowsSuricataInfo {
+    Initialize-IdsState
+
+    $service = Get-WindowsSuricataService
+    $servicePath = if ($service) { [string]$service.PathName } else { '' }
+
+    $exe = $null
+    if ($servicePath -match '^\s*"([^"]*suricata\.exe)"') {
+        $exe = $Matches[1]
+    }
+    elseif ($servicePath -match '([A-Za-z]:\\[^\r\n"]*?suricata\.exe)') {
+        $exe = $Matches[1]
+    }
+
+    $commonExe = @(
+        "$env:ProgramFiles\Suricata\suricata.exe",
+        "${env:ProgramFiles(x86)}\Suricata\suricata.exe",
+        'C:\Suricata\suricata.exe'
+    )
+    if (-not $exe -or -not (Test-Path -LiteralPath $exe)) {
+        $exe = $commonExe | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+    }
+
+    $config = $null
+    if ($servicePath -match '(?:^|\s)-c\s+"([^"]+)"') {
+        $config = $Matches[1]
+    }
+    elseif ($servicePath -match '(?:^|\s)-c\s+([^\s]+)') {
+        $config = $Matches[1]
+    }
+
+    $commonConfig = @(
+        "$env:ProgramFiles\Suricata\suricata.yaml",
+        "$env:ProgramFiles\Suricata\etc\suricata\suricata.yaml",
+        "$env:ProgramData\Suricata\suricata.yaml",
+        'C:\Suricata\suricata.yaml'
+    )
+    if (-not $config -or -not (Test-Path -LiteralPath $config)) {
+        $config = $commonConfig | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    }
+
+    $savedEve = $null
+    if (Test-Path -LiteralPath $script:IdsIntegrationFile) {
+        try {
+            $saved = Get-Content -LiteralPath $script:IdsIntegrationFile -Raw | ConvertFrom-Json
+            if ($saved.EvePath -and (Test-Path -LiteralPath $saved.EvePath)) {
+                $savedEve = [string]$saved.EvePath
+            }
+        }
+        catch {}
+    }
+
+    $logDir = $null
+    if ($config -and (Test-Path -LiteralPath $config)) {
+        try {
+            foreach ($line in Get-Content -LiteralPath $config -ErrorAction Stop) {
+                if ($line -match '^\s*default-log-dir:\s*["'']?([^"''#]+)') {
+                    $candidate = $Matches[1].Trim()
+                    if ($candidate) { $logDir = $candidate; break }
+                }
+            }
+        }
+        catch {}
+    }
+
+    $eveCandidates = New-Object 'System.Collections.Generic.List[string]'
+    if ($savedEve) { $eveCandidates.Add($savedEve) }
+    if ($logDir) { $eveCandidates.Add((Join-Path $logDir 'eve.json')) }
+
+    foreach ($candidate in @(
+        "$env:ProgramFiles\Suricata\log\eve.json",
+        "$env:ProgramFiles\Suricata\logs\eve.json",
+        "$env:ProgramData\Suricata\log\eve.json",
+        "$env:ProgramData\Suricata\logs\eve.json",
+        'C:\Suricata\log\eve.json',
+        'C:\Suricata\logs\eve.json'
+    )) {
+        if ($candidate) { $eveCandidates.Add($candidate) }
+    }
+
+    $eve = $eveCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+
+    $npcap = $null
+    foreach ($name in @('npcap','npf')) {
+        try {
+            $npcap = Get-Service -Name $name -ErrorAction Stop
+            if ($npcap) { break }
+        }
+        catch {}
+    }
+
+    $update = $null
+    try {
+        $cmd = Get-Command suricata-update -ErrorAction Stop
+        $update = $cmd.Source
+    }
+    catch {
+        foreach ($candidate in @(
+            "$env:ProgramFiles\Suricata\suricata-update.exe",
+            "$env:ProgramFiles\Suricata\suricata-update",
+            'C:\Suricata\suricata-update.exe'
+        )) {
+            if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+                $update = $candidate
+                break
+            }
+        }
+    }
+
+    $captureMode = 'unknown'
+    if ($servicePath -match '--windivert') { $captureMode = 'WinDivert / inline-active indicators' }
+    elseif ($servicePath -match '(?:--pcap|-i\s)') { $captureMode = 'Npcap/PCAP passive indicators' }
+    elseif ($npcap) { $captureMode = 'Npcap present; service mode not explicit' }
+
+    [pscustomobject]@{
+        Installed         = [bool]($exe -and (Test-Path -LiteralPath $exe))
+        Executable        = $exe
+        Config            = $config
+        Service           = $service
+        ServiceName       = $(if ($service) { $service.Name } else { $null })
+        ServiceState      = $(if ($service) { $service.State } else { 'Not installed' })
+        ServicePath       = $servicePath
+        NpcapInstalled    = [bool]$npcap
+        NpcapState        = $(if ($npcap) { $npcap.Status } else { 'Not installed' })
+        EvePath           = $eve
+        SuricataUpdate    = $update
+        CaptureMode       = $captureMode
+    }
+}
+
+function Set-WindowsSuricataEvePath {
+    Initialize-IdsState
+    $info = Get-WindowsSuricataInfo
+
+    Write-Console ''
+    if ($info.EvePath) {
+        Write-Console ("Detected EVE path: {0}" -f $info.EvePath) Green
+    }
+
+    $path = (Read-Host 'EVE JSON path').Trim('"').Trim()
+    if (-not (Test-Path -LiteralPath $path)) {
+        Write-Console 'The selected EVE JSON file does not exist.' Red
+        return
+    }
+
+    [pscustomobject]@{
+        EvePath    = (Resolve-Path -LiteralPath $path).Path
+        Configured = Get-Date
+    } | ConvertTo-Json |
+        Set-Content -LiteralPath $script:IdsIntegrationFile -Encoding UTF8
+
+    Write-Log ("Stored Suricata EVE integration path: {0}" -f $path) CHANGE
+}
+
+function Test-WindowsSuricataConfiguration {
+    $info = Get-WindowsSuricataInfo
+    if (-not $info.Executable) {
+        Write-Console 'Suricata executable was not detected.' Yellow
+        return $false
+    }
+    if (-not $info.Config) {
+        Write-Console 'suricata.yaml was not detected.' Yellow
+        return $false
+    }
+
+    Write-Console ("Testing: {0} -T -c {1}" -f $info.Executable, $info.Config) Cyan
+    $output = & $info.Executable -T -c $info.Config 2>&1
+    $exit = $LASTEXITCODE
+    $output | Select-Object -Last 50 | ForEach-Object { Write-Console ([string]$_) Gray }
+
+    if ($exit -eq 0) {
+        Add-Result 'IDS' 'Suricata configuration' 'PASS' $info.Config 'Valid'
+        return $true
+    }
+
+    Add-Result 'IDS' 'Suricata configuration' 'FAIL' ("exit={0}" -f $exit) 'Valid'
+    return $false
+}
+
+function Show-WindowsIdsReadiness {
+    Write-Section 'Suricata IDS readiness'
+    $info = Get-WindowsSuricataInfo
+
+    Add-Result 'IDS' 'Suricata executable' `
+        $(if ($info.Installed) { 'PASS' } else { 'WARN' }) `
+        $(if ($info.Executable) { $info.Executable } else { 'not detected' }) `
+        'Official Suricata Windows installation when IDS is desired'
+
+    Add-Result 'IDS' 'Suricata service' `
+        $(if ($info.ServiceState -eq 'Running') { 'PASS' } else { 'WARN' }) `
+        $info.ServiceState `
+        'Running for continuous monitoring'
+
+    Add-Result 'IDS' 'Npcap live capture' `
+        $(if ($info.NpcapInstalled) { 'PASS' } else { 'WARN' }) `
+        $info.NpcapState `
+        'Npcap required for live passive capture on Windows'
+
+    Add-Result 'IDS' 'Capture posture' `
+        $(if ($info.CaptureMode -match 'inline|active') { 'WARN' } else { 'INFO' }) `
+        $info.CaptureMode `
+        'Passive IDS preferred on a Domain Controller'
+
+    Add-Result 'IDS' 'EVE JSON' `
+        $(if ($info.EvePath) { 'PASS' } else { 'WARN' }) `
+        $(if ($info.EvePath) { $info.EvePath } else { 'not detected' }) `
+        'eve.json for local analytics'
+
+    Write-Console ''
+    Write-Console 'Windows integration policy:' Cyan
+    Write-Console '  - The assistant does not silently install Suricata or packet-capture drivers.' Gray
+    Write-Console '  - Suricata and Npcap are external components on Windows; installation remains explicit.' Gray
+    Write-Console '  - Once EVE JSON exists, analytics and the native GUI use only Windows PowerShell/.NET.' Gray
+    Write-Console '  - No Elasticsearch, Logstash, jq, Chocolatey or third-party dashboard is required.' Gray
+}
+
+function Get-WindowsIdsEveFiles {
+    param([Parameter(Mandatory=$true)][string]$EvePath)
+
+    $dir = Split-Path -Parent $EvePath
+    $name = Split-Path -Leaf $EvePath
+    if (-not (Test-Path -LiteralPath $dir)) { return @() }
+
+    return @(
+        Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like ("{0}*" -f $name) -and $_.Extension -ne '.gz' } |
+            Sort-Object LastWriteTime
+    )
+}
+
+function Get-WindowsIdsSummary {
+    param(
+        [int]$Hours = 24,
+        [int]$MaxRecentAlerts = 100
+    )
+
+    $info = Get-WindowsSuricataInfo
+    if (-not $info.EvePath) {
+        throw 'Suricata EVE JSON was not detected. Configure the EVE path first.'
+    }
+
+    $cutoff = [DateTimeOffset]::Now.AddHours(-1 * [Math]::Abs($Hours))
+    $eventTypes = @{}
+    $alertSeverity = @{}
+    $alertSignatures = @{}
+    $alertSources = @{}
+    $krbEncryption = @{}
+    $smbDialects = @{}
+    $ntlmUsers = @{}
+    $ntlmHosts = @{}
+
+    $weakKerberos = New-Object 'System.Collections.Generic.List[object]'
+    $recentAlerts = New-Object 'System.Collections.Generic.List[object]'
+    $latestStats = $null
+    $latestTimestamp = $null
+    $parsed = 0
+    $badJson = 0
+    $dnsEvents = 0
+    $nxdomain = 0
+
+    $files = @(Get-WindowsIdsEveFiles -EvePath $info.EvePath)
+    foreach ($file in $files) {
+        foreach ($line in [System.IO.File]::ReadLines($file.FullName)) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+
+            try { $event = $line | ConvertFrom-Json -ErrorAction Stop }
+            catch { $badJson++; continue }
+
+            $rawTimestamp = Get-ObjectPropertyValue -Object $event -Name 'timestamp'
+            $timestamp = [DateTimeOffset]::MinValue
+            if ($rawTimestamp) {
+                $parsedTimestamp = [DateTimeOffset]::TryParse([string]$rawTimestamp, [ref]$timestamp)
+                if ($parsedTimestamp -and $timestamp -lt $cutoff) { continue }
+                if ($parsedTimestamp -and ($null -eq $latestTimestamp -or $timestamp -gt $latestTimestamp)) {
+                    $latestTimestamp = $timestamp
+                }
+            }
+
+            $parsed++
+            $type = Get-ObjectPropertyValue -Object $event -Name 'event_type'
+            if (-not $type) { $type = 'unknown' }
+            Add-CounterValue -Table $eventTypes -Key $type
+
+            switch ([string]$type) {
+                'alert' {
+                    $alert = Get-ObjectPropertyValue -Object $event -Name 'alert'
+                    $sig = Get-ObjectPropertyValue -Object $alert -Name 'signature'
+                    $severity = Get-ObjectPropertyValue -Object $alert -Name 'severity'
+                    $src = Get-ObjectPropertyValue -Object $event -Name 'src_ip'
+                    $dst = Get-ObjectPropertyValue -Object $event -Name 'dest_ip'
+
+                    Add-CounterValue -Table $alertSignatures -Key $sig
+                    Add-CounterValue -Table $alertSeverity -Key $severity
+                    Add-CounterValue -Table $alertSources -Key $src
+
+                    $recentAlerts.Add([pscustomobject]@{
+                        Timestamp = [string]$rawTimestamp
+                        Severity  = [string]$severity
+                        Source    = [string]$src
+                        Destination = [string]$dst
+                        Signature = [string]$sig
+                    })
+                    while ($recentAlerts.Count -gt $MaxRecentAlerts) {
+                        $recentAlerts.RemoveAt(0)
+                    }
+                }
+                'dns' {
+                    $dnsEvents++
+                    $dns = Get-ObjectPropertyValue -Object $event -Name 'dns'
+                    $rcode = Get-ObjectPropertyValue -Object $dns -Name 'rcode_name'
+                    if (-not $rcode) { $rcode = Get-ObjectPropertyValue -Object $dns -Name 'rcode' }
+                    if (([string]$rcode).ToUpperInvariant() -match 'NXDOMAIN|^3$') { $nxdomain++ }
+                }
+                'krb5' {
+                    $krb = Get-ObjectPropertyValue -Object $event -Name 'krb5'
+                    $enc = Get-ObjectPropertyValue -Object $krb -Name 'ticket_encryption'
+                    if (-not $enc) { $enc = Get-ObjectPropertyValue -Object $krb -Name 'encryption' }
+                    Add-CounterValue -Table $krbEncryption -Key $enc
+
+                    $weak = Get-ObjectPropertyValue -Object $krb -Name 'weak_encryption'
+                    $ticketWeak = Get-ObjectPropertyValue -Object $krb -Name 'ticket_weak_encryption'
+                    if ($weak -eq $true -or $ticketWeak -eq $true) {
+                        $weakKerberos.Add([pscustomobject]@{
+                            Timestamp  = [string]$rawTimestamp
+                            Source     = [string](Get-ObjectPropertyValue -Object $event -Name 'src_ip')
+                            Client     = [string](Get-ObjectPropertyValue -Object $krb -Name 'cname')
+                            Service    = [string](Get-ObjectPropertyValue -Object $krb -Name 'sname')
+                            Encryption = [string]$enc
+                        })
+                    }
+                }
+                'smb' {
+                    $smb = Get-ObjectPropertyValue -Object $event -Name 'smb'
+                    $dialect = Get-ObjectPropertyValue -Object $smb -Name 'dialect'
+                    Add-CounterValue -Table $smbDialects -Key $dialect
+
+                    $ntlm = Get-ObjectPropertyValue -Object $smb -Name 'ntlmssp'
+                    if ($ntlm) {
+                        $user = Get-ObjectPropertyValue -Object $ntlm -Name 'user'
+                        $host = Get-ObjectPropertyValue -Object $ntlm -Name 'host'
+                        if (-not $host) { $host = Get-ObjectPropertyValue -Object $event -Name 'src_ip' }
+                        Add-CounterValue -Table $ntlmUsers -Key $(if ($user) { $user } else { '<unknown>' })
+                        Add-CounterValue -Table $ntlmHosts -Key $(if ($host) { $host } else { '<unknown>' })
+                    }
+                }
+                'stats' {
+                    $latestStats = Get-ObjectPropertyValue -Object $event -Name 'stats'
+                }
+            }
+        }
+    }
+
+    $kernelPackets = 0
+    $kernelDrops = 0
+    if ($latestStats) {
+        $capture = Get-ObjectPropertyValue -Object $latestStats -Name 'capture'
+        $kp = Get-ObjectPropertyValue -Object $capture -Name 'kernel_packets'
+        $kd = Get-ObjectPropertyValue -Object $capture -Name 'kernel_drops'
+        if ($kp -ne $null) { $kernelPackets = [double]$kp }
+        if ($kd -ne $null) { $kernelDrops = [double]$kd }
+    }
+
+    $dropRate = 0.0
+    if ($kernelPackets -gt 0) {
+        $dropRate = ($kernelDrops * 100.0 / $kernelPackets)
+    }
+
+    $smb1 = 0
+    foreach ($key in $smbDialects.Keys) {
+        if ($key -match 'NT LM 0\.12|SMB1') { $smb1 += [int]$smbDialects[$key] }
+    }
+
+    $severity12 = 0
+    foreach ($key in @('1','2')) {
+        if ($alertSeverity.ContainsKey($key)) { $severity12 += [int]$alertSeverity[$key] }
+    }
+
+    $actions = New-Object 'System.Collections.Generic.List[string]'
+    if ($dropRate -gt 1.0) {
+        $actions.Add(("HIGH sensor packet loss: kernel drop rate {0:N3}%" -f $dropRate))
+    }
+    elseif ($dropRate -gt 0.1) {
+        $actions.Add(("REVIEW sensor packet loss: kernel drop rate {0:N3}%" -f $dropRate))
+    }
+    if ($weakKerberos.Count -gt 0) {
+        $actions.Add(("REVIEW {0} weak Kerberos observation(s) before AES-only enforcement" -f $weakKerberos.Count))
+    }
+    if ($smb1 -gt 0) {
+        $actions.Add(("REVIEW {0} SMB1 observation(s); identify legacy clients" -f $smb1))
+    }
+    if ($severity12 -gt 0) {
+        $actions.Add(("INVESTIGATE {0} alert(s) with severity value 1/2" -f $severity12))
+    }
+    if ($actions.Count -eq 0) {
+        $actions.Add('No automatic high-priority decision trigger detected in this window')
+    }
+
+    [pscustomobject]@{
+        Hours               = $Hours
+        EvePath             = $info.EvePath
+        ParsedEvents        = $parsed
+        BadJsonLines        = $badJson
+        LatestTimestamp     = $latestTimestamp
+        EventTypes          = @(Convert-CounterToRows -Table $eventTypes -KeyName 'EventType' -Limit 30)
+        AlertSeverities     = @(Convert-CounterToRows -Table $alertSeverity -KeyName 'Severity' -Limit 10)
+        TopAlerts           = @(Convert-CounterToRows -Table $alertSignatures -KeyName 'Signature' -Limit 20)
+        TopAlertSources     = @(Convert-CounterToRows -Table $alertSources -KeyName 'Source' -Limit 20)
+        RecentAlerts        = @($recentAlerts)
+        DnsEvents           = $dnsEvents
+        NxDomain            = $nxdomain
+        KerberosEncryption  = @(Convert-CounterToRows -Table $krbEncryption -KeyName 'Encryption' -Limit 20)
+        WeakKerberos        = @($weakKerberos)
+        SmbDialects         = @(Convert-CounterToRows -Table $smbDialects -KeyName 'Dialect' -Limit 20)
+        NtlmUsers           = @(Convert-CounterToRows -Table $ntlmUsers -KeyName 'User' -Limit 20)
+        NtlmHosts           = @(Convert-CounterToRows -Table $ntlmHosts -KeyName 'Host' -Limit 20)
+        Smb1Observations    = $smb1
+        KernelPackets       = [long]$kernelPackets
+        KernelDrops         = [long]$kernelDrops
+        KernelDropRate      = $dropRate
+        ActionableFindings  = @($actions)
+    }
+}
+
+function Format-WindowsIdsSummaryText {
+    param([Parameter(Mandatory=$true)]$Summary)
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine(("SECURITY OPERATIONS SUMMARY — LAST {0}H" -f $Summary.Hours))
+    [void]$sb.AppendLine(('=' * 76))
+    [void]$sb.AppendLine(("EVE path                 {0}" -f $Summary.EvePath))
+    [void]$sb.AppendLine(("Parsed events            {0}" -f $Summary.ParsedEvents))
+    [void]$sb.AppendLine(("Malformed JSON lines     {0}" -f $Summary.BadJsonLines))
+    [void]$sb.AppendLine(("Latest event             {0}" -f $Summary.LatestTimestamp))
+    [void]$sb.AppendLine(("Kernel packets           {0}" -f $Summary.KernelPackets))
+    [void]$sb.AppendLine(("Kernel drops             {0}" -f $Summary.KernelDrops))
+    [void]$sb.AppendLine(("Kernel drop rate         {0:N3}%" -f $Summary.KernelDropRate))
+    [void]$sb.AppendLine(("DNS events               {0}" -f $Summary.DnsEvents))
+    [void]$sb.AppendLine(("DNS NXDOMAIN             {0}" -f $Summary.NxDomain))
+    [void]$sb.AppendLine(("Weak Kerberos            {0}" -f $Summary.WeakKerberos.Count))
+    [void]$sb.AppendLine(("SMB1 observations        {0}" -f $Summary.Smb1Observations))
+    [void]$sb.AppendLine(("NTLMSSP observations     {0}" -f (($Summary.NtlmUsers | Measure-Object Count -Sum).Sum)))
+    [void]$sb.AppendLine('')
+
+    [void]$sb.AppendLine('TOP ALERTS')
+    foreach ($row in $Summary.TopAlerts) {
+        [void]$sb.AppendLine(("{0,6}  {1}" -f $row.Count, $row.Signature))
+    }
+
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine('KERBEROS ENCRYPTION')
+    foreach ($row in $Summary.KerberosEncryption) {
+        [void]$sb.AppendLine(("{0,6}  {1}" -f $row.Count, $row.Encryption))
+    }
+
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine('SMB DIALECTS')
+    foreach ($row in $Summary.SmbDialects) {
+        [void]$sb.AppendLine(("{0,6}  {1}" -f $row.Count, $row.Dialect))
+    }
+
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine('ACTIONABLE FINDINGS')
+    foreach ($item in $Summary.ActionableFindings) {
+        [void]$sb.AppendLine(("  - {0}" -f $item))
+    }
+
+    return $sb.ToString()
+}
+
+function Show-WindowsIdsSummary {
+    param([int]$Hours = 24)
+
+    Write-Section ("Suricata security summary — last {0}h" -f $Hours)
+    try {
+        $summary = Get-WindowsIdsSummary -Hours $Hours
+        Write-Console (Format-WindowsIdsSummaryText -Summary $summary)
+    }
+    catch {
+        Write-Console $_.Exception.Message Red
+    }
+}
+
+function Show-WindowsIdsRecentAlerts {
+    param([int]$Hours = 24)
+
+    Write-Section ("Recent Suricata alerts — last {0}h" -f $Hours)
+    try {
+        $summary = Get-WindowsIdsSummary -Hours $Hours -MaxRecentAlerts 200
+        if ($summary.RecentAlerts.Count -eq 0) {
+            Write-Console 'No alerts observed in the selected window.' Green
+            return
+        }
+
+        $summary.RecentAlerts |
+            Select-Object Timestamp, Severity, Source, Destination, Signature |
+            Format-Table -AutoSize
+    }
+    catch {
+        Write-Console $_.Exception.Message Red
+    }
+}
+
+function Show-WindowsIdsAdIntelligence {
+    param([int]$Hours = 24)
+
+    Write-Section ("AD protocol intelligence — last {0}h" -f $Hours)
+    try {
+        $summary = Get-WindowsIdsSummary -Hours $Hours
+
+        Write-Console 'Kerberos encryption:' Cyan
+        $summary.KerberosEncryption | Format-Table -AutoSize
+
+        Write-Console ''
+        Write-Console ("Weak Kerberos observations: {0}" -f $summary.WeakKerberos.Count) `
+            $(if ($summary.WeakKerberos.Count -gt 0) { 'Yellow' } else { 'Green' })
+        if ($summary.WeakKerberos.Count -gt 0) {
+            $summary.WeakKerberos |
+                Select-Object -Last 30 |
+                Format-Table Timestamp, Source, Client, Service, Encryption -AutoSize
+        }
+
+        Write-Console ''
+        Write-Console 'SMB dialects:' Cyan
+        $summary.SmbDialects | Format-Table -AutoSize
+        Write-Console ("SMB1 observations: {0}" -f $summary.Smb1Observations) `
+            $(if ($summary.Smb1Observations -gt 0) { 'Yellow' } else { 'Green' })
+
+        Write-Console ''
+        Write-Console 'SMB NTLMSSP users:' Cyan
+        $summary.NtlmUsers | Format-Table -AutoSize
+        Write-Console 'SMB NTLMSSP source hosts:' Cyan
+        $summary.NtlmHosts | Format-Table -AutoSize
+    }
+    catch {
+        Write-Console $_.Exception.Message Red
+    }
+}
+
+function Show-WindowsIdsSensorHealth {
+    Write-Section 'Suricata sensor health'
+    $info = Get-WindowsSuricataInfo
+
+    Add-Result 'IDS' 'Suricata service' `
+        $(if ($info.ServiceState -eq 'Running') { 'PASS' } else { 'WARN' }) `
+        $info.ServiceState 'Running'
+
+    Add-Result 'IDS' 'Npcap' `
+        $(if ($info.NpcapInstalled) { 'PASS' } else { 'WARN' }) `
+        $info.NpcapState 'Installed/running for live capture'
+
+    Add-Result 'IDS' 'Capture posture' `
+        $(if ($info.CaptureMode -match 'inline|active') { 'WARN' } else { 'INFO' }) `
+        $info.CaptureMode 'Passive preferred on a DC'
+
+    if ($info.EvePath) {
+        $item = Get-Item -LiteralPath $info.EvePath
+        $age = (New-TimeSpan -Start $item.LastWriteTime -End (Get-Date)).TotalSeconds
+        Add-Result 'IDS' 'EVE freshness' `
+            $(if ($age -lt 600) { 'PASS' } else { 'WARN' }) `
+            ("{0:N0}s old; {1:N1} MB" -f $age, ($item.Length / 1MB)) `
+            '<600s while sensor is active'
+
+        try {
+            $summary = Get-WindowsIdsSummary -Hours 1
+            Add-Result 'IDS' 'Kernel drop rate' `
+                $(if ($summary.KernelDropRate -gt 1) { 'WARN' } else { 'PASS' }) `
+                ("{0:N3}%" -f $summary.KernelDropRate) `
+                'Low packet loss'
+        }
+        catch {}
+    }
+    else {
+        Add-Result 'IDS' 'EVE log' 'WARN' 'not detected' 'Configured'
+    }
+
+    if ($info.Installed -and $info.Config) {
+        [void](Test-WindowsSuricataConfiguration)
+    }
+}
+
+function Test-WindowsFormsAvailable {
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+        return [bool][Environment]::UserInteractive
+    }
+    catch {
+        return $false
+    }
+}
+
+function Show-WindowsIdsDashboardGui {
+    if (-not (Test-WindowsFormsAvailable)) {
+        Write-Console 'Windows Forms is unavailable (Server Core/non-interactive session). Falling back to console summary.' Yellow
+        Show-WindowsIdsSummary -Hours 24
+        return
+    }
+
+    $info = Get-WindowsSuricataInfo
+    if (-not $info.EvePath) {
+        [System.Windows.Forms.MessageBox]::Show(
+            'Suricata EVE JSON was not detected. Configure the EVE path from the IDS menu first.',
+            'Windows AD Control Plane - IDS',
+            'OK',
+            'Warning'
+        ) | Out-Null
+        return
+    }
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = 'Windows AD Control Plane - Suricata IDS'
+    $form.Width = 1180
+    $form.Height = 760
+    $form.StartPosition = 'CenterScreen'
+
+    $top = New-Object System.Windows.Forms.FlowLayoutPanel
+    $top.Dock = 'Top'
+    $top.Height = 48
+    $top.Padding = New-Object System.Windows.Forms.Padding(8)
+
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = 'Analysis window:'
+    $label.AutoSize = $true
+    $label.Padding = New-Object System.Windows.Forms.Padding(0,7,0,0)
+
+    $hoursBox = New-Object System.Windows.Forms.ComboBox
+    $hoursBox.DropDownStyle = 'DropDownList'
+    [void]$hoursBox.Items.Add('1 hour')
+    [void]$hoursBox.Items.Add('24 hours')
+    [void]$hoursBox.Items.Add('7 days')
+    $hoursBox.SelectedIndex = 1
+
+    $refresh = New-Object System.Windows.Forms.Button
+    $refresh.Text = 'Refresh'
+    $refresh.AutoSize = $true
+
+    $openLogs = New-Object System.Windows.Forms.Button
+    $openLogs.Text = 'Open log folder'
+    $openLogs.AutoSize = $true
+
+    [void]$top.Controls.Add($label)
+    [void]$top.Controls.Add($hoursBox)
+    [void]$top.Controls.Add($refresh)
+    [void]$top.Controls.Add($openLogs)
+
+    $tabs = New-Object System.Windows.Forms.TabControl
+    $tabs.Dock = 'Fill'
+
+    $overviewTab = New-Object System.Windows.Forms.TabPage
+    $overviewTab.Text = 'Overview'
+    $overview = New-Object System.Windows.Forms.TextBox
+    $overview.Dock = 'Fill'
+    $overview.Multiline = $true
+    $overview.ReadOnly = $true
+    $overview.ScrollBars = 'Both'
+    $overview.WordWrap = $false
+    $overview.Font = New-Object System.Drawing.Font('Consolas', 10)
+    [void]$overviewTab.Controls.Add($overview)
+
+    $alertsTab = New-Object System.Windows.Forms.TabPage
+    $alertsTab.Text = 'Alerts'
+    $alertsGrid = New-Object System.Windows.Forms.DataGridView
+    $alertsGrid.Dock = 'Fill'
+    $alertsGrid.ReadOnly = $true
+    $alertsGrid.AutoSizeColumnsMode = 'Fill'
+    $alertsGrid.AllowUserToAddRows = $false
+    [void]$alertsTab.Controls.Add($alertsGrid)
+
+    $adTab = New-Object System.Windows.Forms.TabPage
+    $adTab.Text = 'AD protocol intelligence'
+    $adText = New-Object System.Windows.Forms.TextBox
+    $adText.Dock = 'Fill'
+    $adText.Multiline = $true
+    $adText.ReadOnly = $true
+    $adText.ScrollBars = 'Both'
+    $adText.WordWrap = $false
+    $adText.Font = New-Object System.Drawing.Font('Consolas', 10)
+    [void]$adTab.Controls.Add($adText)
+
+    $sensorTab = New-Object System.Windows.Forms.TabPage
+    $sensorTab.Text = 'Sensor'
+    $sensor = New-Object System.Windows.Forms.TextBox
+    $sensor.Dock = 'Fill'
+    $sensor.Multiline = $true
+    $sensor.ReadOnly = $true
+    $sensor.ScrollBars = 'Vertical'
+    $sensor.Font = New-Object System.Drawing.Font('Consolas', 10)
+    [void]$sensorTab.Controls.Add($sensor)
+
+    [void]$tabs.TabPages.Add($overviewTab)
+    [void]$tabs.TabPages.Add($alertsTab)
+    [void]$tabs.TabPages.Add($adTab)
+    [void]$tabs.TabPages.Add($sensorTab)
+
+    [void]$form.Controls.Add($tabs)
+    [void]$form.Controls.Add($top)
+
+    $refreshAction = {
+        try {
+            $hours = switch ($hoursBox.SelectedIndex) {
+                0 { 1 }
+                2 { 168 }
+                default { 24 }
+            }
+
+            $summary = Get-WindowsIdsSummary -Hours $hours -MaxRecentAlerts 200
+            $overview.Text = Format-WindowsIdsSummaryText -Summary $summary
+
+            $alertsGrid.DataSource = $null
+            $alertsGrid.DataSource = @($summary.RecentAlerts |
+                Sort-Object Timestamp -Descending |
+                Select-Object -First 100)
+
+            $sb = New-Object System.Text.StringBuilder
+            [void]$sb.AppendLine('KERBEROS ENCRYPTION')
+            foreach ($row in $summary.KerberosEncryption) {
+                [void]$sb.AppendLine(("{0,7}  {1}" -f $row.Count, $row.Encryption))
+            }
+            [void]$sb.AppendLine('')
+            [void]$sb.AppendLine(("WEAK KERBEROS: {0}" -f $summary.WeakKerberos.Count))
+            foreach ($row in ($summary.WeakKerberos | Select-Object -Last 30)) {
+                [void]$sb.AppendLine(("{0} | {1} | {2} | {3} | {4}" -f
+                    $row.Timestamp, $row.Source, $row.Client, $row.Service, $row.Encryption))
+            }
+            [void]$sb.AppendLine('')
+            [void]$sb.AppendLine('SMB DIALECTS')
+            foreach ($row in $summary.SmbDialects) {
+                [void]$sb.AppendLine(("{0,7}  {1}" -f $row.Count, $row.Dialect))
+            }
+            [void]$sb.AppendLine('')
+            [void]$sb.AppendLine(("SMB1 observations: {0}" -f $summary.Smb1Observations))
+            [void]$sb.AppendLine('')
+            [void]$sb.AppendLine('NTLMSSP USERS')
+            foreach ($row in $summary.NtlmUsers) {
+                [void]$sb.AppendLine(("{0,7}  {1}" -f $row.Count, $row.User))
+            }
+            $adText.Text = $sb.ToString()
+
+            $infoNow = Get-WindowsSuricataInfo
+            $sensor.Text = @"
+Service        : $($infoNow.ServiceState)
+Service name   : $($infoNow.ServiceName)
+Executable     : $($infoNow.Executable)
+Config         : $($infoNow.Config)
+Npcap          : $($infoNow.NpcapState)
+Capture posture: $($infoNow.CaptureMode)
+EVE            : $($infoNow.EvePath)
+Kernel packets : $($summary.KernelPackets)
+Kernel drops   : $($summary.KernelDrops)
+Drop rate      : $("{0:N3}%" -f $summary.KernelDropRate)
+"@
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show(
+                $_.Exception.Message,
+                'IDS dashboard error',
+                'OK',
+                'Error'
+            ) | Out-Null
+        }
+    }.GetNewClosure()
+
+    $refresh.Add_Click($refreshAction)
+    $hoursBox.Add_SelectedIndexChanged($refreshAction)
+    $openLogs.Add_Click({
+        $current = Get-WindowsSuricataInfo
+        if ($current.EvePath) {
+            Start-Process explorer.exe -ArgumentList ('"{0}"' -f (Split-Path -Parent $current.EvePath))
+        }
+    }.GetNewClosure())
+
+    & $refreshAction
+    [void]$form.ShowDialog()
+    $form.Dispose()
+}
+
+function Invoke-WindowsSuricataRuleUpdate {
+    $info = Get-WindowsSuricataInfo
+    if (-not $info.SuricataUpdate) {
+        Write-Console 'suricata-update was not detected. The assistant will not install a separate Python/package stack on Windows.' Yellow
+        return
+    }
+
+    if (-not (Confirm-Action `
+        -Action 'Update Suricata detection rules' `
+        -Reason 'Refresh IDS signatures, then validate the configuration.' `
+        -Impact MEDIUM)) {
+        return
+    }
+
+    Write-Console ("Running: {0}" -f $info.SuricataUpdate) Cyan
+    & $info.SuricataUpdate
+    if ($LASTEXITCODE -ne 0) {
+        Write-Console ("suricata-update failed with exit code {0}." -f $LASTEXITCODE) Red
+        return
+    }
+
+    if (-not (Test-WindowsSuricataConfiguration)) {
+        Write-Console 'Rules were updated but the configuration test failed. Service restart was not attempted.' Red
+        return
+    }
+
+    if ($info.ServiceName) {
+        try {
+            Restart-Service -Name $info.ServiceName -ErrorAction Stop
+            Write-Log 'Suricata rules updated, validated and service restarted.' CHANGE
+        }
+        catch {
+            Write-Console ("Rule update validated, but service restart failed: {0}" -f $_.Exception.Message) Red
+        }
+    }
+}
+
+function Export-WindowsIdsDailyReport {
+    param([int]$Hours = 24)
+
+    Initialize-IdsState
+    $summary = Get-WindowsIdsSummary -Hours $Hours -MaxRecentAlerts 100
+
+    $path = Join-Path $script:IdsReportPath ("ids-report-{0}.txt" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine('WINDOWS AD CONTROL PLANE — SURICATA IDS REPORT')
+    [void]$sb.AppendLine(("Generated : {0}" -f (Get-Date)))
+    [void]$sb.AppendLine(("Server    : {0}" -f $env:COMPUTERNAME))
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine((Format-WindowsIdsSummaryText -Summary $summary))
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine('WEAK KERBEROS DETAILS')
+    foreach ($row in $summary.WeakKerberos) {
+        [void]$sb.AppendLine(("{0} | {1} | {2} | {3} | {4}" -f
+            $row.Timestamp, $row.Source, $row.Client, $row.Service, $row.Encryption))
+    }
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine('RECENT ALERTS')
+    foreach ($row in $summary.RecentAlerts) {
+        [void]$sb.AppendLine(("{0} | sev={1} | {2} -> {3} | {4}" -f
+            $row.Timestamp, $row.Severity, $row.Source, $row.Destination, $row.Signature))
+    }
+
+    $sb.ToString() | Set-Content -LiteralPath $path -Encoding UTF8
+    Write-Log ("Generated IDS report: {0}" -f $path) OK
+    return $path
+}
+
+function Register-WindowsIdsDailyTask {
+    if (-not (Test-Command 'Register-ScheduledTask')) {
+        Write-Console 'ScheduledTasks module is unavailable.' Red
+        return
+    }
+
+    $info = Get-WindowsSuricataInfo
+    if (-not $info.EvePath) {
+        Write-Console 'EVE JSON must be configured before creating a daily report task.' Yellow
+        return
+    }
+
+    Initialize-IdsState
+
+    $raw = (Read-Host 'Daily report time [07:00]').Trim()
+    if ([string]::IsNullOrWhiteSpace($raw)) { $raw = '07:00' }
+
+    $at = [datetime]::MinValue
+    if (-not [datetime]::TryParseExact(
+        $raw,
+        'HH:mm',
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::None,
+        [ref]$at)) {
+        Write-Console 'Invalid time; expected HH:mm.' Red
+        return
+    }
+
+    if (-not $PSCommandPath -or -not (Test-Path -LiteralPath $PSCommandPath)) {
+        Write-Console 'Unable to resolve the current script path for Task Scheduler.' Red
+        return
+    }
+
+    $managedScript = Join-Path $script:IdsStatePath 'windows-server-ad-assistant-ids.ps1'
+    Copy-Item -LiteralPath $PSCommandPath -Destination $managedScript -Force
+
+    $args = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Mode IDSReport -NoColor -ExportPath "{1}"' -f `
+        $managedScript, $ExportPath
+
+    $action = New-ScheduledTaskAction -Execute 'PowerShell.exe' -Argument $args
+    $trigger = New-ScheduledTaskTrigger -Daily -At $at
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable
+
+    Register-ScheduledTask `
+        -TaskName $script:IdsTaskName `
+        -Action $action `
+        -Trigger $trigger `
+        -Principal $principal `
+        -Settings $settings `
+        -Force | Out-Null
+
+    Write-Log ("Registered daily IDS report task at {0}" -f $raw) CHANGE
+    Write-Console ("Daily IDS report task registered at {0}." -f $raw) Green
+}
+
+function Show-WindowsIdsReports {
+    Initialize-IdsState
+    $reports = @(Get-ChildItem -LiteralPath $script:IdsReportPath -Filter 'ids-report-*.txt' -File |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 50)
+
+    if ($reports.Count -eq 0) {
+        Write-Console 'No IDS reports have been generated yet.' Yellow
+        return
+    }
+
+    Write-Console ''
+    for ($i = 0; $i -lt $reports.Count; $i++) {
+        Write-Console ('  [{0,2}] {1}  {2}' -f ($i + 1), $reports[$i].Name, $reports[$i].LastWriteTime)
+    }
+    Write-Console '  [ 0] Cancel'
+
+    $n = 0
+    $raw = (Read-Host 'Select report').Trim()
+    if (-not [int]::TryParse($raw, [ref]$n)) { return }
+    if ($n -lt 1 -or $n -gt $reports.Count) { return }
+
+    if (Test-WindowsFormsAvailable) {
+        Start-Process notepad.exe -ArgumentList ('"{0}"' -f $reports[$n - 1].FullName)
+    }
+    else {
+        Get-Content -LiteralPath $reports[$n - 1].FullName
+    }
+}
+
+function Show-WindowsIdsInstallationGuidance {
+    Write-Section 'Suricata Windows installation guidance'
+    Write-Console 'For Windows end users, use the official Suricata Windows installer.' Cyan
+    Write-Console 'Npcap is required for live passive packet capture.' Cyan
+    Write-Console ''
+    Write-Console 'The control plane intentionally does not download or silently install either component:' Gray
+    Write-Console '  - Suricata is external to Windows Server servicing.' Gray
+    Write-Console '  - Npcap installs a packet-capture driver on the Domain Controller.' Gray
+    Write-Console '  - Driver installation/replacement should remain an explicit administrator action.' Gray
+    Write-Console ''
+    Write-Console 'Official documentation:' White
+    Write-Console '  https://docs.suricata.io/en/latest/install/windows.html'
+    Write-Console '  https://suricata.io/download/'
+
+    if (Test-WindowsFormsAvailable) {
+        if (Read-BooleanChoice -Prompt 'Open the official Suricata Windows documentation in the browser?' -Default $false) {
+            Start-Process 'https://docs.suricata.io/en/latest/install/windows.html'
+        }
+    }
+}
+
+function Read-IdsAnalysisHours {
+    Write-Console ''
+    Write-Console '  [1] Last hour'
+    Write-Console '  [2] Last 24 hours'
+    Write-Console '  [3] Last 7 days'
+    Write-Console '  [C] Custom hours'
+    Write-Console '  [0] Cancel'
+
+    $choice = (Read-Host 'Select analysis window [2]').Trim().ToUpperInvariant()
+    if (-not $choice) { $choice = '2' }
+
+    switch ($choice) {
+        '1' { return 1 }
+        '2' { return 24 }
+        '3' { return 168 }
+        'C' {
+            $n = 0
+            if ([int]::TryParse((Read-Host 'Hours'), [ref]$n) -and $n -ge 1 -and $n -le 8760) {
+                return $n
+            }
+            return 0
+        }
+        default { return 0 }
+    }
+}
+
+function Show-WindowsIdsMenu {
+    while ($true) {
+        if ($script:MainMenuRequested) { return }
+
+        Write-MenuHeader 'NETWORK IDS / SURICATA' 'Optional passive detection, EVE analytics, AD protocol intelligence and native GUI'
+        Write-MenuItem '1' 'IDS readiness' 'Suricata, Npcap, service, capture posture and EVE path'
+        Write-MenuItem '2' 'Sensor health' 'Config test, EVE freshness and packet-drop telemetry'
+        Write-MenuItem '3' 'Security summary' 'Alerts, DNS, Kerberos, SMB/NTLM and decision triggers'
+        Write-MenuItem '4' 'Recent alerts' 'Console alert timeline'
+        Write-MenuItem '5' 'AD protocol intelligence' 'Kerberos encryption, weak crypto, SMB dialects and NTLMSSP'
+        Write-MenuItem '6' 'GUI dashboard' 'Native Windows Forms read-only IDS dashboard' Good
+        Write-MenuItem '7' 'Configure EVE path' 'Use when auto-discovery cannot locate eve.json'
+        Write-MenuItem '8' 'Update rules' 'Use detected suricata-update, validate config and restart service' Warn
+        Write-MenuItem '9' 'Daily reports' 'Generate/view reports or register a SYSTEM scheduled task'
+        Write-MenuItem '10' 'Installation guidance' 'Official Suricata installer + explicit Npcap driver installation'
+        Write-MenuNavigation
+        Write-Rule
+
+        switch (Read-MenuChoice -Default '1') {
+            '1' { Show-WindowsIdsReadiness; Pause-ControlPlane }
+            '2' { Show-WindowsIdsSensorHealth; Pause-ControlPlane }
+            '3' {
+                $hours = Read-IdsAnalysisHours
+                if ($hours -gt 0) { Show-WindowsIdsSummary -Hours $hours }
+                Pause-ControlPlane
+            }
+            '4' {
+                $hours = Read-IdsAnalysisHours
+                if ($hours -gt 0) { Show-WindowsIdsRecentAlerts -Hours $hours }
+                Pause-ControlPlane
+            }
+            '5' {
+                $hours = Read-IdsAnalysisHours
+                if ($hours -gt 0) { Show-WindowsIdsAdIntelligence -Hours $hours }
+                Pause-ControlPlane
+            }
+            '6' { Show-WindowsIdsDashboardGui }
+            '7' { Set-WindowsSuricataEvePath; Pause-ControlPlane }
+            '8' { Invoke-WindowsSuricataRuleUpdate; Pause-ControlPlane }
+            '9' {
+                Write-Console ''
+                Write-Console '  [1] Generate 24h report now'
+                Write-Console '  [2] View generated reports'
+                Write-Console '  [3] Enable/refresh daily scheduled task'
+                Write-Console '  [4] Disable daily scheduled task'
+                Write-Console '  [0] Cancel'
+                $sub = (Read-Host 'Select report operation [1]').Trim()
+                if (-not $sub) { $sub = '1' }
+
+                switch ($sub) {
+                    '1' {
+                        try {
+                            $path = Export-WindowsIdsDailyReport -Hours 24
+                            Write-Console ("Report: {0}" -f $path) Green
+                        }
+                        catch { Write-Console $_.Exception.Message Red }
+                    }
+                    '2' { Show-WindowsIdsReports }
+                    '3' { Register-WindowsIdsDailyTask }
+                    '4' {
+                        if (Test-Command 'Unregister-ScheduledTask') {
+                            Unregister-ScheduledTask -TaskName $script:IdsTaskName -Confirm:$false -ErrorAction SilentlyContinue
+                            Write-Console 'Daily IDS scheduled task disabled.' Green
+                        }
+                    }
+                }
+                Pause-ControlPlane
+            }
+            '10' { Show-WindowsIdsInstallationGuidance; Pause-ControlPlane }
+            'H' { $script:MainMenuRequested = $true; return }
+            '0' { return }
+            default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
+        }
+    }
+}
+
 # ===========================================================================
 # Interactive menus
 # ===========================================================================
@@ -5701,6 +6829,7 @@ function Show-AdOperationsMenu {
         Write-MenuItem '10' 'Directory protocol security' 'Kerberos/LDAP/SMB security posture for the Domain Controller' Good
         Write-MenuItem '11' 'Dependencies' 'Repair missing official RSAT/GPMC/DNS/backup features'
         Write-MenuItem '12' 'Domain decommission / reset' 'Supported demotion and host cleanup' Danger
+        Write-MenuItem '13' 'Network IDS / Suricata' 'Read-only EVE analytics and GUI dashboard' Good
         Write-MenuNavigation
         Write-Rule
 
@@ -5717,6 +6846,7 @@ function Show-AdOperationsMenu {
             '10' { Show-DirectorySecurityMenu }
             '11' { Show-DependencyMenu }
             '12' { Show-DomainResetMenu }
+            '13' { Show-WindowsIdsMenu }
             'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
@@ -5751,6 +6881,7 @@ function Show-MainMenu {
         }
         Write-MenuItem '10' 'Dependencies & servicing' 'Official Windows features, modules and servicing status'
         Write-MenuItem '11' 'Domain decommission / reset' 'Supported DC demotion and post-reboot cleanup' Danger
+        Write-MenuItem '12' 'Network IDS / Suricata' 'Optional EVE analytics and native Windows IDS dashboard' Good
         Write-MenuItem '0' 'Exit' 'Close control plane' Danger
         Write-Rule
 
@@ -5798,6 +6929,7 @@ function Show-MainMenu {
             }
             '10' { Show-DependencyMenu }
             '11' { Show-DomainResetMenu }
+            '12' { Show-WindowsIdsMenu }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
         }
@@ -5955,6 +7087,20 @@ try {
             Show-DomainResetMenu
         }
 
+        'IDS' {
+            Show-WindowsIdsMenu
+        }
+
+        'IDSReport' {
+            try {
+                $path = Export-WindowsIdsDailyReport -Hours 24
+                Write-Log ("Scheduled IDS report completed: {0}" -f $path) OK
+            }
+            catch {
+                Write-Log ("Scheduled IDS report failed: {0}" -f $_.Exception.Message) ERROR
+            }
+        }
+
         default {
             $script:Results.Clear()
             Invoke-HostAudit
@@ -5972,7 +7118,7 @@ try {
         Show-MainMenu
     }
 
-    if (-not $script:ResetCompleted) {
+    if (-not $script:ResetCompleted -and $Mode -ne 'IDSReport') {
         Write-Report
         Show-Summary
     }

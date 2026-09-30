@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 4.9.0-dependency-lifecycle
+# Version 5.0.0-suricata-ids
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -43,7 +43,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="4.9.0-dependency-lifecycle"
+SCRIPT_VERSION="5.0.0-suricata-ids"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -59,6 +59,15 @@ GPO_DOC_FILE="${GPO_DIR}/GPO-GUIDE.md"
 MIGRATION_DIR="${STATE_DIR}/migration"
 MIGRATION_PLAN_FILE="${MIGRATION_DIR}/migration.env"
 POST_INSTALL_FILE="${STATE_DIR}/POST-INSTALL.txt"
+
+IDS_STATE_DIR="${STATE_DIR}/ids"
+IDS_REPORT_DIR="${IDS_STATE_DIR}/reports"
+IDS_CONFIG="/etc/suricata/debian-ad-assistant.yaml"
+IDS_DROPIN="/etc/systemd/system/suricata.service.d/90-debian-ad-assistant.conf"
+IDS_EVE_DIR="/var/log/suricata"
+IDS_EVE_GLOB="${IDS_EVE_DIR}/eve.json*"
+IDS_DAILY_SERVICE="/etc/systemd/system/debian-ad-ids-daily.service"
+IDS_DAILY_TIMER="/etc/systemd/system/debian-ad-ids-daily.timer"
 
 RUN_ROOT=""
 LOG_FILE=""
@@ -405,6 +414,7 @@ Usage:
   sudo bash $0 --migration
   sudo bash $0 --reset-domain
   sudo bash $0 --dependencies
+  sudo bash $0 --ids
   sudo bash $0 --install-cli
   sudo bash $0 --cli-info
   sudo bash $0 --no-color
@@ -412,7 +422,7 @@ Usage:
 
 Convenience commands installed by --install-cli:
   adctl, ad-users, ad-groups, ad-computers, ad-permissions,
-  ad-gpo, ad-security, ad-samba, ad-kerberos, ad-migrate, ad-reset, ad-deps,
+  ad-gpo, ad-security, ad-samba, ad-kerberos, ad-migrate, ad-reset, ad-deps, ad-ids,
   ad-audit, ad-validate, ad-status, ad-backup, ad-tools
 
 Safety:
@@ -439,6 +449,7 @@ detect_invocation_alias() {
         ad-migrate) MODE="migration" ;;
         ad-reset) MODE="reset-domain" ;;
         ad-deps) MODE="dependencies" ;;
+        ad-ids) MODE="ids" ;;
         ad-audit) MODE="audit" ;;
         ad-validate) MODE="validate" ;;
         ad-backup) MODE="backup" ;;
@@ -468,6 +479,8 @@ parse_args() {
             --migration|--migrate) MODE="migration" ;;
             --reset-domain|--factory-reset|--decommission) MODE="reset-domain" ;;
             --dependencies|--deps) MODE="dependencies" ;;
+            --ids|--suricata|--network-ids) MODE="ids" ;;
+            --ids-daily) MODE="ids-daily" ;;
             --install-cli) MODE="install-cli" ;;
             --cli-info|--tools) MODE="cli-info" ;;
             --no-color) FORCE_NO_COLOR=1 ;;
@@ -512,7 +525,7 @@ ensure_privileges() {
 
 need_tty() {
     case "$MODE" in
-        bootstrap|manage|interactive|backup|admin|users|groups|computers|permissions|gpo|security|migration|reset-domain|dependencies|install-cli)
+        bootstrap|manage|interactive|backup|admin|users|groups|computers|permissions|gpo|security|migration|reset-domain|dependencies|ids|install-cli)
             [[ -r /dev/tty ]] || die "Mode '$MODE' requires a controlling TTY."
             INPUT_FD="/dev/tty"
             ;;
@@ -898,6 +911,8 @@ EOF
 
     printf 'ufw|optional|Host firewall when enabled by policy\n'
     printf 'fail2ban|optional|SSH brute-force protection when explicitly enabled\n'
+    printf 'suricata|optional|Passive network IDS / protocol telemetry (ad-ids)\n'
+    printf 'suricata-update|optional|Official/distribution Suricata ruleset updater for ad-ids\n'
 }
 
 package_installed() {
@@ -7431,6 +7446,13 @@ restore_core_host_identity_after_reset() {
 }
 
 remove_assistant_managed_host_files() {
+    # Optional IDS integration: remove only assistant-managed overlays/timers.
+    systemctl disable --now debian-ad-ids-daily.timer >/dev/null 2>&1 || true
+    rm -f "$IDS_DAILY_TIMER" "$IDS_DAILY_SERVICE"
+    systemctl disable --now suricata.service >/dev/null 2>&1 || true
+    rm -f "$IDS_DROPIN" "$IDS_CONFIG"
+    rmdir "$(dirname "$IDS_DROPIN")" >/dev/null 2>&1 || true
+
     local p source=""
 
     # Boot/network guard.
@@ -7729,6 +7751,942 @@ domain_reset_menu() {
     done
 }
 
+
+# ---------------------------------------------------------------------------
+# Optional passive network IDS / Suricata integration
+# ---------------------------------------------------------------------------
+
+ids_prepare_state() {
+    mkdir -p "$IDS_STATE_DIR" "$IDS_REPORT_DIR"
+    chmod 700 "$IDS_STATE_DIR" "$IDS_REPORT_DIR"
+}
+
+ids_suricata_binary() {
+    local p=""
+    p="$(command -v suricata 2>/dev/null || true)"
+    [[ -n "$p" && -x "$p" ]] && { printf '%s' "$p"; return 0; }
+    for p in /usr/bin/suricata /usr/sbin/suricata /usr/local/bin/suricata; do
+        [[ -x "$p" ]] && { printf '%s' "$p"; return 0; }
+    done
+    return 1
+}
+
+ids_suricata_update_binary() {
+    local p=""
+    p="$(command -v suricata-update 2>/dev/null || true)"
+    [[ -n "$p" && -x "$p" ]] && { printf '%s' "$p"; return 0; }
+    for p in /usr/bin/suricata-update /usr/local/bin/suricata-update; do
+        [[ -x "$p" ]] && { printf '%s' "$p"; return 0; }
+    done
+    return 1
+}
+
+ids_suricata_config() {
+    local p
+    for p in /etc/suricata/suricata.yaml /usr/local/etc/suricata/suricata.yaml; do
+        [[ -f "$p" ]] && { printf '%s' "$p"; return 0; }
+    done
+    return 1
+}
+
+ids_record_prestate() {
+    ids_prepare_state
+    local f="${IDS_STATE_DIR}/prestate.env"
+    [[ -f "$f" ]] && return 0
+
+    local pkg_suricata="no" pkg_update="no" enabled="unknown" active="unknown"
+    package_installed suricata && pkg_suricata="yes"
+    package_installed suricata-update && pkg_update="yes"
+    enabled="$(safe_systemctl_enabled suricata.service)"
+    active="$(safe_systemctl_state suricata.service)"
+
+    cat >"$f" <<EOF
+SURICATA_PREEXISTED=${pkg_suricata}
+SURICATA_UPDATE_PREEXISTED=${pkg_update}
+SURICATA_SERVICE_ENABLED_BEFORE=${enabled}
+SURICATA_SERVICE_ACTIVE_BEFORE=${active}
+EOF
+    chmod 600 "$f"
+}
+
+ids_install_optional() {
+    section "SURICATA OPTIONAL INSTALLATION"
+    ids_record_prestate
+
+    local -a pkgs=()
+    package_installed suricata || pkgs+=(suricata)
+
+    if package_available suricata-update; then
+        package_installed suricata-update || pkgs+=(suricata-update)
+    fi
+
+    if ((${#pkgs[@]})); then
+        printf 'The IDS module needs these optional distribution packages:\n'
+        printf '  - %s\n' "${pkgs[@]}"
+        confirm "Install optional passive IDS packages now?" Y || return 1
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}"
+    fi
+
+    local bin=""
+    bin="$(ids_suricata_binary 2>/dev/null || true)"
+    [[ -n "$bin" ]] || {
+        fail_msg "Suricata package installation completed but the suricata binary is unavailable."
+        return 1
+    }
+
+    result PASS "Suricata runtime" "$($bin -V 2>&1 | head -n1)" "installed"
+    if ids_suricata_update_binary >/dev/null 2>&1; then
+        result PASS "Rules updater" "$(ids_suricata_update_binary)" "available"
+    else
+        result WARN "Rules updater" "suricata-update unavailable" "recommended"
+    fi
+}
+
+ids_list_interfaces() {
+    ip -4 -o addr show scope global 2>/dev/null |
+        awk '{print $2 "|" $4}' |
+        sort -u
+}
+
+ids_select_interface() {
+    local -a rows=()
+    mapfile -t rows < <(ids_list_interfaces)
+    ((${#rows[@]})) || {
+        msg_warn "No interface with a global IPv4 address was found."
+        return 1
+    }
+
+    printf '\n' >&2
+    ui_rule >&2
+    printf '%b%b  IDS CAPTURE INTERFACES%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET" >&2
+    ui_rule >&2
+
+    local i iface cidr default_idx=0
+    for i in "${!rows[@]}"; do
+        IFS='|' read -r iface cidr <<<"${rows[$i]}"
+        [[ "$iface" == "${AD_IFACE:-}" ]] && default_idx=$((i+1))
+        printf '  %b[%2d]%b  %-18s %s%s\n' \
+            "$C_DIM" "$((i+1))" "$C_RESET" "$iface" "$cidr" \
+            "$( [[ "$iface" == "${AD_IFACE:-}" ]] && printf '  [AD interface]' || true )" >&2
+    done
+    printf '  %b[M ]%b  Enter interface manually\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[0 ]%b  Cancel\n' "$C_RED" "$C_RESET" >&2
+    ui_rule >&2
+
+    local default_choice="1" choice manual
+    (( default_idx > 0 )) && default_choice="$default_idx"
+    choice="$(ask 'Select passive capture interface' "$default_choice")"
+
+    case "$choice" in
+        0) return 1 ;;
+        M|m)
+            manual="$(ask 'Interface name')"
+            [[ "$manual" =~ ^[A-Za-z0-9_.:@-]+$ ]] || {
+                msg_warn "Invalid interface name."
+                return 1
+            }
+            ip link show dev "$manual" >/dev/null 2>&1 || {
+                msg_warn "Interface '$manual' does not exist."
+                return 1
+            }
+            printf '%s' "$manual"
+            return 0
+            ;;
+    esac
+
+    [[ "$choice" =~ ^[0-9]+$ ]] || return 1
+    (( choice >= 1 && choice <= ${#rows[@]} )) || return 1
+    IFS='|' read -r iface cidr <<<"${rows[$((choice-1))]}"
+    printf '%s' "$iface"
+}
+
+ids_default_home_net() {
+    local value=""
+    if [[ -n "${AD_CLIENT_CIDR:-}" ]] && is_valid_cidr "$AD_CLIENT_CIDR"; then
+        printf '%s' "$AD_CLIENT_CIDR"
+        return 0
+    fi
+
+    if [[ -n "${AD_CIDR:-}" ]]; then
+        value="$(cidr_from_interface "$AD_CIDR")"
+        [[ -n "$value" ]] && is_valid_cidr "$value" && { printf '%s' "$value"; return 0; }
+    fi
+
+    if [[ -n "${AD_IFACE:-}" ]]; then
+        value="$(ip -4 -o addr show dev "$AD_IFACE" scope global 2>/dev/null | awk 'NR==1{print $4}')"
+        [[ -n "$value" ]] && value="$(cidr_from_interface "$value")"
+        [[ -n "$value" ]] && is_valid_cidr "$value" && { printf '%s' "$value"; return 0; }
+    fi
+
+    return 1
+}
+
+ids_write_managed_config() {
+    local iface="$1" home_net="$2"
+    mkdir -p /etc/suricata
+    backup_file "$IDS_CONFIG"
+
+    cat >"$IDS_CONFIG" <<EOF
+%YAML 1.1
+---
+# Managed by ${SCRIPT_NAME} ${SCRIPT_VERSION}
+# Passive IDS overlay for the AD-facing interface.
+# This fragment is loaded after the distribution suricata.yaml.
+
+vars:
+  address-groups:
+    HOME_NET: "[${home_net}]"
+
+default-rule-path: /var/lib/suricata/rules
+rule-files:
+  - suricata.rules
+
+af-packet:
+  - interface: ${iface}
+    threads: auto
+    cluster-id: 99
+    cluster-type: cluster_flow
+    defrag: yes
+
+outputs:
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: eve.json
+      community-id: true
+      types:
+        - alert
+        - stats:
+            totals: yes
+            threads: no
+        - dns
+        - krb5
+        - smb
+        - tls
+        - ssh
+EOF
+    chmod 0644 "$IDS_CONFIG"
+}
+
+ids_vendor_execstart() {
+    local fragment=""
+    fragment="$(systemctl show -p FragmentPath --value suricata.service 2>/dev/null || true)"
+    [[ -n "$fragment" && -f "$fragment" ]] || return 1
+
+    awk '
+        /^[[:space:]]*ExecStart=/ {
+            sub(/^[[:space:]]*ExecStart=/, "")
+            print
+            exit
+        }
+    ' "$fragment"
+}
+
+ids_install_systemd_dropin() {
+    local vendor_exec="" config=""
+    vendor_exec="$(ids_vendor_execstart 2>/dev/null || true)"
+    config="$(ids_suricata_config 2>/dev/null || true)"
+
+    [[ -n "$vendor_exec" ]] || {
+        msg_warn "Unable to read vendor Suricata ExecStart; refusing to invent a service command."
+        return 1
+    }
+    [[ -n "$config" ]] || {
+        msg_warn "Unable to locate suricata.yaml."
+        return 1
+    }
+
+    if grep -Eq '(^|[[:space:]])(-q|--nfq|--nfqueue)([=[:space:]]|$)|--af-xdp' <<<"$vendor_exec"; then
+        msg_warn "The vendor/custom service appears configured for an active/alternate capture mode."
+        printf '  ExecStart: %s\n' "$vendor_exec"
+        printf 'The assistant will not overwrite an NFQUEUE/AF_XDP deployment with passive IDS settings.\n'
+        return 1
+    fi
+
+    if ! grep -q -- '--af-packet' <<<"$vendor_exec"; then
+        vendor_exec+=" --af-packet"
+    fi
+
+    # The overlay is appended on the command line, so it is processed after the
+    # distribution YAML without rewriting vendor configuration.
+    vendor_exec+=" --include ${IDS_CONFIG}"
+
+    mkdir -p "$(dirname "$IDS_DROPIN")"
+    backup_file "$IDS_DROPIN"
+    cat >"$IDS_DROPIN" <<EOF
+[Service]
+ExecStart=
+ExecStart=${vendor_exec}
+EOF
+    chmod 0644 "$IDS_DROPIN"
+    systemctl daemon-reload
+}
+
+ids_validate_config() {
+    local label="${1:-current}" bin="" config="" evidence=""
+    bin="$(ids_suricata_binary 2>/dev/null || true)"
+    config="$(ids_suricata_config 2>/dev/null || true)"
+    evidence="${RUN_ROOT}/suricata-test-${label}.txt"
+
+    [[ -n "$bin" && -n "$config" && -f "$IDS_CONFIG" ]] || return 1
+
+    if "$bin" -T -c "$config" --include "$IDS_CONFIG" >"$evidence" 2>&1; then
+        result PASS "Suricata config test" "$label" "valid"
+        return 0
+    fi
+
+    result FAIL "Suricata config test" "$label; evidence=$evidence" "valid"
+    tail -n 60 "$evidence" >&2 || true
+    return 1
+}
+
+ids_rules_file() {
+    local p
+    for p in \
+        /var/lib/suricata/rules/suricata.rules \
+        /etc/suricata/rules/suricata.rules
+    do
+        [[ -f "$p" ]] && { printf '%s' "$p"; return 0; }
+    done
+    return 1
+}
+
+ids_update_rules() {
+    section "SURICATA RULE UPDATE"
+    local updater="" rules_root="/var/lib/suricata/rules"
+    local backup="${RUN_ROOT}/suricata-rules-before.tar"
+
+    updater="$(ids_suricata_update_binary 2>/dev/null || true)"
+    [[ -n "$updater" ]] || {
+        msg_warn "suricata-update is unavailable."
+        return 1
+    }
+
+    if [[ -d "$rules_root" ]]; then
+        tar -cpf "$backup" -C "$(dirname "$rules_root")" "$(basename "$rules_root")"
+    fi
+
+    printf 'Updating Suricata rules using: %s\n' "$updater"
+    if ! "$updater" >"${RUN_ROOT}/suricata-update.txt" 2>&1; then
+        msg_warn "suricata-update failed. Evidence: ${RUN_ROOT}/suricata-update.txt"
+        tail -n 60 "${RUN_ROOT}/suricata-update.txt" >&2 || true
+        return 1
+    fi
+
+    if ! ids_validate_config "after-rule-update"; then
+        if [[ -f "$backup" ]]; then
+            rm -rf "$rules_root"
+            tar -xpf "$backup" -C "$(dirname "$rules_root")"
+            msg_warn "Rule update was rolled back after configuration validation failure."
+        fi
+        return 1
+    fi
+
+    if systemctl is-active --quiet suricata.service; then
+        if ! systemctl reload suricata.service; then
+            msg_warn "Rule reload failed; attempting service restart."
+            systemctl restart suricata.service || return 1
+        fi
+    fi
+
+    local rule_file=""
+    rule_file="$(ids_rules_file 2>/dev/null || true)"
+    result PASS "Suricata rules" "${rule_file:-updated}" "updated and validated"
+}
+
+ids_configure_passive() {
+    section "CONFIGURE PASSIVE SURICATA IDS"
+
+    ids_install_optional || return 1
+    ids_prepare_state
+
+    local iface="" home_default="" home_net="" config=""
+    iface="$(ids_select_interface)" || return 1
+    home_default="$(ids_default_home_net 2>/dev/null || true)"
+    [[ -n "$home_default" ]] || home_default="192.168.1.0/24"
+    home_net="$(ask 'HOME_NET / monitored AD network (CIDR)' "$home_default")"
+    is_valid_cidr "$home_net" || {
+        msg_warn "Invalid HOME_NET CIDR: $home_net"
+        return 1
+    }
+
+    printf '\n%bPassive IDS plan%b\n' "$C_CYAN" "$C_RESET"
+    printf '  Capture interface : %s\n' "$iface"
+    printf '  HOME_NET          : %s\n' "$home_net"
+    printf '  Capture mode      : AF_PACKET / passive\n'
+    printf '  EVE telemetry     : alert, stats, DNS, KRB5, SMB, TLS, SSH\n'
+    printf '  Inline blocking   : disabled\n'
+    printf '  Managed overlay   : %s\n' "$IDS_CONFIG"
+
+    confirm "Apply this passive IDS configuration?" Y || return 0
+
+    ids_write_managed_config "$iface" "$home_net"
+    ids_install_systemd_dropin || return 1
+
+    # A first ruleset is needed before the service can be considered useful.
+    if ids_suricata_update_binary >/dev/null 2>&1; then
+        ids_update_rules || {
+            msg_warn "Initial rule update failed; Suricata configuration remains staged for inspection."
+            return 1
+        }
+    else
+        msg_warn "No rules updater is available; service start is deferred."
+        return 1
+    fi
+
+    ids_validate_config "pre-start" || return 1
+
+    systemctl enable suricata.service >/dev/null 2>&1 || true
+    if ! systemctl restart suricata.service; then
+        msg_error "Suricata service failed to start."
+        systemctl status suricata.service --no-pager --full >&2 || true
+        journalctl -u suricata.service -b --no-pager -n 80 >&2 || true
+        return 1
+    fi
+
+    sleep 2
+    if systemctl is-active --quiet suricata.service; then
+        result PASS "Suricata service" "active on $iface" "passive IDS"
+        change APPLIED "Configured passive Suricata IDS interface=$iface HOME_NET=$home_net"
+    else
+        result FAIL "Suricata service" "not active" "active"
+        return 1
+    fi
+}
+
+ids_eve_parser() {
+    local hours="${1:-24}" view="${2:-summary}"
+    IDS_HOURS="$hours" IDS_VIEW="$view" IDS_EVE_GLOB="$IDS_EVE_GLOB" python3 - <<'PY'
+import os, sys, glob, json, gzip
+from collections import Counter, deque
+from datetime import datetime, timezone, timedelta
+
+hours = float(os.environ.get("IDS_HOURS", "24"))
+view = os.environ.get("IDS_VIEW", "summary")
+pattern = os.environ.get("IDS_EVE_GLOB", "/var/log/suricata/eve.json*")
+cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+def open_any(path):
+    return gzip.open(path, "rt", encoding="utf-8", errors="replace") if path.endswith(".gz") else open(path, "rt", encoding="utf-8", errors="replace")
+
+def parse_ts(value):
+    if not value:
+        return None
+    try:
+        v = str(value)
+        if v.endswith("Z"):
+            v = v[:-1] + "+00:00"
+        dt = datetime.fromisoformat(v)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+def inc(counter, key):
+    if key not in (None, ""):
+        counter[str(key)] += 1
+
+files = [p for p in glob.glob(pattern) if os.path.isfile(p)]
+files.sort(key=lambda p: os.path.getmtime(p))
+
+events = Counter()
+alert_sigs = Counter()
+alert_src = Counter()
+alert_sev = Counter()
+dns_queries = 0
+dns_nxdomain = 0
+krb_encryption = Counter()
+krb_weak = []
+smb_dialects = Counter()
+smb_ntlm = Counter()
+smb_ntlm_hosts = Counter()
+recent_alerts = deque(maxlen=80)
+latest_stats = None
+parsed = 0
+bad = 0
+latest_ts = None
+
+for path in files:
+    try:
+        fh = open_any(path)
+    except OSError:
+        continue
+    with fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except Exception:
+                bad += 1
+                continue
+            ts = parse_ts(ev.get("timestamp"))
+            if ts and ts < cutoff:
+                continue
+            if ts and (latest_ts is None or ts > latest_ts):
+                latest_ts = ts
+            parsed += 1
+            et = ev.get("event_type", "unknown")
+            events[et] += 1
+
+            if et == "alert":
+                a = ev.get("alert") or {}
+                inc(alert_sigs, a.get("signature"))
+                inc(alert_src, ev.get("src_ip"))
+                inc(alert_sev, a.get("severity"))
+                recent_alerts.append((ev.get("timestamp",""), ev.get("src_ip","-"), ev.get("dest_ip","-"),
+                                      a.get("severity","-"), a.get("signature","-")))
+
+            if et == "dns":
+                dns_queries += 1
+                d = ev.get("dns") or {}
+                rcode = str(d.get("rcode_name") or d.get("rcode") or "").upper()
+                if "NXDOMAIN" in rcode or rcode == "3":
+                    dns_nxdomain += 1
+
+            if et == "krb5":
+                k = ev.get("krb5") or {}
+                enc = k.get("ticket_encryption") or k.get("encryption")
+                inc(krb_encryption, enc)
+                if k.get("weak_encryption") is True or k.get("ticket_weak_encryption") is True:
+                    krb_weak.append((ev.get("timestamp",""), ev.get("src_ip","-"),
+                                     k.get("cname","-"), k.get("sname","-"), enc or "-"))
+
+            if et == "smb":
+                s = ev.get("smb") or {}
+                inc(smb_dialects, s.get("dialect"))
+                nt = s.get("ntlmssp") or {}
+                if nt:
+                    user = nt.get("user") or "<unknown>"
+                    host = nt.get("host") or ev.get("src_ip") or "<unknown>"
+                    inc(smb_ntlm, user)
+                    inc(smb_ntlm_hosts, host)
+
+            if et == "stats":
+                latest_stats = ev.get("stats") or {}
+
+def print_counter(title, counter, limit=10):
+    print(title)
+    if not counter:
+        print("  none observed")
+        return
+    for key, count in counter.most_common(limit):
+        print(f"  {count:8d}  {key}")
+
+def nested(d, *keys):
+    cur = d
+    for k in keys:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    return cur
+
+packets = nested(latest_stats or {}, "capture", "kernel_packets") or 0
+drops = nested(latest_stats or {}, "capture", "kernel_drops") or 0
+try:
+    drop_pct = (float(drops) * 100.0 / float(packets)) if float(packets) else 0.0
+except Exception:
+    drop_pct = 0.0
+
+if view == "alerts":
+    print(f"RECENT SURICATA ALERTS — LAST {hours:g}H")
+    print("=" * 88)
+    if not recent_alerts:
+        print("No alerts observed in the selected window.")
+    else:
+        for ts, src, dst, sev, sig in list(recent_alerts)[-50:]:
+            print(f"{ts:30.30s} sev={str(sev):<3} {src:15.15s} -> {dst:15.15s}  {sig}")
+    sys.exit(0)
+
+if view == "ad":
+    print(f"AD PROTOCOL INTELLIGENCE — LAST {hours:g}H")
+    print("=" * 72)
+    print_counter("Kerberos encryption:", krb_encryption, 20)
+    print(f"\nWeak Kerberos observations: {len(krb_weak)}")
+    for row in krb_weak[-20:]:
+        print("  " + " | ".join(map(str, row)))
+    print()
+    print_counter("SMB dialects:", smb_dialects, 20)
+    print()
+    print_counter("SMB NTLMSSP users:", smb_ntlm, 15)
+    print()
+    print_counter("SMB NTLMSSP source hosts:", smb_ntlm_hosts, 15)
+    smb1 = sum(v for k,v in smb_dialects.items() if "NT LM 0.12" in k.upper() or k.upper().startswith("SMB1"))
+    print(f"\nSMB1 observations: {smb1}")
+    sys.exit(0)
+
+print(f"SECURITY OPERATIONS SUMMARY — LAST {hours:g}H")
+print("=" * 72)
+print(f"Parsed EVE events             {parsed}")
+print(f"Malformed JSON lines          {bad}")
+print(f"Latest event                  {latest_ts.isoformat() if latest_ts else 'none'}")
+print(f"Kernel packets (latest stats) {packets}")
+print(f"Kernel drops (latest stats)   {drops}")
+print(f"Kernel drop rate              {drop_pct:.3f}%")
+print()
+print_counter("Event types:", events, 20)
+print()
+print_counter("Alert severity values:", alert_sev, 10)
+print()
+print_counter("Top alert signatures:", alert_sigs, 12)
+print()
+print_counter("Top alert source IPs:", alert_src, 12)
+print()
+print(f"DNS events                    {dns_queries}")
+print(f"DNS NXDOMAIN observations     {dns_nxdomain}")
+print(f"Weak Kerberos observations    {len(krb_weak)}")
+print(f"SMB NTLMSSP observations      {sum(smb_ntlm.values())}")
+smb1 = sum(v for k,v in smb_dialects.items() if "NT LM 0.12" in k.upper() or k.upper().startswith("SMB1"))
+print(f"SMB1 observations             {smb1}")
+
+print("\nACTIONABLE FINDINGS")
+actions = []
+if drop_pct > 1.0:
+    actions.append(f"HIGH sensor packet loss: kernel drop rate {drop_pct:.3f}%")
+elif drop_pct > 0.1:
+    actions.append(f"REVIEW sensor packet loss: kernel drop rate {drop_pct:.3f}%")
+if krb_weak:
+    actions.append(f"REVIEW {len(krb_weak)} weak Kerberos observation(s) before AES-only enforcement")
+if smb1:
+    actions.append(f"REVIEW {smb1} SMB1 observation(s); identify legacy clients")
+sev12 = sum(v for k,v in alert_sev.items() if str(k) in ("1","2"))
+if sev12:
+    actions.append(f"INVESTIGATE {sev12} alert(s) with severity value 1/2")
+if not actions:
+    actions.append("No automatic high-priority decision trigger detected in this window")
+for item in actions:
+    print(f"  - {item}")
+PY
+}
+
+ids_summary() {
+    local hours="${1:-24}"
+    [[ "$hours" =~ ^[0-9]+([.][0-9]+)?$ ]] || hours=24
+    ids_eve_parser "$hours" summary
+}
+
+ids_recent_alerts() {
+    local hours="${1:-24}"
+    ids_eve_parser "$hours" alerts
+}
+
+ids_ad_intelligence() {
+    local hours="${1:-24}"
+    ids_eve_parser "$hours" ad
+}
+
+ids_choose_window() {
+    printf '\n' >&2
+    ui_rule >&2
+    printf '  [1] Last hour\n' >&2
+    printf '  [2] Last 24 hours\n' >&2
+    printf '  [3] Last 7 days\n' >&2
+    printf '  [C] Custom hours\n' >&2
+    printf '  [0] Cancel\n' >&2
+    ui_rule >&2
+    local choice hours
+    choice="$(ask 'Select analysis window' '2')"
+    case "$choice" in
+        1) printf '1' ;;
+        2) printf '24' ;;
+        3) printf '168' ;;
+        C|c)
+            hours="$(ask 'Hours' '24')"
+            [[ "$hours" =~ ^[0-9]+$ && "$hours" -ge 1 && "$hours" -le 8760 ]] || return 1
+            printf '%s' "$hours"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+ids_sensor_health() {
+    section "SURICATA SENSOR HEALTH"
+    local bin="" config="" rules="" eve="${IDS_EVE_DIR}/eve.json"
+    bin="$(ids_suricata_binary 2>/dev/null || true)"
+    config="$(ids_suricata_config 2>/dev/null || true)"
+    rules="$(ids_rules_file 2>/dev/null || true)"
+
+    result "$(systemctl is-active --quiet suricata.service && printf PASS || printf WARN)" \
+        "Suricata service" "$(safe_systemctl_state suricata.service)" "active"
+
+    [[ -n "$bin" ]] \
+        && result PASS "Suricata binary" "$($bin -V 2>&1 | head -n1)" "available" \
+        || result WARN "Suricata binary" "missing" "installed"
+
+    [[ -f "$IDS_CONFIG" ]] \
+        && result PASS "Managed IDS overlay" "$IDS_CONFIG" "present" \
+        || result WARN "Managed IDS overlay" "not configured" "$IDS_CONFIG"
+
+    if [[ -n "$bin" && -n "$config" && -f "$IDS_CONFIG" ]]; then
+        ids_validate_config health || true
+    fi
+
+    if [[ -n "$rules" ]]; then
+        local count=""
+        count="$(grep -hcE '^[[:space:]]*(alert|drop|reject)[[:space:]]' "$rules" 2>/dev/null || true)"
+        result PASS "Rules file" "$rules / ${count:-0} active rule lines" "loaded"
+    else
+        result WARN "Rules file" "not found" "suricata.rules"
+    fi
+
+    if [[ -f "$eve" ]]; then
+        local age size
+        age=$(( $(date +%s) - $(stat -c %Y "$eve") ))
+        size="$(du -h "$eve" 2>/dev/null | awk '{print $1}')"
+        if (( age < 600 )); then
+            result PASS "EVE freshness" "${age}s old / ${size:-?}" "<600s"
+        else
+            result WARN "EVE freshness" "${age}s old / ${size:-?}" "<600s"
+        fi
+    else
+        result WARN "EVE log" "missing: $eve" "present after sensor start"
+    fi
+
+    printf '\n'
+    ids_summary 1 || true
+}
+
+ids_readiness() {
+    section "NETWORK IDS READINESS"
+    discover_network_topology
+
+    printf '  %-28s %s\n' "Deployment" "Passive IDS on this server"
+    printf '  %-28s %s\n' "Recommended interface" "${AD_IFACE:-unknown}"
+    printf '  %-28s %s\n' "Recommended HOME_NET" "$(ids_default_home_net 2>/dev/null || printf 'manual')"
+    printf '  %-28s %s\n' "Suricata package" "$(package_installed_version suricata)"
+    printf '  %-28s %s\n' "suricata-update" "$(package_installed_version suricata-update)"
+    printf '  %-28s %s\n' "Service" "$(safe_systemctl_state suricata.service)"
+    printf '  %-28s %s\n' "Managed overlay" "$( [[ -f "$IDS_CONFIG" ]] && printf 'present' || printf 'absent' )"
+    printf '  %-28s %s\n' "EVE log" "$( [[ -f "${IDS_EVE_DIR}/eve.json" ]] && printf 'present' || printf 'absent' )"
+
+    local exec=""
+    exec="$(ids_vendor_execstart 2>/dev/null || true)"
+    if grep -Eq '(^|[[:space:]])(-q|--nfq|--nfqueue)([=[:space:]]|$)' <<<"$exec"; then
+        result WARN "Capture mode" "NFQUEUE/inline indicators detected" "passive AF_PACKET for this workflow"
+    else
+        result PASS "Capture policy" "No inline blocking configured by assistant" "passive"
+    fi
+
+    printf '\n'
+    printf 'Scope reminder: a sensor installed on this DC sees traffic reaching/leaving this host.\n'
+    printf 'It does not automatically see lateral client-to-client traffic unless the host receives mirrored/TAP traffic.\n'
+}
+
+ids_generate_daily_report() {
+    local hours="${1:-24}"
+    ids_prepare_state
+    local report="${IDS_REPORT_DIR}/ids-report-$(date +%Y%m%d-%H%M%S).txt"
+
+    {
+        printf 'DEBIAN AD ASSISTANT — SURICATA DAILY SECURITY REPORT\n'
+        printf 'Generated: %s\n' "$(date -Is)"
+        printf 'Host: %s\n' "$(hostname -f 2>/dev/null || hostname)"
+        printf 'Window: %s hours\n\n' "$hours"
+        ids_summary "$hours"
+        printf '\n\n'
+        ids_ad_intelligence "$hours"
+        printf '\n\nRECENT ALERTS\n'
+        ids_recent_alerts "$hours"
+    } >"$report"
+
+    chmod 600 "$report"
+    printf '%s\n' "$report"
+}
+
+ids_show_reports() {
+    ids_prepare_state
+    local -a files=()
+    mapfile -t files < <(find "$IDS_REPORT_DIR" -maxdepth 1 -type f -name 'ids-report-*.txt' -printf '%T@|%p\n' 2>/dev/null |
+        sort -nr | cut -d'|' -f2- | head -50)
+
+    ((${#files[@]})) || {
+        msg_info "No generated IDS reports yet."
+        return 0
+    }
+
+    printf '\n%bIDS REPORTS%b\n' "$C_BOLD" "$C_RESET"
+    local i
+    for i in "${!files[@]}"; do
+        printf '  [%2d] %s\n' "$((i+1))" "$(basename "${files[$i]}")"
+    done
+    printf '  [0 ] Cancel\n'
+
+    local choice
+    choice="$(ask 'Select report' '1')"
+    [[ "$choice" =~ ^[0-9]+$ ]] || return 1
+    (( choice >= 1 && choice <= ${#files[@]} )) || return 0
+
+    less -R "${files[$((choice-1))]}" 2>/dev/null || cat "${files[$((choice-1))]}"
+}
+
+ids_install_daily_timer() {
+    ids_prepare_state
+
+    local target="/usr/local/libexec/debian-ad-assistant"
+    if [[ ! -x "$target" ]]; then
+        msg_info "The daily timer needs the stable installed assistant path."
+        confirm "Install/refresh ad-* CLI commands first?" Y || return 1
+        install_cli_commands
+    fi
+
+    local when
+    when="$(ask 'Daily local IDS report time (HH:MM)' '07:00')"
+    [[ "$when" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || {
+        msg_warn "Invalid time. Expected HH:MM."
+        return 1
+    }
+
+    cat >"$IDS_DAILY_SERVICE" <<EOF
+[Unit]
+Description=Debian AD Assistant daily Suricata security report
+After=suricata.service
+
+[Service]
+Type=oneshot
+ExecStart=${target} --ids-daily --no-color
+EOF
+
+    cat >"$IDS_DAILY_TIMER" <<EOF
+[Unit]
+Description=Schedule Debian AD Assistant daily Suricata security report
+
+[Timer]
+OnCalendar=*-*-* ${when}:00
+Persistent=true
+RandomizedDelaySec=120
+Unit=debian-ad-ids-daily.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    chmod 0644 "$IDS_DAILY_SERVICE" "$IDS_DAILY_TIMER"
+    systemctl daemon-reload
+    systemctl enable --now debian-ad-ids-daily.timer
+    result PASS "Daily IDS report timer" "$when local time" "enabled"
+}
+
+ids_export_evidence() {
+    ids_prepare_state
+    local bundle="${RUN_ROOT}/suricata-evidence-${TIMESTAMP}"
+    mkdir -p "$bundle"
+
+    [[ -f "$IDS_CONFIG" ]] && cp -a "$IDS_CONFIG" "$bundle/"
+    systemctl status suricata.service --no-pager --full >"$bundle/service-status.txt" 2>&1 || true
+    journalctl -u suricata.service -b --no-pager -n 200 >"$bundle/journal.txt" 2>&1 || true
+    ids_summary 24 >"$bundle/summary-24h.txt" 2>&1 || true
+    ids_ad_intelligence 24 >"$bundle/ad-intelligence-24h.txt" 2>&1 || true
+    ids_recent_alerts 24 >"$bundle/alerts-24h.txt" 2>&1 || true
+    ids_validate_config evidence >"$bundle/config-test.txt" 2>&1 || true
+
+    local out="${RUN_ROOT}/suricata-evidence-${TIMESTAMP}.tar.gz"
+    tar -czf "$out" -C "$RUN_ROOT" "$(basename "$bundle")"
+    chmod 600 "$out"
+    result PASS "IDS evidence bundle" "$out" "generated without raw EVE payload"
+}
+
+ids_disable_integration() {
+    section "DISABLE SURICATA IDS INTEGRATION"
+    printf 'This removes assistant-managed IDS configuration and timers.\n'
+    printf 'Suricata packages are retained to avoid deleting pre-existing software.\n'
+
+    confirm_high_risk "Disable Suricata and remove assistant-managed IDS configuration" || return 0
+
+    systemctl disable --now debian-ad-ids-daily.timer >/dev/null 2>&1 || true
+    rm -f "$IDS_DAILY_TIMER" "$IDS_DAILY_SERVICE"
+
+    systemctl disable --now suricata.service >/dev/null 2>&1 || true
+    rm -f "$IDS_DROPIN" "$IDS_CONFIG"
+    rmdir "$(dirname "$IDS_DROPIN")" >/dev/null 2>&1 || true
+    systemctl daemon-reload
+
+    change APPLIED "Disabled assistant-managed Suricata IDS integration"
+    result PASS "IDS integration" "disabled; packages retained" "clean host integration"
+}
+
+ids_menu() {
+    while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
+
+        ui_menu_screen "NETWORK IDS / SURICATA" \
+            "Optional passive network detection, AD protocol telemetry and local daily reporting"
+        ui_menu_item "1" "IDS readiness assessment" "Packages, capture scope, interface and passive/inline posture"
+        ui_menu_item "2" "Install / repair Suricata" "Distribution packages only: suricata + suricata-update" "$C_GREEN"
+        ui_menu_item "3" "Configure passive IDS" "AF_PACKET on a selected interface; no packet blocking" "$C_GREEN"
+        ui_menu_item "4" "Sensor health" "Service, config test, rules, EVE freshness and packet-drop telemetry"
+        ui_menu_item "5" "Security summary" "Alerts, DNS, Kerberos, SMB/NTLM and decision triggers"
+        ui_menu_item "6" "Recent alerts" "Human-readable alert timeline for a selected time window"
+        ui_menu_item "7" "AD protocol intelligence" "Kerberos encryption, weak crypto, SMB dialects and NTLMSSP"
+        ui_menu_item "8" "Update rules" "suricata-update -> config test -> safe reload" "$C_YELLOW"
+        ui_menu_item "9" "Daily local reports" "Generate/view reports or enable a systemd timer"
+        ui_menu_item "10" "Export evidence" "Config/health/summary bundle without raw EVE payload"
+        ui_menu_item "11" "Disable IDS integration" "Remove assistant config/timer; retain packages" "$C_RED"
+        ui_menu_exit
+        ui_rule
+
+        local choice hours report
+        choice="$(ask 'Select IDS operation' '1')"
+        case "$choice" in
+            1) ids_readiness; ui_pause ;;
+            2) ids_install_optional; ui_pause ;;
+            3) ids_configure_passive; ui_pause ;;
+            4) ids_sensor_health; ui_pause ;;
+            5)
+                hours="$(ids_choose_window)" || { ui_pause; continue; }
+                ids_summary "$hours"; ui_pause
+                ;;
+            6)
+                hours="$(ids_choose_window)" || { ui_pause; continue; }
+                ids_recent_alerts "$hours"; ui_pause
+                ;;
+            7)
+                hours="$(ids_choose_window)" || { ui_pause; continue; }
+                ids_ad_intelligence "$hours"; ui_pause
+                ;;
+            8)
+                ids_update_rules
+                ui_pause
+                ;;
+            9)
+                printf '\n  [1] Generate report now\n  [2] View generated reports\n  [3] Enable/refresh daily timer\n  [4] Disable daily timer\n  [0] Cancel\n'
+                local daily_choice
+                daily_choice="$(ask 'Select report operation' '1')"
+                case "$daily_choice" in
+                    1) report="$(ids_generate_daily_report 24)"; printf '\nReport: %s\n' "$report" ;;
+                    2) ids_show_reports ;;
+                    3) ids_install_daily_timer ;;
+                    4)
+                        systemctl disable --now debian-ad-ids-daily.timer >/dev/null 2>&1 || true
+                        rm -f "$IDS_DAILY_TIMER" "$IDS_DAILY_SERVICE"
+                        systemctl daemon-reload
+                        result PASS "Daily IDS timer" "disabled" "manual reporting only"
+                        ;;
+                esac
+                ui_pause
+                ;;
+            10) ids_export_evidence; ui_pause ;;
+            11) ids_disable_integration; ui_pause ;;
+            H|h) MENU_MAIN_REQUESTED=1; return 0 ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid IDS operation."; ui_pause ;;
+        esac
+    done
+}
+
+ids_daily_mode() {
+    # Non-interactive target for the systemd timer. Never installs or changes
+    # packages/configuration; it only reads EVE and writes a local report.
+    ids_prepare_state
+    if [[ ! -f "${IDS_EVE_DIR}/eve.json" ]]; then
+        msg_warn "No Suricata EVE log is available; daily report skipped."
+        return 0
+    fi
+    ids_generate_daily_report 24 >/dev/null
+}
+
 cli_command_catalog() {
     cat <<'EOF'
 adctl|Main control plane|Open the full AD/DC Main Control Plane: maintenance, operations, security, backup and migration.
@@ -7744,6 +8702,7 @@ ad-kerberos|Kerberos security|Kerberos config integrity, encryption readiness, A
 ad-migrate|Domain migration|Assess domain changes, inventory scope and generate client migration packages.
 ad-reset|Domain reset|Destructive local Samba AD/DC decommission/reset with external recovery bundle.
 ad-deps|Dependencies|Audit/install/update the minimal official distribution package set used by the control plane.
+ad-ids|Network IDS|Optional passive Suricata IDS, AD protocol telemetry, daily summaries and evidence export.
 ad-audit|Audit|Run a read-only inventory and security evidence review.
 ad-validate|Validation|Run functional Samba AD/DC DNS, Kerberos, LDAP, SMB, DB and SYSVOL checks.
 ad-status|Status|Show a compact current-state and AD/DC health report.
@@ -7818,6 +8777,7 @@ show_cli_commands() {
     printf '    sudo ad-gpo       %b# Group Policy console%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-samba     %b# Samba/Kerberos security center%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-kerberos  %b# Kerberos security center%b\n' "$C_DIM" "$C_RESET"
+    printf '    sudo ad-ids       %b# passive Suricata IDS / daily security summary%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-validate  %b# full functional validation%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-tools     %b# show this catalog again%b\n' "$C_DIM" "$C_RESET"
     ui_rule
@@ -7863,6 +8823,7 @@ security_hardening_menu() {
         ui_menu_item "7" "Full AD/DC validation" "Run DNS, Kerberos, LDAP, SMB, database and SYSVOL checks"
         ui_menu_item "8" "Repair local resolver" "Replace broken resolved stub with persistent Samba DNS /etc/resolv.conf" "$C_GREEN"
         ui_menu_item "9" "Samba & Kerberos security" "Protocol hardening, crypto readiness and signed domain time" "$C_GREEN"
+        ui_menu_item "10" "Network IDS / Suricata" "Passive network detection and AD protocol telemetry" "$C_GREEN"
         ui_menu_exit
         ui_rule
         local choice
@@ -7877,6 +8838,7 @@ security_hardening_menu() {
             7) set_progress_plan 1; validate_ad; ui_pause ;;
             8) set_progress_plan 1; repair_local_resolver_only; ui_pause ;;
             9) samba_kerberos_security_menu ;;
+            10) ids_menu ;;
             H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
@@ -8111,6 +9073,7 @@ manage_menu() {
         ui_menu_item "17" "Samba & Kerberos security" "LDAP/SMB hardening, KDC crypto, krb5 integrity and signed time" "$C_GREEN"
         ui_menu_item "18" "Domain decommission / reset" "Destroy local AD/DC state and remove assistant-managed configuration" "$C_RED"
         ui_menu_item "19" "Dependencies & packages" "Minimal required packages, repair missing tools and scoped updates" "$C_GREEN"
+        ui_menu_item "20" "Network IDS / Suricata" "Optional passive IDS, AD protocol telemetry and daily security summaries" "$C_GREEN"
         ui_menu_root_exit
         ui_rule
         local choice
@@ -8141,6 +9104,7 @@ manage_menu() {
             17) samba_kerberos_security_menu ;;
             18) domain_reset_menu; (( RESET_COMPLETED )) && return 0 ;;
             19) dependency_menu ;;
+            20) ids_menu ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -8251,6 +9215,8 @@ main() {
         migration) prepare_existing_ad_context; domain_migration_menu; save_config ;;
         reset-domain) prepare_existing_ad_context; domain_reset_menu ;;
         dependencies) detect_samba_role; load_config || true; dependency_menu ;;
+        ids) prepare_existing_ad_context; ids_menu; save_config ;;
+        ids-daily) load_config || true; ids_daily_mode ;;
         install-cli) install_cli_commands ;;
         cli-info) show_cli_commands ;;
         interactive) interactive_mode ;;
