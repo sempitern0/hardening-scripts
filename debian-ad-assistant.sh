@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 5.2.1-ids-local-rules
+# Version 5.2.2-trusted-networks
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -45,7 +45,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.2.1-ids-local-rules"
+SCRIPT_VERSION="5.2.2-trusted-networks"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -8558,25 +8558,95 @@ ids_select_interface() {
     printf '%s' "$iface"
 }
 
-ids_default_home_net() {
-    local value=""
+ids_normalize_home_nets() {
+    local raw="${1:-}" normalized=""
+    [[ -n "$raw" ]] || return 1
+
+    normalized="$(IDS_RAW_HOME_NET="$raw" python3 - <<'PY'
+import ipaddress
+import os
+import re
+import sys
+
+raw = os.environ.get("IDS_RAW_HOME_NET", "").strip()
+if raw.startswith("[") and raw.endswith("]"):
+    raw = raw[1:-1]
+parts = [p for p in re.split(r"[\s,;]+", raw) if p]
+if not parts:
+    raise SystemExit(1)
+
+seen = set()
+out = []
+for part in parts:
+    try:
+        net = ipaddress.ip_network(part, strict=False)
+    except ValueError:
+        print(f"invalid network: {part}", file=sys.stderr)
+        raise SystemExit(1)
+    value = str(net)
+    if value not in seen:
+        seen.add(value)
+        out.append(value)
+
+print(",".join(out))
+PY
+)" || return 1
+    [[ -n "$normalized" ]] || return 1
+    printf '%s' "$normalized"
+}
+
+ids_home_net_count() {
+    local normalized=""
+    normalized="$(ids_normalize_home_nets "${1:-}" 2>/dev/null || true)"
+    [[ -n "$normalized" ]] || { printf '0'; return 0; }
+    awk -F',' '{print NF}' <<<"$normalized"
+}
+
+ids_print_home_nets() {
+    local normalized="" item
+    normalized="$(ids_normalize_home_nets "${1:-}" 2>/dev/null || true)"
+    [[ -n "$normalized" ]] || { printf '  (none)\n'; return 0; }
+    while IFS= read -r item; do
+        [[ -n "$item" ]] && printf '  - %s\n' "$item"
+    done < <(tr ',' '\n' <<<"$normalized")
+}
+
+ids_default_home_nets() {
+    local raw="" value=""
+
     if [[ -n "${AD_CLIENT_CIDR:-}" ]] && is_valid_cidr "$AD_CLIENT_CIDR"; then
-        printf '%s' "$AD_CLIENT_CIDR"
-        return 0
+        raw+="${AD_CLIENT_CIDR},"
     fi
 
     if [[ -n "${AD_CIDR:-}" ]]; then
         value="$(cidr_from_interface "$AD_CIDR")"
-        [[ -n "$value" ]] && is_valid_cidr "$value" && { printf '%s' "$value"; return 0; }
+        [[ -n "$value" ]] && is_valid_cidr "$value" && raw+="${value},"
     fi
 
     if [[ -n "${AD_IFACE:-}" ]]; then
         value="$(ip -4 -o addr show dev "$AD_IFACE" scope global 2>/dev/null | awk 'NR==1{print $4}')"
         [[ -n "$value" ]] && value="$(cidr_from_interface "$value")"
-        [[ -n "$value" ]] && is_valid_cidr "$value" && { printf '%s' "$value"; return 0; }
+        [[ -n "$value" ]] && is_valid_cidr "$value" && raw+="${value},"
     fi
 
-    return 1
+    raw="${raw%,}"
+    [[ -n "$raw" ]] || return 1
+    ids_normalize_home_nets "$raw"
+}
+
+# Backward-compatible helper retained for existing call sites and older state.
+ids_default_home_net() {
+    ids_default_home_nets
+}
+
+ids_prompt_home_nets() {
+    local default_value="${1:-}" raw="" normalized=""
+    raw="$(ask 'Trusted AD client networks / HOME_NET (comma-separated CIDRs)' "$default_value")"
+    if ! normalized="$(ids_normalize_home_nets "$raw")"; then
+        msg_warn "Invalid trusted network list. Use explicit CIDRs separated by commas, spaces or semicolons."
+        return 1
+    fi
+    printf '%s' "$normalized"
 }
 
 
@@ -8598,13 +8668,14 @@ ids_write_local_rules() {
     cat >"$tmp" <<'EOF'
 # Managed by DEBIAN AD Assistant
 # Passive AD/DC contextual detections. Alert-only; ET/Open remains the general ruleset.
-alert tcp $EXTERNAL_NET any -> $HOME_NET [88,389,464,636,3268,3269] (msg:"DAD IDS External access to AD auth-directory TCP surface"; flags:S; flow:stateless; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901001; rev:1;)
-alert udp $EXTERNAL_NET any -> $HOME_NET [88,389,464] (msg:"DAD IDS External access to AD auth-directory UDP surface"; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901002; rev:1;)
-alert tcp $EXTERNAL_NET any -> $HOME_NET [135,139,445] (msg:"DAD IDS External access to AD SMB-RPC TCP surface"; flags:S; flow:stateless; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901003; rev:1;)
-alert udp $EXTERNAL_NET any -> $HOME_NET [137,138] (msg:"DAD IDS External access to NetBIOS UDP surface"; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901004; rev:1;)
-alert tcp $EXTERNAL_NET any -> $HOME_NET 53 (msg:"DAD IDS External access to AD DNS TCP surface"; flags:S; flow:stateless; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901005; rev:1;)
-alert udp $EXTERNAL_NET any -> $HOME_NET 53 (msg:"DAD IDS External access to AD DNS UDP surface"; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901006; rev:1;)
-alert udp $EXTERNAL_NET any -> $HOME_NET 123 (msg:"DAD IDS External access to AD-DC NTP surface"; threshold:type limit,track by_src,count 1,seconds 300; priority:3; sid:9901007; rev:1;)
+# Exposure rules use !$HOME_NET so every trusted LAN/VLAN/VPN CIDR is excluded explicitly.
+alert tcp !$HOME_NET any -> $HOME_NET [88,389,464,636,3268,3269] (msg:"DAD IDS External access to AD auth-directory TCP surface"; flags:S; flow:stateless; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901001; rev:2;)
+alert udp !$HOME_NET any -> $HOME_NET [88,389,464] (msg:"DAD IDS External access to AD auth-directory UDP surface"; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901002; rev:2;)
+alert tcp !$HOME_NET any -> $HOME_NET [135,139,445] (msg:"DAD IDS External access to AD SMB-RPC TCP surface"; flags:S; flow:stateless; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901003; rev:2;)
+alert udp !$HOME_NET any -> $HOME_NET [137,138] (msg:"DAD IDS External access to NetBIOS UDP surface"; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901004; rev:2;)
+alert tcp !$HOME_NET any -> $HOME_NET 53 (msg:"DAD IDS External access to AD DNS TCP surface"; flags:S; flow:stateless; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901005; rev:2;)
+alert udp !$HOME_NET any -> $HOME_NET 53 (msg:"DAD IDS External access to AD DNS UDP surface"; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901006; rev:2;)
+alert udp !$HOME_NET any -> $HOME_NET 123 (msg:"DAD IDS External access to AD-DC NTP surface"; threshold:type limit,track by_src,count 1,seconds 300; priority:3; sid:9901007; rev:2;)
 alert tcp any any -> $HOME_NET 445 (msg:"DAD IDS High-rate SMB connection attempts toward AD-DC"; flags:S; flow:stateless; detection_filter:track by_src,count 40,seconds 10; priority:2; sid:9901008; rev:1;)
 EOF
     chmod 0644 "$tmp"
@@ -8617,16 +8688,23 @@ EOF
 
 ids_ensure_local_rules() {
     local rules="${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}"
-    [[ -s "$rules" ]] && return 0
+    if [[ -s "$rules" ]] && ! ids_local_rules_managed; then
+        msg_warn "Existing Suricata local rules are not assistant-managed; leaving them untouched: $rules"
+        return 0
+    fi
+    # Managed files are reconciled on every repair so rule revisions migrate safely.
     ids_write_local_rules
 }
 
 ids_write_managed_state() {
-    local iface="$1" home_net="$2"
+    local iface="$1" home_nets="$2" normalized=""
+    normalized="$(ids_normalize_home_nets "$home_nets")" || return 1
     ids_prepare_state
     cat >"$IDS_MANAGED_STATE" <<EOF
 IDS_INTERFACE=$(printf '%q' "$iface")
-IDS_HOME_NET=$(printf '%q' "$home_net")
+IDS_TRUSTED_CIDRS=$(printf '%q' "$normalized")
+# Legacy compatibility for v5.2.0/v5.2.1 and external inspection.
+IDS_HOME_NET=$(printf '%q' "$normalized")
 UPDATED_AT=$(printf '%q' "$(date -Is)")
 EOF
     chmod 0600 "$IDS_MANAGED_STATE"
@@ -8634,13 +8712,23 @@ EOF
 
 ids_load_managed_state() {
     IDS_INTERFACE=""
+    IDS_TRUSTED_CIDRS=""
     IDS_HOME_NET=""
     if [[ -r "$IDS_MANAGED_STATE" ]]; then
         # shellcheck disable=SC1090
         . "$IDS_MANAGED_STATE"
     fi
+
     [[ -n "${IDS_INTERFACE:-}" ]] || IDS_INTERFACE="${AD_IFACE:-}"
-    [[ -n "${IDS_HOME_NET:-}" ]] || IDS_HOME_NET="$(ids_default_home_net 2>/dev/null || true)"
+
+    local raw_scope="${IDS_TRUSTED_CIDRS:-${IDS_HOME_NET:-}}" normalized=""
+    if [[ -n "$raw_scope" ]]; then
+        normalized="$(ids_normalize_home_nets "$raw_scope" 2>/dev/null || true)"
+    fi
+    [[ -n "$normalized" ]] || normalized="$(ids_default_home_nets 2>/dev/null || true)"
+
+    IDS_TRUSTED_CIDRS="$normalized"
+    IDS_HOME_NET="$normalized"
 }
 
 ids_legacy_overlay_detected() {
@@ -8703,7 +8791,12 @@ ids_vendor_execstart() {
 
 ids_install_systemd_dropin() {
     local iface="$1" home_net="$2"
-    local vendor_exec="" config=""
+    local vendor_exec="" config="" normalized_home_net=""
+    normalized_home_net="$(ids_normalize_home_nets "$home_net")" || {
+        msg_warn "Refusing invalid Suricata HOME_NET scope: $home_net"
+        return 1
+    }
+    home_net="$normalized_home_net"
     vendor_exec="$(ids_vendor_execstart 2>/dev/null || true)"
     config="$(ids_suricata_config 2>/dev/null || true)"
 
@@ -8753,6 +8846,15 @@ ids_dropin_has_local_rules() {
     grep -Fq " -s ${rules}" "$IDS_DROPIN"
 }
 
+
+ids_dropin_has_home_nets() {
+    local home_nets="" expected=""
+    home_nets="$(ids_normalize_home_nets "${1:-}" 2>/dev/null || true)"
+    [[ -n "$home_nets" && -r "$IDS_DROPIN" ]] || return 1
+    expected="--set vars.address-groups.HOME_NET=[${home_nets}]"
+    grep -Fq -- "$expected" "$IDS_DROPIN"
+}
+
 ids_validate_config() {
     local label="${1:-current}" bin="" config="" evidence="" iface="" home_net=""
     bin="$(ids_suricata_binary 2>/dev/null || true)"
@@ -8760,7 +8862,7 @@ ids_validate_config() {
     evidence="${RUN_ROOT}/suricata-test-${label}.txt"
     ids_load_managed_state
     iface="${IDS_INTERFACE:-${AD_IFACE:-}}"
-    home_net="${IDS_HOME_NET:-$(ids_default_home_net 2>/dev/null || true)}"
+    home_net="${IDS_TRUSTED_CIDRS:-${IDS_HOME_NET:-$(ids_default_home_nets 2>/dev/null || true)}}"
 
     [[ -n "$bin" && -n "$config" && -f "$IDS_CONFIG" ]] || return 1
     [[ -n "$home_net" ]] || {
@@ -8848,20 +8950,20 @@ ids_configure_passive() {
 
     ids_install_optional || return 1
     ids_prepare_state
+    ids_load_managed_state
 
-    local iface="" home_default="" home_net=""
+    local iface="" home_default="" home_nets=""
     iface="$(ids_select_interface)" || return 1
-    home_default="$(ids_default_home_net 2>/dev/null || true)"
+    home_default="${IDS_TRUSTED_CIDRS:-${IDS_HOME_NET:-}}"
+    [[ -n "$home_default" ]] || home_default="$(ids_default_home_nets 2>/dev/null || true)"
     [[ -n "$home_default" ]] || home_default="192.168.1.0/24"
-    home_net="$(ask 'HOME_NET / monitored AD network (CIDR)' "$home_default")"
-    is_valid_cidr "$home_net" || {
-        msg_warn "Invalid HOME_NET CIDR: $home_net"
-        return 1
-    }
+    home_nets="$(ids_prompt_home_nets "$home_default")" || return 1
 
     printf '\n%bPassive IDS plan%b\n' "$C_CYAN" "$C_RESET"
     printf '  Capture interface : %s\n' "$iface"
-    printf '  HOME_NET          : %s\n' "$home_net"
+    printf '  Trusted networks  : %s CIDR(s)\n' "$(ids_home_net_count "$home_nets")"
+    ids_print_home_nets "$home_nets"
+    printf '  HOME_NET value    : [%s]\n' "$home_nets"
     printf '  Capture mode      : AF_PACKET / passive\n'
     printf '  EVE telemetry     : alert, stats, DNS, KRB5, LDAP, SMB, TLS, SSH\n'
     printf '  Inline blocking   : disabled\n'
@@ -8870,9 +8972,9 @@ ids_configure_passive() {
 
     confirm "Apply this passive IDS configuration?" Y || return 0
 
-    ids_write_managed_config "$iface" "$home_net"
+    ids_write_managed_config "$iface" "$home_nets"
     ids_ensure_local_rules || return 1
-    ids_install_systemd_dropin "$iface" "$home_net" || return 1
+    ids_install_systemd_dropin "$iface" "$home_nets" || return 1
 
     if ids_suricata_update_binary >/dev/null 2>&1; then
         ids_update_rules || {
@@ -8897,11 +8999,78 @@ ids_configure_passive() {
     sleep 2
     if systemctl is-active --quiet suricata.service; then
         result PASS "Suricata service" "active on $iface" "passive IDS"
-        change APPLIED "Configured passive Suricata IDS interface=$iface HOME_NET=$home_net"
+        change APPLIED "Configured passive Suricata IDS interface=$iface trusted_cidrs=$home_nets"
     else
         result FAIL "Suricata service" "not active" "active"
         return 1
     fi
+}
+
+ids_manage_trusted_networks() {
+    section "SURICATA TRUSTED NETWORK SCOPE"
+    ids_prepare_state
+    ids_load_managed_state
+
+    [[ -f "$IDS_CONFIG" ]] || {
+        msg_warn "Passive IDS is not configured yet. Use 'Configure passive IDS' first."
+        return 1
+    }
+
+    local iface="${IDS_INTERFACE:-${AD_IFACE:-}}"
+    local current="${IDS_TRUSTED_CIDRS:-${IDS_HOME_NET:-}}" requested="" old_scope=""
+    [[ -n "$iface" ]] || {
+        msg_warn "Managed capture interface is unavailable. Reconfigure passive IDS first."
+        return 1
+    }
+    [[ -n "$current" ]] || current="$(ids_default_home_nets 2>/dev/null || true)"
+    [[ -n "$current" ]] || {
+        msg_warn "No current HOME_NET scope can be derived."
+        return 1
+    }
+
+    printf 'Current trusted HOME_NET scope (%s CIDR(s)):\n' "$(ids_home_net_count "$current")"
+    ids_print_home_nets "$current"
+    printf '\nTraffic from these networks is treated as internal/trusted by rules using $HOME_NET/$EXTERNAL_NET.\n'
+    printf 'Use this for legitimate AD client LANs, management VLANs and VPN client pools that access the DC.\n\n'
+
+    requested="$(ids_prompt_home_nets "$current")" || return 1
+    if [[ "$requested" == "$current" ]]; then
+        result INFO "Trusted IDS networks" "unchanged: [$current]" "no restart required"
+        return 0
+    fi
+
+    printf '\nProposed trusted scope (%s CIDR(s)):\n' "$(ids_home_net_count "$requested")"
+    ids_print_home_nets "$requested"
+    confirm "Apply this HOME_NET scope and validate/restart Suricata if active?" Y || return 0
+
+    old_scope="$current"
+    [[ -f "$IDS_MANAGED_STATE" ]] && backup_file "$IDS_MANAGED_STATE"
+    ids_write_managed_state "$iface" "$requested" || return 1
+    ids_install_systemd_dropin "$iface" "$requested" || {
+        ids_write_managed_state "$iface" "$old_scope" || true
+        return 1
+    }
+
+    if ! ids_validate_config "trusted-network-scope"; then
+        msg_warn "New trusted scope failed Suricata validation; rolling back."
+        ids_write_managed_state "$iface" "$old_scope" || true
+        ids_install_systemd_dropin "$iface" "$old_scope" || true
+        ids_validate_config "trusted-network-rollback" || true
+        return 1
+    fi
+
+    if systemctl is-active --quiet suricata.service; then
+        if ! systemctl restart suricata.service; then
+            msg_warn "Suricata restart failed with the new scope; rolling back."
+            ids_write_managed_state "$iface" "$old_scope" || true
+            ids_install_systemd_dropin "$iface" "$old_scope" || true
+            systemctl restart suricata.service >/dev/null 2>&1 || true
+            return 1
+        fi
+    fi
+
+    change APPLIED "Updated Suricata trusted HOME_NET scope old=[$old_scope] new=[$requested]"
+    result PASS "Trusted IDS networks" "[$requested]" "validated"
 }
 
 
@@ -8910,9 +9079,14 @@ ids_auto_repair_managed_install() {
     ids_load_managed_state
     ids_ensure_local_rules || msg_warn "Assistant local IDS rules unavailable; external rules remain usable."
 
-    local iface="${IDS_INTERFACE:-${AD_IFACE:-}}" home_net="${IDS_HOME_NET:-}" restart_needed=0
-    [[ -n "$home_net" ]] || home_net="$(ids_default_home_net 2>/dev/null || true)"
+    local iface="${IDS_INTERFACE:-${AD_IFACE:-}}" home_net="${IDS_TRUSTED_CIDRS:-${IDS_HOME_NET:-}}" restart_needed=0
+    [[ -n "$home_net" ]] || home_net="$(ids_default_home_nets 2>/dev/null || true)"
     [[ -n "$iface" && -n "$home_net" ]] || return 1
+
+    if [[ -r "$IDS_MANAGED_STATE" ]] && ! grep -q '^IDS_TRUSTED_CIDRS=' "$IDS_MANAGED_STATE"; then
+        ids_write_managed_state "$iface" "$home_net" || return 1
+        change APPLIED "Migrated legacy IDS_HOME_NET state to multi-CIDR IDS_TRUSTED_CIDRS=[$home_net]"
+    fi
 
     if ids_legacy_overlay_detected; then
         msg_warn "Legacy assistant Suricata overlay detected; migrating away from top-level vars/rule-files overrides."
@@ -8927,6 +9101,13 @@ ids_auto_repair_managed_install() {
         ids_install_systemd_dropin "$iface" "$home_net" || return 1
         restart_needed=1
         change APPLIED "Added assistant local AD/DC rules to Suricata service command"
+    fi
+
+    if ! ids_dropin_has_home_nets "$home_net"; then
+        msg_warn "Managed Suricata drop-in HOME_NET differs from the trusted CIDR state; reconciling it."
+        ids_install_systemd_dropin "$iface" "$home_net" || return 1
+        restart_needed=1
+        change APPLIED "Reconciled Suricata trusted HOME_NET scope to [$home_net]"
     fi
 
     local rules=""
@@ -9342,6 +9523,14 @@ ids_sensor_health() {
         ids_validate_config health || true
     fi
 
+    ids_load_managed_state
+    local trusted_scope="${IDS_TRUSTED_CIDRS:-${IDS_HOME_NET:-}}"
+    if [[ -n "$trusted_scope" ]]; then
+        result PASS "Trusted HOME_NET scope" "[$trusted_scope] / $(ids_home_net_count "$trusted_scope") CIDR(s)" "managed state"
+    else
+        result WARN "Trusted HOME_NET scope" "unavailable" "configure trusted networks"
+    fi
+
     if [[ -s "$local_rules" ]]; then
         local local_count=""
         local_count="$(grep -hcE '^[[:space:]]*(alert|drop|reject)[[:space:]]' "$local_rules" 2>/dev/null || true)"
@@ -9379,9 +9568,14 @@ ids_readiness() {
     section "NETWORK IDS READINESS"
     discover_network_topology
 
+    ids_load_managed_state
+    local readiness_scope="${IDS_TRUSTED_CIDRS:-${IDS_HOME_NET:-}}"
+    [[ -n "$readiness_scope" ]] || readiness_scope="$(ids_default_home_nets 2>/dev/null || true)"
+
     printf '  %-28s %s\n' "Deployment" "Passive IDS on this server"
     printf '  %-28s %s\n' "Recommended interface" "${AD_IFACE:-unknown}"
-    printf '  %-28s %s\n' "Recommended HOME_NET" "$(ids_default_home_net 2>/dev/null || printf 'manual')"
+    printf '  %-28s %s\n' "Trusted HOME_NET" "${readiness_scope:-manual}"
+    printf '  %-28s %s\n' "Trusted CIDR count" "$(ids_home_net_count "${readiness_scope:-}")"
     printf '  %-28s %s\n' "Suricata package" "$(package_installed_version suricata)"
     printf '  %-28s %s\n' "suricata-update" "$(package_installed_version suricata-update)"
     printf '  %-28s %s\n' "Service" "$(safe_systemctl_state suricata.service)"
@@ -9405,13 +9599,16 @@ ids_readiness() {
 ids_generate_daily_report() {
     local hours="${1:-24}"
     ids_prepare_state
+    ids_load_managed_state
     local report="${IDS_REPORT_DIR}/ids-report-$(date +%Y%m%d-%H%M%S).txt"
+    local trusted_scope="${IDS_TRUSTED_CIDRS:-${IDS_HOME_NET:-unknown}}"
 
     {
         printf 'DEBIAN AD ASSISTANT — SURICATA DAILY SECURITY REPORT\n'
         printf 'Generated: %s\n' "$(date -Is)"
         printf 'Host: %s\n' "$(hostname -f 2>/dev/null || hostname)"
-        printf 'Window: %s hours\n\n' "$hours"
+        printf 'Window: %s hours\n' "$hours"
+        printf 'Trusted HOME_NET: [%s]\n\n' "$trusted_scope"
         ids_summary "$hours"
         printf '\n\n'
         ids_ad_intelligence "$hours"
@@ -9516,6 +9713,7 @@ ids_export_evidence() {
     mkdir -p "$bundle"
 
     [[ -f "$IDS_CONFIG" ]] && cp -a "$IDS_CONFIG" "$bundle/"
+    [[ -f "$IDS_MANAGED_STATE" ]] && cp -a "$IDS_MANAGED_STATE" "$bundle/managed-state.env"
     [[ -f "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" ]] && cp -a "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" "$bundle/"
     systemctl status suricata.service --no-pager --full >"$bundle/service-status.txt" 2>&1 || true
     journalctl -u suricata.service -b --no-pager -n 200 >"$bundle/journal.txt" 2>&1 || true
@@ -9557,7 +9755,7 @@ ids_menu() {
         (( MENU_MAIN_REQUESTED )) && return 0
 
         ui_menu_screen "NETWORK IDS / SURICATA" \
-            "Optional passive network detection, AD protocol telemetry and local daily reporting"
+            "Optional passive network detection, multi-CIDR trusted scope, AD protocol telemetry and local daily reporting"
         ui_menu_item "1" "IDS readiness assessment" "Packages, capture scope, interface and passive/inline posture"
         ui_menu_item "2" "Install / repair Suricata" "Distribution packages only: suricata + suricata-update" "$C_GREEN"
         ui_menu_item "3" "Configure passive IDS" "AF_PACKET on a selected interface; no packet blocking" "$C_GREEN"
@@ -9569,6 +9767,7 @@ ids_menu() {
         ui_menu_item "9" "Daily local reports" "Generate/view reports or enable a systemd timer"
         ui_menu_item "10" "Export evidence" "Config/health/summary bundle without raw EVE payload"
         ui_menu_item "11" "Disable IDS integration" "Remove assistant config/timer; retain packages" "$C_RED"
+        ui_menu_item "12" "Trusted network scope" "Manage multiple legitimate HOME_NET CIDRs (LAN/VLAN/VPN)" "$C_CYAN"
         ui_menu_exit
         ui_rule
 
@@ -9614,6 +9813,7 @@ ids_menu() {
                 ;;
             10) ids_export_evidence; ui_pause ;;
             11) ids_disable_integration; ui_pause ;;
+            12) ids_manage_trusted_networks; ui_pause ;;
             H|h) MENU_MAIN_REQUESTED=1; return 0 ;;
             0) return 0 ;;
             *) msg_warn "Invalid IDS operation."; ui_pause ;;
@@ -10442,6 +10642,11 @@ CURRENT IDENTITY
   [ ] Review Fail2ban SSH jail.
   [ ] Secure recovery credentials for built-in Administrator before disabling it.
   [ ] Keep verified domain backups off-host.
+
+[IDS / SURICATA]
+  [ ] If Suricata is enabled, review Trusted network scope and include every legitimate AD client LAN/VLAN/VPN CIDR.
+  [ ] Confirm Sensor health shows the expected HOME_NET CIDR count and a valid configuration test.
+  [ ] Keep assistant local AD/DC rules alert-only unless an explicit IPS design is reviewed separately.
 
 [EVENTS / AUDIT]
   [ ] sudo ${0} --events -> Unified timeline -> Last 24 hours
