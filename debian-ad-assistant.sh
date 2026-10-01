@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 5.2.2-trusted-networks
+# Version 5.2.3-operator-observability
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -45,7 +45,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.2.2-trusted-networks"
+SCRIPT_VERSION="5.2.3-operator-observability"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -8762,6 +8762,7 @@ outputs:
       community-id: true
       types:
         - alert
+        - flow
         - stats:
             totals: yes
             threads: no
@@ -8774,6 +8775,12 @@ outputs:
 EOF
     chmod 0644 "$IDS_CONFIG"
 }
+
+ids_overlay_has_flow_telemetry() {
+    [[ -r "$IDS_CONFIG" ]] || return 1
+    grep -Eq '^[[:space:]]*-[[:space:]]*flow([[:space:]]|$)' "$IDS_CONFIG"
+}
+
 
 ids_vendor_execstart() {
     local fragment=""
@@ -9096,6 +9103,13 @@ ids_auto_repair_managed_install() {
         change APPLIED "Migrated Suricata managed overlay to vendor-vars-preserving format"
     fi
 
+    if ! ids_overlay_has_flow_telemetry; then
+        msg_warn "Managed Suricata overlay lacks EVE flow telemetry; enabling operator connection visibility."
+        ids_write_managed_config "$iface" "$home_net" || return 1
+        restart_needed=1
+        change APPLIED "Enabled Suricata EVE flow telemetry for operator activity views"
+    fi
+
     if [[ -s "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" ]] && ! ids_dropin_has_local_rules; then
         msg_warn "Managed Suricata drop-in does not yet load assistant local AD/DC rules; upgrading it."
         ids_install_systemd_dropin "$iface" "$home_net" || return 1
@@ -9131,14 +9145,22 @@ ids_auto_repair_managed_install() {
 
 ids_eve_parser() {
     local hours="${1:-24}" view="${2:-summary}"
-    IDS_HOURS="$hours" IDS_VIEW="$view" IDS_EVE_GLOB="$IDS_EVE_GLOB" python3 - <<'PY'
-import os, sys, glob, json, gzip
-from collections import Counter, deque
+    local dc_ip="${DC_IP:-${AD_IP:-}}"
+    local trusted=""
+    ids_load_managed_state >/dev/null 2>&1 || true
+    trusted="${IDS_TRUSTED_CIDRS:-${IDS_HOME_NET:-}}"
+
+    IDS_HOURS="$hours" IDS_VIEW="$view" IDS_EVE_GLOB="$IDS_EVE_GLOB" \
+        IDS_DC_IP="$dc_ip" IDS_TRUSTED_CIDRS="$trusted" python3 - <<'PY'
+import os, sys, glob, json, gzip, ipaddress
+from collections import Counter, deque, defaultdict
 from datetime import datetime, timezone, timedelta
 
 hours = float(os.environ.get("IDS_HOURS", "24"))
 view = os.environ.get("IDS_VIEW", "summary")
 pattern = os.environ.get("IDS_EVE_GLOB", "/var/log/suricata/eve.json*")
+dc_ip = os.environ.get("IDS_DC_IP", "").strip()
+trusted_raw = os.environ.get("IDS_TRUSTED_CIDRS", "").strip()
 cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
 def open_any(path):
@@ -9158,6 +9180,12 @@ def parse_ts(value):
     except Exception:
         return None
 
+def fmt_ts(value):
+    dt = parse_ts(value)
+    if not dt:
+        return str(value or "-")[:19]
+    return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
 def inc(counter, key):
     if key not in (None, ""):
         counter[str(key)] += 1
@@ -9176,37 +9204,133 @@ def dns_names(d):
                 names.append(item.get("rrname"))
     return [str(x) for x in names if x]
 
+def trusted_networks(raw):
+    out = []
+    for item in raw.replace("[", "").replace("]", "").replace(";", ",").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            out.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            pass
+    return out
+
+trusted_nets = trusted_networks(trusted_raw)
+
+def is_trusted(ip):
+    try:
+        addr = ipaddress.ip_address(str(ip))
+    except ValueError:
+        return False
+    return any(addr.version == net.version and addr in net for net in trusted_nets)
+
+SERVICE_PORTS = {
+    22: "SSH", 53: "DNS", 88: "Kerberos", 123: "NTP", 135: "RPC",
+    137: "NetBIOS-NS", 138: "NetBIOS-DGM", 139: "NetBIOS-SSN",
+    389: "LDAP", 445: "SMB", 464: "Kerberos password", 636: "LDAPS",
+    3268: "Global Catalog", 3269: "Global Catalog TLS", 3389: "RDP",
+}
+
+def service_name(proto, port, app_proto=""):
+    proto = str(proto or "").upper()
+    app = str(app_proto or "").strip()
+    try:
+        p = int(port)
+    except Exception:
+        p = 0
+    if proto in {"ICMP", "ICMPV6"}:
+        return "ICMP / ping"
+    if p in SERVICE_PORTS:
+        return SERVICE_PORTS[p]
+    if app and app not in {"failed", "unknown"}:
+        return app.upper()
+    return f"{proto}/{p}" if p else (proto or "unknown")
+
+def alert_level(value):
+    try:
+        sev = int(value)
+    except Exception:
+        sev = 3
+    if sev == 1:
+        return "HIGH"
+    if sev == 2:
+        return "MEDIUM"
+    return "LOW"
+
+def explain_alert(signature, category=""):
+    low = f"{signature or ''} {category or ''}".lower()
+    if "dad ids external access" in low:
+        return "A source outside the configured trusted HOME_NET contacted an AD/DC service. Confirm whether the source should be trusted or is probing the controller."
+    if "high-rate smb" in low:
+        return "One source opened many SMB connection attempts in a short interval. This can be scanning, a broken client, or automated discovery."
+    if "applayer" in low or "app-layer" in low or "protocol-command-decode" in low:
+        return "Suricata could not cleanly parse application-layer traffic. This is not automatically an attack; check the endpoints, protocol and recurrence."
+    if "scan" in low or "nmap" in low or "probe" in low:
+        return "The signature is consistent with service discovery or scanning. Validate whether the source is an approved administration/scanning host."
+    if "malware" in low or "trojan" in low or "command and control" in low:
+        return "The signature is associated with malware or command-and-control patterns and deserves prompt endpoint/network investigation."
+    if "policy" in low:
+        return "Policy-relevant traffic was observed. It may be legitimate, so review the signature together with source, destination and application context."
+    return "A Suricata signature matched this traffic. Treat the signature as evidence to investigate, not as proof by itself."
+
+def alert_action(signature, trusted):
+    low = str(signature or "").lower()
+    if "external access" in low and trusted:
+        return "Source is inside HOME_NET; verify the trusted-scope configuration because this rule normally excludes trusted networks."
+    if "external access" in low:
+        return "Identify the source, decide whether it belongs in Trusted network scope, and review the destination service."
+    if "high-rate smb" in low:
+        return "Check the source host, SMB client activity and whether a scanner/inventory job was running."
+    return "Correlate with Operator overview, Event Center and endpoint logs before escalating."
+
 files = [p for p in glob.glob(pattern) if os.path.isfile(p)]
 files.sort(key=lambda p: os.path.getmtime(p))
 
-events = Counter()
-alert_sigs = Counter()
-alert_src = Counter()
-alert_sev = Counter()
-dns_queries = 0
-dns_nxdomain = 0
-dns_query_names = Counter()
-dns_sources = Counter()
-krb_encryption = Counter()
-krb_msg_types = Counter()
-krb_sources = Counter()
-krb_clients = Counter()
-krb_errors = Counter()
-krb_error_sources = Counter()
-krb_weak = []
-recent_krb_errors = deque(maxlen=80)
-ldap_operations = Counter()
-ldap_sources = Counter()
-ldap_result_codes = Counter()
-recent_ldap_failures = deque(maxlen=80)
-smb_dialects = Counter()
-smb_ntlm = Counter()
-smb_ntlm_hosts = Counter()
-recent_alerts = deque(maxlen=80)
-latest_stats = None
-parsed = 0
-bad = 0
-latest_ts = None
+events = Counter(); alert_sigs = Counter(); alert_src = Counter(); alert_sev = Counter()
+dns_queries = 0; dns_nxdomain = 0; dns_query_names = Counter(); dns_sources = Counter()
+krb_encryption = Counter(); krb_msg_types = Counter(); krb_sources = Counter(); krb_clients = Counter()
+krb_errors = Counter(); krb_error_sources = Counter(); krb_weak = []; recent_krb_errors = deque(maxlen=80)
+ldap_operations = Counter(); ldap_sources = Counter(); ldap_result_codes = Counter(); recent_ldap_failures = deque(maxlen=80)
+smb_dialects = Counter(); smb_ntlm = Counter(); smb_ntlm_hosts = Counter(); recent_alerts = deque(maxlen=100)
+latest_stats = None; parsed = 0; bad = 0; latest_ts = None
+contact_sources = Counter(); contact_services = Counter(); contact_protocols = Counter()
+source_services = defaultdict(Counter); recent_activity = deque(maxlen=120)
+fallback_sources = Counter(); fallback_services = Counter(); fallback_protocols = Counter()
+fallback_source_services = defaultdict(Counter); fallback_activity = deque(maxlen=120)
+flow_count = 0; icmp_flows = 0
+
+def record_contact(ts_value, src, dst, proto, dst_port=None, app_proto="", detail=""):
+    if not src or src == "-":
+        return
+    if dc_ip and dst and str(dst) != dc_ip:
+        return
+    service = service_name(proto, dst_port, app_proto)
+    contact_sources[str(src)] += 1
+    contact_services[service] += 1
+    contact_protocols[str(proto or app_proto or "unknown").upper()] += 1
+    source_services[str(src)][service] += 1
+    recent_activity.append({
+        "ts": ts_value or "", "src": str(src), "dst": str(dst or dc_ip or "-"),
+        "proto": str(proto or "-"), "port": dst_port if dst_port not in (None, "") else "-",
+        "service": service, "detail": str(detail or ""),
+    })
+
+def record_fallback_contact(ts_value, src, dst, proto, dst_port=None, app_proto="", detail=""):
+    if not src or src == "-":
+        return
+    if dc_ip and dst and str(dst) != dc_ip:
+        return
+    service = service_name(proto, dst_port, app_proto)
+    fallback_sources[str(src)] += 1
+    fallback_services[service] += 1
+    fallback_protocols[str(proto or app_proto or "unknown").upper()] += 1
+    fallback_source_services[str(src)][service] += 1
+    fallback_activity.append({
+        "ts": ts_value or "", "src": str(src), "dst": str(dst or dc_ip or "-"),
+        "proto": str(proto or "-"), "port": dst_port if dst_port not in (None, "") else "-",
+        "service": service, "detail": str(detail or ""),
+    })
 
 for path in files:
     try:
@@ -9234,225 +9358,232 @@ for path in files:
 
             if et == "alert":
                 a = ev.get("alert") or {}
-                inc(alert_sigs, a.get("signature"))
-                inc(alert_src, ev.get("src_ip"))
-                inc(alert_sev, a.get("severity"))
-                recent_alerts.append((ev.get("timestamp",""), ev.get("src_ip","-"), ev.get("dest_ip","-"),
-                                      a.get("severity","-"), a.get("signature","-")))
+                inc(alert_sigs, a.get("signature")); inc(alert_src, ev.get("src_ip")); inc(alert_sev, a.get("severity"))
+                recent_alerts.append({
+                    "ts": ev.get("timestamp", ""), "src": ev.get("src_ip", "-"), "src_port": ev.get("src_port", "-"),
+                    "dst": ev.get("dest_ip", "-"), "dst_port": ev.get("dest_port", "-"), "proto": ev.get("proto", "-"),
+                    "app": ev.get("app_proto", ""), "severity": a.get("severity", 3),
+                    "signature": a.get("signature", "Suricata alert"), "category": a.get("category", ""),
+                })
+
+            if et == "flow":
+                flow_count += 1
+                proto = ev.get("proto", "")
+                if str(proto).upper() in {"ICMP", "ICMPV6"}:
+                    icmp_flows += 1
+                flow = ev.get("flow") or {}
+                record_contact(ev.get("timestamp", ""), ev.get("src_ip", "-"), ev.get("dest_ip", "-"),
+                               proto, ev.get("dest_port"), ev.get("app_proto", ""), flow.get("state") or flow.get("reason") or "flow")
 
             if et == "dns":
                 dns_queries += 1
-                d = ev.get("dns") or {}
-                inc(dns_sources, ev.get("src_ip"))
-                for name in dns_names(d):
-                    inc(dns_query_names, name)
+                d = ev.get("dns") or {}; inc(dns_sources, ev.get("src_ip"))
+                for name in dns_names(d): inc(dns_query_names, name)
                 rcode = str(d.get("rcode_name") or d.get("rcode") or "").upper()
-                if "NXDOMAIN" in rcode or rcode == "3":
-                    dns_nxdomain += 1
+                if "NXDOMAIN" in rcode or rcode == "3": dns_nxdomain += 1
+                record_fallback_contact(ev.get("timestamp", ""), ev.get("src_ip", "-"), ev.get("dest_ip", "-"), ev.get("proto", "UDP"), ev.get("dest_port", 53), "dns", "DNS")
 
             if et == "krb5":
-                k = ev.get("krb5") or {}
-                inc(krb_sources, ev.get("src_ip"))
-                inc(krb_clients, k.get("cname"))
-                inc(krb_msg_types, k.get("msg_type"))
-                enc = k.get("ticket_encryption") or k.get("encryption")
-                inc(krb_encryption, enc)
+                k = ev.get("krb5") or {}; inc(krb_sources, ev.get("src_ip")); inc(krb_clients, k.get("cname")); inc(krb_msg_types, k.get("msg_type"))
+                enc = k.get("ticket_encryption") or k.get("encryption"); inc(krb_encryption, enc)
                 err = k.get("error_code")
                 if err not in (None, ""):
-                    inc(krb_errors, err)
-                    inc(krb_error_sources, ev.get("src_ip"))
-                    recent_krb_errors.append((
-                        ev.get("timestamp",""), ev.get("src_ip","-"),
-                        k.get("cname","-"), k.get("failed_request") or k.get("msg_type","-"),
-                        err, k.get("sname","-")
-                    ))
+                    inc(krb_errors, err); inc(krb_error_sources, ev.get("src_ip"))
+                    recent_krb_errors.append((ev.get("timestamp", ""), ev.get("src_ip", "-"), k.get("cname", "-"), k.get("failed_request") or k.get("msg_type", "-"), err, k.get("sname", "-")))
                 if k.get("weak_encryption") is True or k.get("ticket_weak_encryption") is True:
-                    krb_weak.append((ev.get("timestamp",""), ev.get("src_ip","-"),
-                                     k.get("cname","-"), k.get("sname","-"), enc or "-"))
+                    krb_weak.append((ev.get("timestamp", ""), ev.get("src_ip", "-"), k.get("cname", "-"), k.get("sname", "-"), enc or "-"))
+                record_fallback_contact(ev.get("timestamp", ""), ev.get("src_ip", "-"), ev.get("dest_ip", "-"), ev.get("proto", "UDP"), ev.get("dest_port", 88), "krb5", "Kerberos")
 
             if et == "ldap":
-                l = ev.get("ldap") or {}
-                inc(ldap_sources, ev.get("src_ip"))
-                req = l.get("request") or {}
-                inc(ldap_operations, req.get("operation"))
+                l = ev.get("ldap") or {}; inc(ldap_sources, ev.get("src_ip")); req = l.get("request") or {}; inc(ldap_operations, req.get("operation"))
                 for resp in (l.get("responses") or []):
-                    if not isinstance(resp, dict):
-                        continue
+                    if not isinstance(resp, dict): continue
                     inc(ldap_operations, resp.get("operation"))
-                    # Result-bearing response objects use nested keys.
                     for key, value in resp.items():
-                        if not isinstance(value, dict):
-                            continue
+                        if not isinstance(value, dict): continue
                         rc = value.get("result_code")
                         if rc not in (None, "", "success", "SUCCESS", "0"):
                             inc(ldap_result_codes, rc)
-                            recent_ldap_failures.append((
-                                ev.get("timestamp",""), ev.get("src_ip","-"),
-                                resp.get("operation","-"), rc,
-                                value.get("matched_dn","-"), value.get("message","-")
-                            ))
+                            recent_ldap_failures.append((ev.get("timestamp", ""), ev.get("src_ip", "-"), resp.get("operation", "-"), rc, value.get("matched_dn", "-"), value.get("message", "-")))
+                record_fallback_contact(ev.get("timestamp", ""), ev.get("src_ip", "-"), ev.get("dest_ip", "-"), ev.get("proto", "TCP"), ev.get("dest_port", 389), "ldap", "LDAP")
 
             if et == "smb":
-                s = ev.get("smb") or {}
-                inc(smb_dialects, s.get("dialect"))
-                nt = s.get("ntlmssp") or {}
+                sm = ev.get("smb") or {}; inc(smb_dialects, sm.get("dialect")); nt = sm.get("ntlmssp") or {}
                 if nt:
-                    user = nt.get("user") or "<unknown>"
-                    host = nt.get("host") or ev.get("src_ip") or "<unknown>"
-                    inc(smb_ntlm, user)
-                    inc(smb_ntlm_hosts, host)
+                    inc(smb_ntlm, nt.get("user") or "<unknown>"); inc(smb_ntlm_hosts, nt.get("host") or ev.get("src_ip") or "<unknown>")
+                record_fallback_contact(ev.get("timestamp", ""), ev.get("src_ip", "-"), ev.get("dest_ip", "-"), ev.get("proto", "TCP"), ev.get("dest_port", 445), "smb", "SMB")
 
             if et == "stats":
                 latest_stats = ev.get("stats") or {}
 
+# Older EVE files do not contain flow records. In that case build a useful
+# connection view from application-protocol events. When flow telemetry exists,
+# prefer it to avoid double-counting DNS/Kerberos/LDAP/SMB conversations.
+if flow_count == 0:
+    contact_sources = fallback_sources
+    contact_services = fallback_services
+    contact_protocols = fallback_protocols
+    source_services = fallback_source_services
+    recent_activity = fallback_activity
+
 def print_counter(title, counter, limit=10):
     print(title)
     if not counter:
-        print("  none observed")
-        return
+        print("  none observed"); return
     for key, count in counter.most_common(limit):
         print(f"  {count:8d}  {key}")
 
 def nested(d, *keys):
     cur = d
     for k in keys:
-        if not isinstance(cur, dict):
-            return None
+        if not isinstance(cur, dict): return None
         cur = cur.get(k)
     return cur
 
 packets = nested(latest_stats or {}, "capture", "kernel_packets") or 0
 drops = nested(latest_stats or {}, "capture", "kernel_drops") or 0
-try:
-    drop_pct = (float(drops) * 100.0 / float(packets)) if float(packets) else 0.0
-except Exception:
-    drop_pct = 0.0
+try: drop_pct = (float(drops) * 100.0 / float(packets)) if float(packets) else 0.0
+except Exception: drop_pct = 0.0
 
-# PREAUTH_REQUIRED (25 / KDC_ERR_PREAUTH_REQUIRED) is common in normal Kerberos
-# negotiation, so report it but don't make it automatically actionable.
 def is_benign_krb_error(code):
-    value = str(code).upper()
-    return value in {"25", "KDC_ERR_PREAUTH_REQUIRED", "PREAUTH_REQUIRED"}
+    return str(code).upper() in {"25", "KDC_ERR_PREAUTH_REQUIRED", "PREAUTH_REQUIRED"}
 
 actionable_krb_errors = sum(count for code, count in krb_errors.items() if not is_benign_krb_error(code))
+smb1 = sum(v for k, v in smb_dialects.items() if "NT LM 0.12" in k.upper() or k.upper().startswith("SMB1"))
+
+def print_operator_alerts(limit=20):
+    rows = list(recent_alerts)[-limit:]
+    if not rows:
+        print("No signature alerts were observed in this window.")
+        print("This does NOT mean there was no traffic. Use Connection activity to see ordinary DNS/Kerberos/LDAP/SMB/ICMP flows.")
+        return
+    for row in reversed(rows):
+        level = alert_level(row["severity"]); service = service_name(row["proto"], row["dst_port"], row["app"])
+        trusted = is_trusted(row["src"]); trust = "trusted" if trusted else "outside HOME_NET"
+        print(f"[{level}] {fmt_ts(row['ts'])}  {row['src']} -> {row['dst']}:{row['dst_port']}  {service}  ({trust})")
+        print(f"       Alert   : {row['signature']}")
+        if row.get("category"): print(f"       Category: {row['category']}")
+        print(f"       Meaning : {explain_alert(row['signature'], row.get('category',''))}")
+        print(f"       Next    : {alert_action(row['signature'], trusted)}")
+        print()
+
+def print_sources(limit=15):
+    if not contact_sources:
+        print("  No inbound connection/activity records were observed.")
+        if events.get("flow", 0) == 0:
+            print("  Flow telemetry is not present in this EVE window yet; reconcile/restart the sensor and generate new traffic.")
+        return
+    print(f"  {'SOURCE':<39} {'EVENTS':>7}  SERVICES")
+    for src, count in contact_sources.most_common(limit):
+        services = ", ".join(name for name, _ in source_services[src].most_common(5)) or "unknown"
+        print(f"  {src:<39} {count:>7}  {services}")
+
+def print_recent_activity(limit=25):
+    rows = list(recent_activity)[-limit:]
+    if not rows:
+        print("  No recent flow/application activity is available in this window."); return
+    for row in reversed(rows):
+        trust = "trusted" if is_trusted(row["src"]) else "external/untrusted"
+        endpoint = f"{row['dst']}:{row['port']}" if row['port'] != "-" else row['dst']
+        print(f"  {fmt_ts(row['ts'])}  {row['src']} -> {endpoint:<28} {row['service']:<22} {trust}")
+
+if view == "operator":
+    print(f"SURICATA OPERATOR OVERVIEW — LAST {hours:g}H"); print("=" * 96)
+    latest = latest_ts.astimezone().strftime('%Y-%m-%d %H:%M:%S') if latest_ts else 'none'
+    print(f"Sensor telemetry : {parsed} EVE records | latest={latest}")
+    print(f"Network flows    : {flow_count} | ICMP/ping flows={icmp_flows}")
+    print(f"Signature alerts : {sum(alert_sigs.values())}")
+    print(f"Packet loss      : {drop_pct:.3f}% (latest stats sample)")
+    if trusted_raw: print(f"Trusted HOME_NET : [{trusted_raw}]")
+    print("\nHOW TO READ THIS")
+    print("  Activity = Suricata saw traffic. Alert = a rule/signature matched that traffic.")
+    print("  A normal ping usually should NOT be an alert. With flow telemetry it appears as ICMP activity after the flow is logged.")
+    print("  No alerts can therefore be perfectly normal on a healthy domain controller.")
+    print("\nWHO CONTACTED THIS DC"); print_sources(15)
+    print("\nTOP DESTINATION SERVICES")
+    if contact_services:
+        for name, count in contact_services.most_common(12): print(f"  {count:8d}  {name}")
+    else: print("  none observed")
+    print("\nRECENT CONNECTION / PROTOCOL ACTIVITY"); print_recent_activity(15)
+    print("\nRECENT ALERTS — EXPLAINED"); print_operator_alerts(8)
+    sys.exit(0)
+
+if view == "activity":
+    print(f"CONNECTION ACTIVITY — LAST {hours:g}H"); print("=" * 96)
+    print("This answers 'who talked to the DC?'. Rows are telemetry, not accusations or IDS alerts.")
+    print(f"Flow records: {flow_count} | ICMP/ping flows: {icmp_flows} | Parsed EVE records: {parsed}")
+    print("\nSOURCES"); print_sources(25)
+    print("\nSERVICES")
+    if contact_services:
+        for name, count in contact_services.most_common(20): print(f"  {count:8d}  {name}")
+    else: print("  none observed")
+    print("\nRECENT ACTIVITY"); print_recent_activity(40)
+    print("\nTip: flow records are commonly emitted when a flow closes or times out, so a just-sent ping may not appear instantaneously.")
+    sys.exit(0)
+
+if view == "alerts-human":
+    print(f"SURICATA ALERTS — OPERATOR VIEW — LAST {hours:g}H"); print("=" * 96); print_operator_alerts(40); sys.exit(0)
 
 if view == "alerts":
-    print(f"RECENT SURICATA ALERTS — LAST {hours:g}H")
-    print("=" * 88)
+    print(f"RECENT SURICATA ALERTS — LAST {hours:g}H"); print("=" * 110)
     if not recent_alerts:
         print("No signature alerts observed in the selected window.")
-        print("Normal domain-join traffic is telemetry and does not necessarily match an IDS signature.")
+        print("Normal AD traffic is telemetry and does not necessarily match an IDS signature.")
     else:
-        for ts, src, dst, sev, sig in list(recent_alerts)[-50:]:
-            print(f"{ts:30.30s} sev={str(sev):<3} {src:15.15s} -> {dst:15.15s}  {sig}")
+        for row in list(recent_alerts)[-50:]:
+            print(f"{row['ts']:30.30s} sev={str(row['severity']):<3} {row['src']:15.15s}:{str(row['src_port']):<5} -> {row['dst']:15.15s}:{str(row['dst_port']):<5} {row['proto']:<5} {row['signature']}")
     sys.exit(0)
 
 if view == "ad":
-    print(f"AD PROTOCOL INTELLIGENCE — LAST {hours:g}H")
-    print("=" * 78)
-    print_counter("Kerberos message types:", krb_msg_types, 20)
-    print()
-    print_counter("Kerberos client principals:", krb_clients, 20)
-    print()
-    print_counter("Kerberos source IPs:", krb_sources, 20)
-    print()
-    print_counter("Kerberos error codes:", krb_errors, 20)
+    print(f"AD PROTOCOL INTELLIGENCE — LAST {hours:g}H"); print("=" * 78)
+    print_counter("Kerberos message types:", krb_msg_types, 20); print(); print_counter("Kerberos client principals:", krb_clients, 20); print(); print_counter("Kerberos source IPs:", krb_sources, 20); print(); print_counter("Kerberos error codes:", krb_errors, 20)
     print(f"\nActionable/non-PREAUTH Kerberos errors: {actionable_krb_errors}")
     if recent_krb_errors:
         print("\nRecent Kerberos errors:")
-        for row in list(recent_krb_errors)[-25:]:
-            print("  " + " | ".join(map(str, row)))
-    print()
-    print_counter("Kerberos encryption:", krb_encryption, 20)
-    print(f"\nWeak Kerberos observations: {len(krb_weak)}")
-    for row in krb_weak[-20:]:
-        print("  " + " | ".join(map(str, row)))
-    print()
-    print_counter("DNS queried names:", dns_query_names, 20)
-    print()
-    print_counter("DNS source IPs:", dns_sources, 15)
-    print()
-    print_counter("LDAP operations:", ldap_operations, 20)
-    print()
-    print_counter("LDAP source IPs:", ldap_sources, 15)
-    print()
-    print_counter("LDAP non-success result codes:", ldap_result_codes, 20)
+        for row in list(recent_krb_errors)[-25:]: print("  " + " | ".join(map(str, row)))
+    print(); print_counter("Kerberos encryption:", krb_encryption, 20); print(f"\nWeak Kerberos observations: {len(krb_weak)}")
+    for row in krb_weak[-20:]: print("  " + " | ".join(map(str, row)))
+    print(); print_counter("DNS queried names:", dns_query_names, 20); print(); print_counter("DNS source IPs:", dns_sources, 15); print(); print_counter("LDAP operations:", ldap_operations, 20); print(); print_counter("LDAP source IPs:", ldap_sources, 15); print(); print_counter("LDAP non-success result codes:", ldap_result_codes, 20)
     if recent_ldap_failures:
         print("\nRecent LDAP failures:")
-        for row in list(recent_ldap_failures)[-20:]:
-            print("  " + " | ".join(map(str, row)))
-    print()
-    print_counter("SMB dialects:", smb_dialects, 20)
-    print()
-    print_counter("SMB NTLMSSP users:", smb_ntlm, 15)
-    print()
-    print_counter("SMB NTLMSSP source hosts:", smb_ntlm_hosts, 15)
-    smb1 = sum(v for k,v in smb_dialects.items() if "NT LM 0.12" in k.upper() or k.upper().startswith("SMB1"))
-    print(f"\nSMB1 observations: {smb1}")
+        for row in list(recent_ldap_failures)[-20:]: print("  " + " | ".join(map(str, row)))
+    print(); print_counter("SMB dialects:", smb_dialects, 20); print(); print_counter("SMB NTLMSSP users:", smb_ntlm, 15); print(); print_counter("SMB NTLMSSP source hosts:", smb_ntlm_hosts, 15); print(f"\nSMB1 observations: {smb1}")
     sys.exit(0)
 
-print(f"SECURITY OPERATIONS SUMMARY — LAST {hours:g}H")
-print("=" * 72)
-print(f"Parsed EVE events             {parsed}")
-print(f"Malformed JSON lines          {bad}")
-print(f"Latest event                  {latest_ts.isoformat() if latest_ts else 'none'}")
-print(f"Kernel packets (latest stats) {packets}")
-print(f"Kernel drops (latest stats)   {drops}")
-print(f"Kernel drop rate              {drop_pct:.3f}%")
-print()
-print_counter("Event types:", events, 20)
-print()
-print_counter("Alert severity values:", alert_sev, 10)
-print()
-print_counter("Top alert signatures:", alert_sigs, 12)
-print()
-print_counter("Top alert source IPs:", alert_src, 12)
-print()
-print(f"DNS events                    {dns_queries}")
-print(f"DNS NXDOMAIN observations     {dns_nxdomain}")
-print(f"Kerberos events               {events.get('krb5', 0)}")
-print(f"Kerberos error observations   {sum(krb_errors.values())}")
-print(f"Actionable Kerberos errors    {actionable_krb_errors}")
-print(f"LDAP events                    {events.get('ldap', 0)}")
-print(f"LDAP failure observations      {sum(ldap_result_codes.values())}")
-print(f"Weak Kerberos observations    {len(krb_weak)}")
-print(f"SMB NTLMSSP observations      {sum(smb_ntlm.values())}")
-smb1 = sum(v for k,v in smb_dialects.items() if "NT LM 0.12" in k.upper() or k.upper().startswith("SMB1"))
-print(f"SMB1 observations             {smb1}")
-
-print("\nRECENT AD ACTIVITY")
-print_counter("Kerberos source IPs:", krb_sources, 8)
-print()
-print_counter("Kerberos client principals:", krb_clients, 8)
-print()
-print_counter("DNS queried names:", dns_query_names, 8)
-print()
-print_counter("LDAP source IPs:", ldap_sources, 8)
-print()
-print_counter("LDAP operations:", ldap_operations, 8)
-
+print(f"SECURITY OPERATIONS SUMMARY — LAST {hours:g}H"); print("=" * 72)
+print(f"Parsed EVE events             {parsed}"); print(f"Malformed JSON lines          {bad}"); print(f"Latest event                  {latest_ts.isoformat() if latest_ts else 'none'}")
+print(f"Flow records                  {flow_count}"); print(f"ICMP flow records             {icmp_flows}"); print(f"Kernel packets (latest stats) {packets}"); print(f"Kernel drops (latest stats)   {drops}"); print(f"Kernel drop rate              {drop_pct:.3f}%")
+print(); print_counter("Event types:", events, 20); print(); print_counter("Alert severity values:", alert_sev, 10); print(); print_counter("Top alert signatures:", alert_sigs, 12); print(); print_counter("Top alert source IPs:", alert_src, 12); print()
+print(f"DNS events                    {dns_queries}"); print(f"DNS NXDOMAIN observations     {dns_nxdomain}"); print(f"Kerberos events               {events.get('krb5', 0)}"); print(f"Kerberos error observations   {sum(krb_errors.values())}"); print(f"Actionable Kerberos errors    {actionable_krb_errors}"); print(f"LDAP events                   {events.get('ldap', 0)}"); print(f"LDAP failure observations     {sum(ldap_result_codes.values())}"); print(f"Weak Kerberos observations    {len(krb_weak)}"); print(f"SMB NTLMSSP observations      {sum(smb_ntlm.values())}"); print(f"SMB1 observations             {smb1}")
+print("\nRECENT AD ACTIVITY"); print_counter("Kerberos source IPs:", krb_sources, 8); print(); print_counter("Kerberos client principals:", krb_clients, 8); print(); print_counter("DNS queried names:", dns_query_names, 8); print(); print_counter("LDAP source IPs:", ldap_sources, 8); print(); print_counter("LDAP operations:", ldap_operations, 8); print(); print_counter("Connection source IPs:", contact_sources, 8); print(); print_counter("Destination services:", contact_services, 10)
 print("\nACTIONABLE FINDINGS")
 actions = []
-if drop_pct > 1.0:
-    actions.append(f"HIGH sensor packet loss: kernel drop rate {drop_pct:.3f}%")
-elif drop_pct > 0.1:
-    actions.append(f"REVIEW sensor packet loss: kernel drop rate {drop_pct:.3f}%")
-if krb_weak:
-    actions.append(f"REVIEW {len(krb_weak)} weak Kerberos observation(s) before AES-only enforcement")
-if actionable_krb_errors:
-    actions.append(f"REVIEW {actionable_krb_errors} Kerberos error observation(s) excluding normal PREAUTH_REQUIRED negotiation")
-if ldap_result_codes:
-    actions.append(f"REVIEW {sum(ldap_result_codes.values())} LDAP non-success response(s), useful for failed joins/delegation diagnostics")
-if smb1:
-    actions.append(f"REVIEW {smb1} SMB1 observation(s); identify legacy clients")
-sev12 = sum(v for k,v in alert_sev.items() if str(k) in ("1","2"))
-if sev12:
-    actions.append(f"INVESTIGATE {sev12} alert(s) with severity value 1/2")
-if not actions:
-    actions.append("No automatic high-priority decision trigger detected in this window")
-for item in actions:
-    print(f"  - {item}")
+if drop_pct > 1.0: actions.append(f"HIGH sensor packet loss: kernel drop rate {drop_pct:.3f}%")
+elif drop_pct > 0.1: actions.append(f"REVIEW sensor packet loss: kernel drop rate {drop_pct:.3f}%")
+if krb_weak: actions.append(f"REVIEW {len(krb_weak)} weak Kerberos observation(s) before AES-only enforcement")
+if actionable_krb_errors: actions.append(f"REVIEW {actionable_krb_errors} Kerberos error observation(s) excluding normal PREAUTH_REQUIRED negotiation")
+if ldap_result_codes: actions.append(f"REVIEW {sum(ldap_result_codes.values())} LDAP non-success response(s), useful for failed joins/delegation diagnostics")
+if smb1: actions.append(f"REVIEW {smb1} SMB1 observation(s); identify legacy clients")
+sev12 = sum(v for k, v in alert_sev.items() if str(k) in ("1", "2"))
+if sev12: actions.append(f"INVESTIGATE {sev12} alert(s) with severity value 1/2")
+if not actions: actions.append("No automatic high-priority decision trigger detected in this window")
+for item in actions: print(f"  - {item}")
 PY
+}
+
+ids_operator_overview() {
+    local hours="${1:-24}"
+    ids_eve_parser "$hours" operator
+}
+
+ids_operator_alerts() {
+    local hours="${1:-24}"
+    ids_eve_parser "$hours" alerts-human
+}
+
+ids_connection_activity() {
+    local hours="${1:-24}"
+    ids_eve_parser "$hours" activity
 }
 
 ids_summary() {
@@ -9518,6 +9649,12 @@ ids_sensor_health() {
     [[ -f "$IDS_CONFIG" ]] \
         && result PASS "Managed IDS overlay" "$IDS_CONFIG" "present" \
         || result WARN "Managed IDS overlay" "not configured" "$IDS_CONFIG"
+
+    if ids_overlay_has_flow_telemetry; then
+        result PASS "Connection telemetry" "EVE flow records enabled" "operator activity visibility"
+    else
+        result WARN "Connection telemetry" "flow records not enabled yet" "auto-repair/reconfigure sensor"
+    fi
 
     if [[ -n "$bin" && -n "$config" && -f "$IDS_CONFIG" ]]; then
         ids_validate_config health || true
@@ -9623,41 +9760,39 @@ ids_generate_daily_report() {
 ids_show_reports() {
     ids_prepare_state
     local -a files=()
-    local report_index=""
 
-    report_index="$(
-        find "$IDS_REPORT_DIR" -maxdepth 1 -type f -name 'ids-report-*.txt' \
-            -printf '%T@|%p\n' 2>/dev/null || true
-    )"
-
+    # Keep the absolute pathname byte-for-byte. The previous awk implementation
+    # cleared field 1 and printed $0; awk then rebuilt the record with OFS=" ",
+    # silently prefixing the pathname with a space and making it non-existent.
     mapfile -t files < <(
-        sort -nr <<<"$report_index" |
-            awk -F'|' 'NR<=50 {
-                $1=""
-                sub(/^\|/, "")
-                print
-            }'
+        find "$IDS_REPORT_DIR" -maxdepth 1 -type f -name 'ids-report-*.txt' \
+            -printf '%T@\t%p\n' 2>/dev/null |
+            sort -t $'\t' -k1,1nr |
+            cut -f2- |
+            head -n 50
     )
 
-    ((${#files[@]})) || {
-        msg_info "No generated IDS reports yet."
-        return 0
-    }
-
+    ((${#files[@]})) || { msg_info "No generated IDS reports yet."; return 0; }
     printf '\n%bIDS REPORTS%b\n' "$C_BOLD" "$C_RESET"
     local i
-    for i in "${!files[@]}"; do
-        printf '  [%2d] %s\n' "$((i+1))" "$(basename "${files[$i]}")"
-    done
+    for i in "${!files[@]}"; do printf '  [%2d] %s\n' "$((i+1))" "$(basename -- "${files[$i]}")"; done
     printf '  [0 ] Cancel\n'
 
-    local choice
+    local choice selected
     choice="$(ask 'Select report' '1')"
-    [[ "$choice" =~ ^[0-9]+$ ]] || return 1
+    if [[ ! "$choice" =~ ^[0-9]+$ ]]; then msg_warn "Invalid report selection."; return 0; fi
     (( choice >= 1 && choice <= ${#files[@]} )) || return 0
+    selected="${files[$((choice-1))]}"
 
-    less -R "${files[$((choice-1))]}" 2>/dev/null ||
-        cat "${files[$((choice-1))]}"
+    if [[ ! -f "$selected" ]]; then msg_warn "The selected IDS report disappeared before it could be opened: $selected"; return 0; fi
+    if [[ ! -r "$selected" ]]; then msg_warn "The selected IDS report is not readable: $selected"; return 0; fi
+
+    if command_exists less; then
+        less -R -- "$selected" || { msg_warn "Unable to display the IDS report with less: $selected"; return 0; }
+    else
+        cat -- "$selected" || { msg_warn "Unable to display the IDS report: $selected"; return 0; }
+    fi
+    return 0
 }
 
 ids_install_daily_timer() {
@@ -9760,14 +9895,15 @@ ids_menu() {
         ui_menu_item "2" "Install / repair Suricata" "Distribution packages only: suricata + suricata-update" "$C_GREEN"
         ui_menu_item "3" "Configure passive IDS" "AF_PACKET on a selected interface; no packet blocking" "$C_GREEN"
         ui_menu_item "4" "Sensor health" "Service, config test, rules, EVE freshness and packet-drop telemetry"
-        ui_menu_item "5" "Security summary" "Alerts, DNS, Kerberos, SMB/NTLM and decision triggers"
-        ui_menu_item "6" "Recent alerts" "Human-readable alert timeline for a selected time window"
+        ui_menu_item "5" "Operator overview" "Plain-language activity, who contacted the DC, services and explained alerts"
+        ui_menu_item "6" "Recent alerts explained" "Plain-language signature meaning, endpoints, trust scope and next action"
         ui_menu_item "7" "AD protocol intelligence" "Kerberos attempts/errors/sources, DNS activity, SMB dialects and NTLMSSP"
         ui_menu_item "8" "Update rules" "suricata-update -> config test -> safe reload" "$C_YELLOW"
         ui_menu_item "9" "Daily local reports" "Generate/view reports or enable a systemd timer"
         ui_menu_item "10" "Export evidence" "Config/health/summary bundle without raw EVE payload"
         ui_menu_item "11" "Disable IDS integration" "Remove assistant config/timer; retain packages" "$C_RED"
         ui_menu_item "12" "Trusted network scope" "Manage multiple legitimate HOME_NET CIDRs (LAN/VLAN/VPN)" "$C_CYAN"
+        ui_menu_item "13" "Connection activity" "Who connected to this DC, destination service, protocol and ICMP/ping telemetry" "$C_CYAN"
         ui_menu_exit
         ui_rule
 
@@ -9780,11 +9916,11 @@ ids_menu() {
             4) ids_sensor_health; ui_pause ;;
             5)
                 hours="$(ids_choose_window)" || { ui_pause; continue; }
-                ids_summary "$hours"; ui_pause
+                ids_operator_overview "$hours"; ui_pause
                 ;;
             6)
                 hours="$(ids_choose_window)" || { ui_pause; continue; }
-                ids_recent_alerts "$hours"; ui_pause
+                ids_operator_alerts "$hours"; ui_pause
                 ;;
             7)
                 hours="$(ids_choose_window)" || { ui_pause; continue; }
@@ -9814,6 +9950,7 @@ ids_menu() {
             10) ids_export_evidence; ui_pause ;;
             11) ids_disable_integration; ui_pause ;;
             12) ids_manage_trusted_networks; ui_pause ;;
+            13) hours="$(ids_choose_window)" || { ui_pause; continue; }; ids_connection_activity "$hours"; ui_pause ;;
             H|h) MENU_MAIN_REQUESTED=1; return 0 ;;
             0) return 0 ;;
             *) msg_warn "Invalid IDS operation."; ui_pause ;;
@@ -10238,6 +10375,29 @@ if output == "jsonl":
         print(json.dumps(ev, ensure_ascii=False, separators=(",", ":")))
     raise SystemExit(0)
 
+if output == "operator":
+    source_names = {"assistant":"Assistant", "journal":"System / AD", "remote-ops":"Remote Ops", "suricata":"Suricata IDS"}
+    category_names = {"runtime":"Assistant runtime", "ad":"Active Directory / Samba", "replication":"AD replication", "dns":"DNS", "kerberos":"Kerberos", "time":"Time sync", "system":"System", "auth":"Authentication", "remote":"Remote operation", "ids":"Network IDS"}
+    print(f"OPERATOR EVENT VIEW — LAST {hours:g}H — {view.upper()}")
+    print("=" * 96)
+    print("Critical={CRITICAL}  Error={ERROR}  Warning={WARN}  Notice={NOTICE}  Info={INFO}  |  matched={matched} shown={displayed}".format(matched=matched, displayed=len(shown), **counts))
+    print("Events below are translated for triage. Evidence exports retain the technical timeline and JSONL.\n")
+    if not shown:
+        print("No matching events were found in the selected window."); raise SystemExit(0)
+    for ev in shown:
+        ts = ev["timestamp"].replace("T", " ")[:19]; sev = ev["severity"]
+        source = source_names.get(ev["source"], ev["source"]); category = category_names.get(ev["category"], ev["category"])
+        subject = ev["target"] or ev["actor"] or "-"; message = ev["message"] or ev["action"] or "-"
+        print(f"[{sev}] {ts}  {source} — {category}")
+        if subject != "-": print(f"       Subject : {subject}")
+        print(f"       Detail  : {message}")
+        if ev.get("result") and ev["result"] not in {"observed", ""}: print(f"       Result  : {ev['result']}")
+        if ev["source"] == "suricata": print("       Meaning : A Suricata signature matched network traffic; correlate it with the IDS Operator overview before treating it as an incident.")
+        elif ev["category"] == "auth": print("       Meaning : Authentication/administrative activity observed on the host.")
+        elif ev["severity"] in {"WARN", "ERROR", "CRITICAL"}: print("       Meaning : Review this event together with adjacent events and the relevant service status.")
+        print()
+    raise SystemExit(0)
+
 print(f"EVENT TIMELINE — LAST {hours:g}H — VIEW={view.upper()}")
 print("=" * 118)
 print(
@@ -10376,13 +10536,13 @@ event_center_menu() {
 
         choice="$(ask 'Event operation' '1')"
         case "${choice^^}" in
-            1) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" all INFO; ui_pause ;;
-            2) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" critical WARN; ui_pause ;;
-            3) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" assistant INFO; ui_pause ;;
-            4) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" ad NOTICE; ui_pause ;;
-            5) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" auth INFO; ui_pause ;;
-            6) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" remote INFO; ui_pause ;;
-            7) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" ids NOTICE; ui_pause ;;
+            1) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" all INFO operator; ui_pause ;;
+            2) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" critical WARN operator; ui_pause ;;
+            3) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" assistant INFO operator; ui_pause ;;
+            4) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" ad NOTICE operator; ui_pause ;;
+            5) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" auth INFO operator; ui_pause ;;
+            6) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" remote INFO operator; ui_pause ;;
+            7) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" ids NOTICE operator; ui_pause ;;
             8) event_status; ui_pause ;;
             9) hours="$(event_choose_window)" || { ui_pause; continue; }; event_export_evidence "$hours"; ui_pause ;;
             H)

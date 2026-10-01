@@ -667,11 +667,30 @@ Network → WinRM/SSH solo desde redes de management
 <a id="suricata-ids"></a>
 ## Suricata IDS
 
-Los control planes de DC incluyen integración opcional con Suricata para visibilidad de red y protocolos relacionados con Active Directory.
+Los control planes de DC incluyen integración opcional con Suricata para visibilidad de red y protocolos relacionados con Active Directory. En Linux el sensor se configura en modo **pasivo**: observa tráfico, genera telemetría y alertas, pero no bloquea paquetes.
 
-### Linux
+### Modelo mental: actividad no es lo mismo que alerta
 
-El asistente puede gestionar una instalación IDS pasiva basada en AF_PACKET, validar configuración, actualizar reglas y analizar EVE.
+Esta distinción evita una de las confusiones más frecuentes al empezar con un IDS:
+
+```text
+ACTIVIDAD
+Suricata ha visto tráfico o un protocolo.
+Ejemplos: ping, DNS, Kerberos, LDAP, SMB, una conexión TCP.
+
+ALERTA
+Una regla/signature ha coincidido con ese tráfico.
+Ejemplos: acceso a una superficie AD desde fuera de HOME_NET,
+ráfaga anómala de SMB, una firma ET/Open o una anomalía de protocolo.
+```
+
+Por tanto:
+
+> Un `ping` normal **no debería generar necesariamente una alerta**. En las versiones recientes del asistente se habilita telemetría EVE `flow`, por lo que el ICMP puede aparecer en **Connection activity** aunque `Recent alerts` siga vacío.
+
+Los registros `flow` suelen emitirse cuando el flujo termina o expira. Un ping enviado hace unos segundos puede tardar algo en aparecer en la vista de actividad.
+
+### Linux / Samba AD
 
 Acceso habitual:
 
@@ -679,9 +698,212 @@ Acceso habitual:
 sudo bash ./debian-ad-assistant.sh --ids
 ```
 
+El workspace diferencia la vista diaria del administrador de la evidencia técnica:
+
+```text
+[1]  IDS readiness assessment
+[2]  Install / repair Suricata
+[3]  Configure passive IDS
+[4]  Sensor health
+[5]  Operator overview
+[6]  Recent alerts explained
+[7]  AD protocol intelligence
+[8]  Update rules
+[9]  Daily local reports
+[10] Export evidence
+[11] Disable IDS integration
+[12] Trusted network scope
+[13] Connection activity
+```
+
+#### Qué mirar primero
+
+Para operación diaria, una secuencia útil es:
+
+```text
+Sensor health
+     ↓
+Operator overview
+     ↓
+Connection activity
+     ↓
+Recent alerts explained
+     ↓
+AD protocol intelligence si necesitas detalle
+```
+
+`Operator overview` intenta responder preguntas operativas, no mostrar JSON:
+
+- ¿está llegando telemetría reciente?;
+- ¿hay pérdida de paquetes del sensor?;
+- ¿quién está hablando con este DC?;
+- ¿qué servicios reciben tráfico?;
+- ¿hay ICMP/ping?;
+- ¿hay alertas y qué significan en términos prácticos?;
+- ¿el origen está dentro o fuera del `HOME_NET` confiable?
+
+`Connection activity` está orientado específicamente a **quién se conecta**. Agrupa fuentes, servicios y actividad reciente. Una línea de esa vista significa que Suricata vio tráfico; no implica por sí sola actividad maliciosa.
+
+#### Trusted network scope / HOME_NET
+
+`HOME_NET` puede contener varias redes legítimas, por ejemplo:
+
+```text
+192.168.10.0/24,10.20.0.0/16,10.8.0.0/24
+```
+
+Incluye aquí las LAN, VLAN de administración, VPN y redes site-to-site cuyos clientes deban acceder legítimamente al DC. Las reglas locales de exposición utilizan `!$HOME_NET`; una red legítima olvidada en este scope puede producir alertas que parecen externas.
+
+No añadas una red al scope únicamente para silenciar una alerta: primero confirma que realmente sea una red administrada y confiable.
+
+### Pruebas seguras para aprender qué ve el sensor
+
+Haz estas pruebas únicamente en infraestructura propia o expresamente autorizada.
+
+#### 1. ICMP / ping
+
+Desde otro equipo:
+
+```bash
+ping <IP_DEL_DC>
+```
+
+Esperado:
+
+```text
+Connection activity  → ICMP / ping
+Recent alerts        → normalmente ninguna alerta nueva
+```
+
+Esto prueba visibilidad básica, **no la capacidad de disparar firmas**.
+
+#### 2. DNS
+
+Linux:
+
+```bash
+dig @<IP_DEL_DC> example.org
+```
+
+Windows:
+
+```powershell
+Resolve-DnsName example.org -Server <IP_DEL_DC>
+```
+
+Esperado: actividad DNS, IP origen y nombres consultados en las vistas de actividad/inteligencia.
+
+#### 3. Kerberos + SMB desde un miembro del dominio
+
+Windows:
+
+```powershell
+klist purge
+dir \\<DC_FQDN>\SYSVOL
+```
+
+En un cliente correctamente unido al dominio esto suele generar actividad Kerberos y SMB. `klist purge` elimina tickets del cache del usuario para forzar una nueva negociación; úsalo solo si entiendes el efecto sobre esa sesión.
+
+#### 4. Probar una regla local de exposición
+
+Desde una máquina de laboratorio cuya IP esté **fuera de `HOME_NET`**, realiza únicamente una conexión al servicio del DC que quieras comprobar.
+
+Linux:
+
+```bash
+nc -vz <IP_DEL_DC> 445
+```
+
+Windows:
+
+```powershell
+Test-NetConnection <IP_DEL_DC> -Port 445
+```
+
+Si la ruta llega al sensor y el origen está realmente fuera del scope confiable, la regla local de SMB/RPC debería poder producir una alerta similar a:
+
+```text
+DAD IDS External access to AD SMB-RPC TCP surface
+```
+
+No utilices scanners ni tráfico agresivo contra sistemas de terceros para "probar Suricata".
+
+### Cómo interpretar alertas comunes
+
+| Señal | Interpretación inicial | Qué comprobar |
+|---|---|---|
+| `DAD IDS External access ...` | Un origen fuera de `HOME_NET` alcanzó una superficie del DC | IP origen, red/VPN esperada, puerto y si falta una CIDR legítima |
+| `DAD IDS High-rate SMB ...` | Muchas conexiones SMB en poco tiempo | scanner autorizado, inventario, cliente roto o reconocimiento |
+| `applayer` / `app-layer` | Suricata no pudo interpretar limpiamente una conversación de aplicación | origen/destino, protocolo real, recurrencia y firma exacta |
+| `ET SCAN` / firma de scanning | Tráfico parecido a discovery/reconocimiento | si el origen es un scanner autorizado y qué puertos tocó |
+| `ET POLICY` | Tráfico relevante para una política, no necesariamente malware | contexto y necesidad operativa |
+| malware / trojan / C2 | Patrón asociado a compromiso o command-and-control | endpoint origen, DNS/TLS, proceso y evidencia adicional |
+
+Una alerta es una **señal de investigación**, no una sentencia. Correlaciona siempre firma, IP origen, destino, servicio, hora, Event Center y logs del endpoint.
+
+### ¿Qué significa una alerta `applayer`?
+
+Una alerta o anomalía `applayer` puede aparecer porque Suricata esperaba un protocolo y recibió datos incompletos, inesperados, cifrados, malformados o que su parser no pudo clasificar. Puede ser ruido, software extraño, una versión de protocolo poco común o tráfico hostil.
+
+Antes de escalarla como incidente:
+
+1. identifica `src_ip`, `dest_ip`, puerto y protocolo;
+2. comprueba si el host origen es conocido;
+3. mira si la alerta se repite;
+4. revisa la actividad de la misma IP alrededor de esa hora;
+5. comprueba Event Center y logs del servicio/endpoint;
+6. escala si hay otras señales coherentes con scanning, explotación o compromiso.
+
+### Rulesets
+
+El asistente conserva dos capas:
+
+```text
+ET/Open / suricata-update
+        +
+reglas locales contextuales del AD/DC
+```
+
+Las reglas locales del asistente no sustituyen el ruleset mantenido por `suricata-update`. El sensor permanece `alert-only`; no se convierte en IPS inline.
+
+### Informes y evidencia
+
+La consola prioriza una representación legible. Los informes persistentes mantienen más detalle técnico para poder conservarlos como evidencia:
+
+```text
+/var/lib/debian-ad-assistant/ids/reports/ids-report-*.txt
+```
+
+La opción `Daily local reports → View generated reports` valida que el fichero siga existiendo y sea legible antes de abrirlo; un fallo del pager o del fichero debe volver al menú como `WARN`, no finalizar el asistente.
+
+`Export evidence` conserva las vistas técnicas y metadatos relevantes. La intención es separar:
+
+```text
+CONSOLE / OPERADOR
+explicación, contexto, quién, qué servicio, siguiente paso
+
+EVIDENCIA TXT / JSONL
+campos técnicos, timestamps, firmas, timeline y datos para auditoría
+```
+
+### Event Center: vista humana frente a evidencia
+
+El **AD Event Center** aplica la misma filosofía. Las opciones interactivas traducen la timeline a bloques del tipo:
+
+```text
+[WARN] 2026-10-01 13:02:10  Suricata IDS — Network IDS
+       Subject : 10.20.30.40 -> 192.168.1.90
+       Detail  : ET ...
+       Meaning : una firma de Suricata coincidió; correlacionar antes de escalar
+```
+
+mientras que la exportación sigue guardando `timeline.txt` y `timeline.jsonl` técnicos para análisis posterior.
+
+Esto no intenta ocultar datos: ofrece una capa de **triage humano** delante de la evidencia cruda.
+
 ### Windows
 
-El control plane puede analizar `eve.json`, generar informes y mostrar un dashboard nativo cuando el entorno lo permite.
+El control plane de Windows puede analizar `eve.json`, generar informes y mostrar un dashboard nativo cuando el entorno lo permite:
 
 ```powershell
 .\windows-ad-assistant.ps1 -Mode IDS
@@ -689,10 +911,13 @@ El control plane puede analizar `eve.json`, generar informes y mostrar un dashbo
 
 La instalación de Suricata/Npcap en Windows se mantiene como una acción administrativa explícita; el script no instala silenciosamente un driver de captura de terceros en un Domain Controller.
 
+La paridad funcional buscada entre Debian/Samba, RHEL y Windows incluye el mismo modelo conceptual: redes confiables, diferencia entre actividad y alerta, vista de operador, timeline humana, evidencia técnica y recuperación segura. La implementación concreta puede variar según las capacidades nativas de cada plataforma.
+
 ### Qué significa IDS aquí
 
 La integración es principalmente **pasiva**:
 
+- flujos y conexiones;
 - telemetría;
 - alertas;
 - DNS;
