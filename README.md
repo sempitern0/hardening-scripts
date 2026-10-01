@@ -851,7 +851,7 @@ El workspace diferencia la vista diaria del administrador de la evidencia técni
 [5]  Operator overview
 [6]  Recent alerts explained
 [7]  AD protocol intelligence
-[8]  Update rules
+[8]  Rule management
 [9]  Daily local reports
 [10] Export evidence
 [11] Disable IDS integration
@@ -997,17 +997,208 @@ Antes de escalarla como incidente:
 5. comprueba Event Center y logs del servicio/endpoint;
 6. escala si hay otras señales coherentes con scanning, explotación o compromiso.
 
-### Rulesets
+### Rule management: feeds mantenidos antes que reglas manuales
 
-El asistente conserva dos capas:
+El flujo recomendado no consiste en copiar firmas una a una. `suricata-update` es el gestor oficial de reglas de Suricata y genera el ruleset consolidado en:
 
 ```text
-ET/Open / suricata-update
-        +
-reglas locales contextuales del AD/DC
+/var/lib/suricata/rules/suricata.rules
 ```
 
-Las reglas locales del asistente no sustituyen el ruleset mantenido por `suricata-update`. El sensor permanece `alert-only`; no se convierte en IPS inline.
+Ese fichero es un **artefacto generado**. No debe editarse directamente. La arquitectura del asistente es:
+
+```text
+                 SURICATA DETECTION PIPELINE
+
+  feeds mantenidos              contexto local
+  por suricata-update            del entorno
+         │                            │
+         ├─ ET/Open                   ├─ AD/DC context.rules
+         ├─ OISF TrafficID            └─ custom.rules (opcional)
+         ├─ abuse.ch feeds                  │
+         └─ fuentes opcionales              │
+                 │                          │
+                 └──────────┬───────────────┘
+                            ↓
+                      suricata -T
+                            ↓
+                     safe rule reload
+```
+
+La consola ofrece ahora:
+
+```text
+Suricata IDS
+  -> [8] Rule management
+
+SURICATA RULE MANAGEMENT
+ [1] Professional baseline
+ [2] Rule status
+ [3] Update now
+ [4] Recommended sources
+ [5] Browse source catalog
+ [6] Enable indexed source
+ [7] Disable source
+ [8] Add HTTPS source
+ [9] Local custom rules
+ [10] Automatic updates
+```
+
+#### Professional baseline
+
+Durante `Configure passive IDS`, el asistente propone este perfil con respuesta predeterminada **Y**. La activación sigue siendo explícita: el operador puede rechazarla y quedarse con ET/Open + las reglas contextuales del DC, y aplicarla más adelante desde `Rule management -> Professional baseline`.
+
+El perfil recomendado para un sensor pasivo profesional instala/activa estas capas:
+
+| Capa | Fuente | Función |
+|---|---|---|
+| General | ET/Open | amenazas, exploits, malware, scans y policy signatures mantenidas por ET |
+| Visibilidad | `oisf/trafficid` | identificación de aplicaciones/tráfico mediante reglas `noalert` |
+| Threat intelligence | `abuse.ch/feodotracker` | infraestructura C2 de botnets |
+| Threat intelligence | `abuse.ch/urlhaus` | URLs usadas para distribución de malware |
+| Threat intelligence | `abuse.ch/sslbl-blacklist` | certificados TLS asociados a infraestructura maliciosa |
+| Contexto | Debian AD Assistant | exposición de Kerberos/LDAP/SMB/RPC/DNS/NTP del DC y ráfagas SMB |
+
+ET/Open es el feed general por defecto de `suricata-update`. Si el administrador instala una fuente comercial que lo sustituya, el asistente no intenta mezclarla de forma ciega con ET/Open.
+
+El baseline **no**:
+
+- convierte `alert` en `drop`;
+- habilita IPS/NFQUEUE;
+- activa feeds de hunting de alto coste por defecto;
+- añade fuentes comerciales sin licencia/token;
+- edita directamente `suricata.rules`;
+- deshabilita categorías del vendor silenciosamente.
+
+El objetivo es disponer de una base útil y mantenida sin transformar el DC en un experimento de miles de firmas arbitrarias.
+
+#### Fuentes adicionales propuestas
+
+`Recommended sources` permite añadir de forma explícita fuentes del catálogo OISF. Además de las incluidas en el baseline, el asistente propone actualmente:
+
+```text
+stamus/lateral
+    detecciones orientadas a movimiento lateral en entornos Windows/AD
+
+ptrules/open
+    conjunto adicional de detecciones abiertas de Positive Technologies
+```
+
+Son **opcionales**. Más reglas no equivalen automáticamente a más seguridad: pueden aumentar CPU, memoria, volumen de EVE y falsos positivos. Activa una fuente adicional porque responde a una necesidad concreta y revisa después el comportamiento del sensor.
+
+El catálogo en vivo se obtiene con:
+
+```bash
+suricata-update update-sources
+suricata-update list-sources
+```
+
+Desde el menú puedes refrescarlo y habilitar cualquier identificador `vendor/name`. La fuente solo se conserva como cambio válido si el ruleset resultante pasa la validación del sensor.
+
+#### Fuente HTTPS no incluida en el catálogo
+
+Para un feed público/privado no indexado, `Add HTTPS source` utiliza el mecanismo nativo:
+
+```bash
+suricata-update add-source custom/<nombre> https://servidor/rules.tar.gz
+```
+
+El workflow del asistente acepta únicamente HTTPS y después reconstruye y valida el ruleset.
+
+No introduce API keys, bearer tokens ni contraseñas en argumentos propios del asistente. Si un proveedor requiere credenciales y ya existe en el índice de `suricata-update`, utiliza la fuente indexada para que el gestor aplique sus parámetros. Revisa siempre cómo y dónde el proveedor/`suricata-update` persiste esas credenciales antes de usar un feed comercial.
+
+#### Reglas manuales locales: solo para contexto propio
+
+La edición manual sigue disponible como escape hatch, pero no como mecanismo principal de actualización:
+
+```text
+/etc/suricata/debian-ad-rules/context.rules
+    gestionado por el asistente; no editar
+
+/etc/suricata/debian-ad-rules/custom.rules
+    gestionado por el operador
+```
+
+`custom.rules` sirve para información que un feed genérico no puede conocer, por ejemplo:
+
+- una subred que jamás debe contactar determinado servicio interno;
+- un protocolo legacy que debe desaparecer después de una fecha;
+- una aplicación propia;
+- una IOC interna temporal;
+- un patrón específico descubierto durante un incidente.
+
+El editor integrado realiza:
+
+```text
+backup
+  ↓
+edit
+  ↓
+suricata -T
+  ├─ FAIL -> rollback del fichero
+  └─ PASS -> rule reload
+```
+
+Cada regla debe utilizar un `sid` globalmente único. Consulta la documentación de SID y `sidallocation.org` antes de reservar un rango permanente. No reutilices SID de ET/Open u otros feeds.
+
+Las reglas locales se almacenan fuera de `/var/lib/suricata/rules`, porque esa ruta pertenece a `suricata-update`. El asistente también migra sus reglas contextuales antiguas fuera del directorio de reglas de la distribución para evitar cargar accidentalmente una misma firma dos veces.
+
+#### Actualizaciones automáticas
+
+Para un sensor operativo no es razonable depender de que el administrador recuerde ejecutar el updater. `Automatic updates` instala:
+
+```text
+debian-ad-suricata-rules.service
+debian-ad-suricata-rules.timer
+```
+
+Cadencias disponibles:
+
+```text
+cada 6 horas     recomendado
+cada 12 horas
+diario
+```
+
+La programación añade `RandomizedDelaySec=15m` para que muchos servidores no consulten las fuentes exactamente a la vez.
+
+El timer ejecuta el asistente instalado mediante un modo no interactivo:
+
+```text
+--ids-rules-update
+```
+
+El pipeline es:
+
+```text
+ruleset anterior
+      ↓ backup
+suricata-update
+      ↓
+¿suricata.rules existe y no está vacío?
+      ↓
+suricata -T con HOME_NET + overlay + reglas locales
+      ↓
+ PASS ───────────────→ reload del sensor
+ FAIL ───────────────→ restaurar ruleset anterior
+```
+
+Si el live reload falla, el asistente intenta un restart controlado. El timer **no cambia qué fuentes están habilitadas**; únicamente actualiza las fuentes que el administrador ya seleccionó.
+
+#### Tuning y supresiones
+
+`suricata-update` soporta política declarativa mediante `enable.conf`, `disable.conf`, `modify.conf` y `drop.conf`. No edites el fichero consolidado para silenciar una firma. Si una regla resulta ruidosa, primero investiga por qué dispara y después utiliza un filtro declarativo o threshold/suppression adecuado.
+
+El asistente todavía mantiene el tuning avanzado separado de la selección de feeds para evitar que un perfil “recomendado” desactive silenciosamente detecciones que pueden ser necesarias en otro entorno. La fuente de verdad debe seguir siendo explícita y auditable.
+
+Referencias oficiales:
+
+- Suricata rule management: `https://docs.suricata.io/en/latest/rule-management/suricata-update.html`
+- suricata-update: `https://suricata-update.readthedocs.io/en/latest/`
+- Source index OISF: `https://github.com/OISF/suricata-intel-index`
+- Rule/SID documentation: `https://docs.suricata.io/en/latest/rules/meta.html`
+
+El sensor continúa siendo **alert-only** en este workflow; gestionar más fuentes no lo convierte en IPS inline.
 
 ### Informes y evidencia
 

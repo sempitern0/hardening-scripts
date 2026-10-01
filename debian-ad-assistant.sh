@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 5.2.4-gpo-authz-preflight
+# Version 5.2.5-managed-rules
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -45,7 +45,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.2.4-gpo-authz-preflight"
+SCRIPT_VERSION="5.2.5-managed-rules"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -71,7 +71,16 @@ IDS_EVE_GLOB="${IDS_EVE_DIR}/eve.json*"
 IDS_DAILY_SERVICE="/etc/systemd/system/debian-ad-ids-daily.service"
 IDS_DAILY_TIMER="/etc/systemd/system/debian-ad-ids-daily.timer"
 IDS_MANAGED_STATE="${IDS_STATE_DIR}/managed.env"
-IDS_LOCAL_RULES="/etc/suricata/rules/debian-ad-assistant.rules"
+# Keep assistant/local rules outside /var/lib/suricata/rules (generated output)
+# and outside the distribution rule directory consumed by suricata-update.
+IDS_RULE_DIR="/etc/suricata/debian-ad-rules"
+IDS_LOCAL_RULES="${IDS_RULE_DIR}/context.rules"
+IDS_CUSTOM_RULES="${IDS_RULE_DIR}/custom.rules"
+IDS_LOCAL_RULE_GLOB="${IDS_RULE_DIR}/*.rules"
+IDS_LEGACY_LOCAL_RULES="/etc/suricata/rules/debian-ad-assistant.rules"
+IDS_RULE_PROFILE_STATE="${IDS_STATE_DIR}/rule-profile.env"
+IDS_RULE_UPDATE_SERVICE="/etc/systemd/system/debian-ad-suricata-rules.service"
+IDS_RULE_UPDATE_TIMER="/etc/systemd/system/debian-ad-suricata-rules.timer"
 
 SAMBA_HEALTH_HELPER="/usr/local/libexec/debian-ad-samba-health"
 SAMBA_HEALTH_SERVICE="/etc/systemd/system/debian-ad-samba-health.service"
@@ -587,6 +596,7 @@ parse_args() {
             --remote|--remote-ops|--remote-control) MODE="remote" ;;
             --events|--event-center|--activity) MODE="events" ;;
             --ids-daily) MODE="ids-daily" ;;
+            --ids-rules-update) MODE="ids-rules-update" ;;
             --install-cli) MODE="install-cli" ;;
             --cli-info|--tools) MODE="cli-info" ;;
             --no-color) FORCE_NO_COLOR=1 ;;
@@ -8929,23 +8939,24 @@ ids_prompt_home_nets() {
 
 
 ids_local_rules_managed() {
-    local rules="${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}"
+    local rules="${IDS_LOCAL_RULES:-/etc/suricata/debian-ad-rules/context.rules}"
     [[ -r "$rules" ]] || return 1
     grep -Fq "# Managed by ${SCRIPT_NAME}" "$rules"
 }
 
 ids_write_local_rules() {
-    local rules="${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" rules_dir tmp
+    local rules="${IDS_LOCAL_RULES:-/etc/suricata/debian-ad-rules/context.rules}" rules_dir tmp
     rules_dir="$(dirname "$rules")"
     mkdir -p "$rules_dir"
+    chmod 0755 "$rules_dir"
     if [[ -e "$rules" ]] && ! ids_local_rules_managed; then
-        msg_warn "Local Suricata rules exist but are not assistant-managed: $rules"
+        msg_warn "Local Suricata context rules exist but are not assistant-managed: $rules"
         return 0
     fi
-    tmp="$(mktemp "${rules_dir}/.debian-ad-assistant.rules.XXXXXX")"
+    tmp="$(mktemp "${rules_dir}/.context.rules.XXXXXX")"
     cat >"$tmp" <<'EOF'
 # Managed by DEBIAN AD Assistant
-# Passive AD/DC contextual detections. Alert-only; ET/Open remains the general ruleset.
+# Passive AD/DC contextual detections. Alert-only; managed upstream feeds remain the general ruleset.
 # Exposure rules use !$HOME_NET so every trusted LAN/VLAN/VPN CIDR is excluded explicitly.
 alert tcp !$HOME_NET any -> $HOME_NET [88,389,464,636,3268,3269] (msg:"DAD IDS External access to AD auth-directory TCP surface"; flags:S; flow:stateless; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901001; rev:2;)
 alert udp !$HOME_NET any -> $HOME_NET [88,389,464] (msg:"DAD IDS External access to AD auth-directory UDP surface"; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901002; rev:2;)
@@ -8957,21 +8968,45 @@ alert udp !$HOME_NET any -> $HOME_NET 123 (msg:"DAD IDS External access to AD-DC
 alert tcp any any -> $HOME_NET 445 (msg:"DAD IDS High-rate SMB connection attempts toward AD-DC"; flags:S; flow:stateless; detection_filter:track by_src,count 40,seconds 10; priority:2; sid:9901008; rev:1;)
 EOF
     chmod 0644 "$tmp"
-    if [[ -f "$rules" ]] && cmp -s "$tmp" "$rules"; then rm -f "$tmp"; return 0; fi
-    [[ -f "$rules" ]] && backup_file "$rules"
-    mv -f "$tmp" "$rules"
-    chmod 0644 "$rules"
-    change APPLIED "Installed/updated assistant-managed Suricata AD/DC local rules"
+    if [[ -f "$rules" ]] && cmp -s "$tmp" "$rules"; then
+        rm -f "$tmp"
+    else
+        [[ -f "$rules" ]] && backup_file "$rules"
+        mv -f "$tmp" "$rules"
+        chmod 0644 "$rules"
+        change APPLIED "Installed/updated assistant-managed Suricata AD/DC context rules"
+    fi
 }
 
 ids_ensure_local_rules() {
-    local rules="${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}"
+    local rules="${IDS_LOCAL_RULES:-/etc/suricata/debian-ad-rules/context.rules}"
+    local legacy="${IDS_LEGACY_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}"
+
     if [[ -s "$rules" ]] && ! ids_local_rules_managed; then
-        msg_warn "Existing Suricata local rules are not assistant-managed; leaving them untouched: $rules"
+        msg_warn "Existing Suricata context rules are not assistant-managed; leaving them untouched: $rules"
         return 0
     fi
-    # Managed files are reconciled on every repair so rule revisions migrate safely.
-    ids_write_local_rules
+
+    ids_write_local_rules || return 1
+
+    # v5.2.1-v5.2.4 stored assistant rules under /etc/suricata/rules. Move
+    # managed content out of the distro/updater input directory to avoid a
+    # signature being loaded once via suricata.rules and again with -s.
+    if [[ "$legacy" != "$rules" && -f "$legacy" ]]; then
+        if grep -Fq "# Managed by ${SCRIPT_NAME}" "$legacy"; then
+            backup_file "$legacy"
+            rm -f "$legacy"
+            change APPLIED "Migrated assistant Suricata context rules out of distribution rule directory"
+        else
+            msg_warn "Legacy Suricata rules are not assistant-managed and were preserved: $legacy"
+        fi
+    fi
+}
+
+ids_custom_rules_count() {
+    local f="${IDS_CUSTOM_RULES:-/etc/suricata/debian-ad-rules/custom.rules}"
+    [[ -s "$f" ]] || { printf '0'; return 0; }
+    grep -cE '^[[:space:]]*(alert|pass|drop|reject|rejectsrc|rejectdst|rejectboth)[[:space:]]' "$f" 2>/dev/null || true
 }
 
 ids_write_managed_state() {
@@ -9111,7 +9146,9 @@ ids_install_systemd_dropin() {
 
     # --set overrides a scalar without replacing the vendor "vars" mapping.
     vendor_exec+=" --set vars.address-groups.HOME_NET=[${home_net}]"
-    [[ -s "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" ]] && vendor_exec+=" -s ${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}"
+    # Load assistant context + optional operator custom rules as a separate
+    # layer. Suricata expands the *.rules glob itself.
+    [[ -s "${IDS_LOCAL_RULES}" ]] && vendor_exec+=" -s '${IDS_LOCAL_RULE_GLOB}'"
     vendor_exec+=" --include ${IDS_CONFIG}"
 
     mkdir -p "$(dirname "$IDS_DROPIN")"
@@ -9126,9 +9163,8 @@ EOF
 }
 
 ids_dropin_has_local_rules() {
-    local rules="${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}"
-    [[ -s "$rules" && -r "$IDS_DROPIN" ]] || return 1
-    grep -Fq " -s ${rules}" "$IDS_DROPIN"
+    [[ -s "${IDS_LOCAL_RULES}" && -r "$IDS_DROPIN" ]] || return 1
+    grep -Fq -- "${IDS_LOCAL_RULE_GLOB}" "$IDS_DROPIN"
 }
 
 
@@ -9156,7 +9192,7 @@ ids_validate_config() {
     }
 
     local -a test_cmd=("$bin" -T -c "$config" --set "vars.address-groups.HOME_NET=[${home_net}]")
-    [[ -s "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" ]] && test_cmd+=( -s "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" )
+    [[ -s "${IDS_LOCAL_RULES}" ]] && test_cmd+=( -s "${IDS_LOCAL_RULE_GLOB}" )
     test_cmd+=( --include "$IDS_CONFIG" )
     if "${test_cmd[@]}" >"$evidence" 2>&1; then
         result PASS "Suricata config test" "$label" "valid"
@@ -9179,6 +9215,545 @@ ids_rules_file() {
     return 1
 }
 
+ids_rule_enabled_sources() {
+    local updater="" output=""
+    updater="$(ids_suricata_update_binary 2>/dev/null || true)"
+    [[ -n "$updater" ]] || return 1
+
+    if output="$("$updater" list-sources --enabled 2>/dev/null)"; then
+        printf '%s\n' "$output"
+        return 0
+    fi
+    if output="$("$updater" list-enabled-sources 2>/dev/null)"; then
+        printf '%s\n' "$output"
+        return 0
+    fi
+    return 1
+}
+
+ids_rule_source_is_enabled() {
+    local source="$1" output=""
+    output="$(ids_rule_enabled_sources 2>/dev/null || true)"
+    [[ -n "$output" ]] || return 1
+    grep -Fq -- "$source" <<<"$output"
+}
+
+ids_rule_refresh_source_index() {
+    local updater="" evidence="${RUN_ROOT}/suricata-update-sources.txt"
+    updater="$(ids_suricata_update_binary 2>/dev/null || true)"
+    [[ -n "$updater" ]] || { msg_warn "suricata-update is unavailable."; return 1; }
+
+    if "$updater" update-sources >"$evidence" 2>&1; then
+        result PASS "Suricata source index" "refreshed" "current OISF source catalog"
+        return 0
+    fi
+    msg_warn "Unable to refresh the Suricata rule-source index. Evidence: $evidence"
+    tail -n 60 "$evidence" >&2 || true
+    return 1
+}
+
+ids_rule_enable_source_no_update() {
+    local source="$1" updater="" evidence="${RUN_ROOT}/suricata-enable-${source//\//_}.txt"
+    updater="$(ids_suricata_update_binary 2>/dev/null || true)"
+    [[ -n "$updater" ]] || return 1
+    ids_rule_source_is_enabled "$source" && return 0
+    "$updater" enable-source "$source" <"$INPUT_FD" >"$evidence" 2>&1
+}
+
+ids_rule_disable_source_no_update() {
+    local source="$1" updater="" evidence="${RUN_ROOT}/suricata-disable-${source//\//_}.txt"
+    updater="$(ids_suricata_update_binary 2>/dev/null || true)"
+    [[ -n "$updater" ]] || return 1
+    "$updater" disable-source "$source" >"$evidence" 2>&1
+}
+
+ids_rule_source_catalog() {
+    section "SURICATA RULE SOURCE CATALOG"
+    local updater=""
+    updater="$(ids_suricata_update_binary 2>/dev/null || true)"
+    [[ -n "$updater" ]] || { msg_warn "suricata-update is unavailable."; return 0; }
+    ids_rule_refresh_source_index || return 0
+    "$updater" list-sources 2>&1 || msg_warn "Unable to list rule sources."
+}
+
+ids_rule_status() {
+    section "SURICATA RULE MANAGEMENT STATUS"
+    local updater="" rules="" count="0" modified="unknown" profile="custom/default"
+    updater="$(ids_suricata_update_binary 2>/dev/null || true)"
+    rules="$(ids_rules_file 2>/dev/null || true)"
+    if [[ -n "$rules" && -s "$rules" ]]; then
+        count="$(grep -cE '^[[:space:]]*(alert|pass|drop|reject|rejectsrc|rejectdst|rejectboth)[[:space:]]' "$rules" 2>/dev/null || true)"
+        modified="$(stat -c '%y' "$rules" 2>/dev/null | cut -d. -f1 || printf unknown)"
+    fi
+    if [[ -r "$IDS_RULE_PROFILE_STATE" ]]; then
+        # shellcheck disable=SC1090
+        . "$IDS_RULE_PROFILE_STATE"
+        profile="${IDS_RULE_PROFILE:-custom/default}"
+    fi
+
+    printf '  %-28s %s\n' "Profile" "$profile"
+    printf '  %-28s %s\n' "Updater" "${updater:-missing}"
+    printf '  %-28s %s\n' "Generated ruleset" "${rules:-missing}"
+    printf '  %-28s %s\n' "Active rule lines" "${count:-0}"
+    printf '  %-28s %s\n' "Ruleset modified" "$modified"
+    printf '  %-28s %s\n' "Context rules" "${IDS_LOCAL_RULES}"
+    printf '  %-28s %s (%s rules)\n' "Operator custom rules" "${IDS_CUSTOM_RULES}" "$(ids_custom_rules_count)"
+    printf '  %-28s %s\n' "Automatic updates" "$(safe_systemctl_enabled debian-ad-suricata-rules.timer) / $(safe_systemctl_state debian-ad-suricata-rules.timer)"
+    printf '\n  General baseline: ET/Open is the default suricata-update feed unless an enabled source replaces it.\n'
+    printf '  Enabled additional sources:\n'
+    ids_rule_enabled_sources 2>/dev/null | sed 's/^/    /' || printf '    (none explicitly enabled / unable to query)\n'
+    printf '\n  Professional baseline checks:\n'
+    local src
+    for src in oisf/trafficid abuse.ch/feodotracker abuse.ch/urlhaus abuse.ch/sslbl-blacklist; do
+        if ids_rule_source_is_enabled "$src"; then
+            printf '    [OK] %s\n' "$src"
+        else
+            printf '    [--] %s\n' "$src"
+        fi
+    done
+}
+
+ids_rule_reload_after_local_change() {
+    if ! ids_validate_config "local-rule-change"; then
+        return 1
+    fi
+    if systemctl is-active --quiet suricata.service; then
+        if ! systemctl reload suricata.service; then
+            msg_warn "Suricata rule reload failed; attempting service restart."
+            systemctl restart suricata.service || return 1
+        fi
+    fi
+    return 0
+}
+
+ids_rule_enable_source_safe() {
+    local source="$1" label="${2:-$1}" already=0
+    [[ -f "$IDS_CONFIG" ]] || { msg_warn "Configure the passive IDS first; source changes require full sensor validation."; return 0; }
+    ids_rule_source_is_enabled "$source" && already=1
+    if (( already )); then
+        result SKIP "Rule source" "$source already enabled" "$label"
+        return 0
+    fi
+
+    confirm "Enable rule source '$source' ($label) and rebuild the ruleset?" Y || return 0
+    ids_rule_refresh_source_index || return 1
+    if ! ids_rule_enable_source_no_update "$source"; then
+        msg_warn "Unable to enable source '$source'. It may be unavailable for this Suricata version or require parameters."
+        return 1
+    fi
+    if ids_update_rules; then
+        change APPLIED "Enabled Suricata rule source=$source"
+        result PASS "Rule source" "$source" "enabled + validated"
+        return 0
+    fi
+
+    msg_warn "Ruleset validation failed after enabling '$source'; disabling the newly-added source."
+    ids_rule_disable_source_no_update "$source" >/dev/null 2>&1 || true
+    return 1
+}
+
+ids_rule_disable_source_interactive() {
+    section "DISABLE SURICATA RULE SOURCE"
+    local enabled="" source="" updater=""
+    updater="$(ids_suricata_update_binary 2>/dev/null || true)"
+    [[ -n "$updater" ]] || { msg_warn "suricata-update is unavailable."; return 0; }
+    enabled="$(ids_rule_enabled_sources 2>/dev/null || true)"
+    printf '%s\n' "${enabled:-No explicitly enabled sources returned.}"
+    source="$(ask 'Exact source ID to disable (blank=cancel)' '')"
+    [[ -n "$source" ]] || return 0
+    ids_rule_source_is_enabled "$source" || { msg_warn "Source '$source' is not reported as enabled."; return 0; }
+    confirm "Disable '$source' and rebuild the ruleset?" N || return 0
+
+    if ! ids_rule_disable_source_no_update "$source"; then
+        msg_warn "Unable to disable source '$source'."
+        return 0
+    fi
+    if ids_update_rules; then
+        change APPLIED "Disabled Suricata rule source=$source"
+        result PASS "Rule source" "$source" "disabled + validated"
+    else
+        msg_warn "Ruleset validation failed after disabling '$source'; attempting to restore source state."
+        ids_rule_enable_source_no_update "$source" >/dev/null 2>&1 || true
+    fi
+}
+
+ids_rule_enable_indexed_source_interactive() {
+    section "ENABLE INDEXED SURICATA SOURCE"
+    local source=""
+    ids_rule_refresh_source_index || return 0
+    source="$(ask 'Exact source ID from suricata-update catalog (blank=cancel)' '')"
+    [[ -n "$source" ]] || return 0
+    [[ "$source" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+        msg_warn "Source ID must look like vendor/name."
+        return 0
+    }
+    ids_rule_enable_source_safe "$source" "operator-selected indexed source" || true
+}
+
+ids_rule_add_url_source_interactive() {
+    section "ADD CUSTOM HTTPS RULE SOURCE"
+    [[ -f "$IDS_CONFIG" ]] || { msg_warn "Configure the passive IDS first; custom sources require full sensor validation."; return 0; }
+    local updater="" short="" source="" url="" evidence=""
+    updater="$(ids_suricata_update_binary 2>/dev/null || true)"
+    [[ -n "$updater" ]] || { msg_warn "suricata-update is unavailable."; return 0; }
+
+    printf 'This path is for an unauthenticated HTTPS rules feed not present in the OISF source index.\n'
+    printf 'Authenticated/commercial feeds should use their indexed source when available so suricata-update can prompt for required parameters.\n\n'
+    short="$(ask 'Local source name (letters/numbers/._-; blank=cancel)' '')"
+    [[ -n "$short" ]] || return 0
+    [[ "$short" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || { msg_warn "Invalid source name."; return 0; }
+    source="custom/${short}"
+    url="$(ask 'HTTPS rules URL' '')"
+    [[ "$url" =~ ^https://[^?#[:space:]]+$ ]] || { msg_warn "Use a plain HTTPS URL without query strings/fragments; this prevents accidental credential leakage into logs/state."; return 0; }
+    confirm "Add '$source' from '$url' and validate the resulting ruleset?" N || return 0
+
+    evidence="${RUN_ROOT}/suricata-add-source-${short}.txt"
+    if ! "$updater" add-source "$source" "$url" >"$evidence" 2>&1; then
+        msg_warn "suricata-update could not add the custom source. Evidence: $evidence"
+        tail -n 60 "$evidence" >&2 || true
+        return 0
+    fi
+    if ids_update_rules; then
+        change APPLIED "Added custom Suricata HTTPS rule source=$source url=$url"
+        result PASS "Custom rule source" "$source" "added + validated"
+    else
+        msg_warn "Ruleset failed validation; removing newly-added custom source '$source'."
+        "$updater" remove-source "$source" >/dev/null 2>&1 || true
+    fi
+}
+
+ids_rule_recommended_sources_menu() {
+    while true; do
+        ui_menu_screen "RECOMMENDED / OPTIONAL RULE SOURCES" \
+            "Curated source IDs from the live OISF suricata-update catalog; enable only what fits the environment"
+        ui_menu_item "1" "OISF Traffic ID" "Application/traffic labels; noalert visibility rules (professional baseline)" "$C_GREEN"
+        ui_menu_item "2" "abuse.ch Feodo" "High-signal botnet C2 IP intelligence (professional baseline)" "$C_GREEN"
+        ui_menu_item "3" "abuse.ch URLhaus" "Malware-distribution URL intelligence (professional baseline)" "$C_GREEN"
+        ui_menu_item "4" "abuse.ch SSLBL" "Malicious TLS certificate intelligence (professional baseline)" "$C_GREEN"
+        ui_menu_item "5" "Stamus lateral" "Windows lateral-movement detections; useful for AD estates" "$C_YELLOW"
+        ui_menu_item "6" "PT Rules Open" "Additional open threat/exploit detections; review noise/licence" "$C_YELLOW"
+        ui_menu_exit
+        ui_rule
+        local choice
+        choice="$(ask 'Select source' '0')"
+        case "$choice" in
+            1) ids_rule_enable_source_safe oisf/trafficid "OISF Traffic ID / MIT" || msg_warn "Source activation failed cleanly."; ui_pause ;;
+            2) ids_rule_enable_source_safe abuse.ch/feodotracker "abuse.ch Feodo Tracker / CC0" || msg_warn "Source activation failed cleanly."; ui_pause ;;
+            3) ids_rule_enable_source_safe abuse.ch/urlhaus "abuse.ch URLhaus / CC0" || msg_warn "Source activation failed cleanly."; ui_pause ;;
+            4) ids_rule_enable_source_safe abuse.ch/sslbl-blacklist "abuse.ch SSLBL / CC0" || msg_warn "Source activation failed cleanly."; ui_pause ;;
+            5) ids_rule_enable_source_safe stamus/lateral "Stamus lateral movement / GPL-3.0" || msg_warn "Source activation failed cleanly."; ui_pause ;;
+            6) ids_rule_enable_source_safe ptrules/open "Positive Technologies Open Ruleset" || msg_warn "Source activation failed cleanly."; ui_pause ;;
+            H|h) MENU_MAIN_REQUESTED=1; return 0 ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid rule-source selection."; ui_pause ;;
+        esac
+    done
+}
+
+ids_enable_professional_sources_no_update() {
+    # Enable the curated add-on sources, but leave ruleset generation/validation
+    # to the caller so first-time sensor configuration only rebuilds once.
+    local __new_var="$1" __fail_var="$2"
+    local -a sources=(oisf/trafficid abuse.ch/feodotracker abuse.ch/urlhaus abuse.ch/sslbl-blacklist)
+    local -a newly_enabled=()
+    local source failure_count=0
+
+    ids_rule_refresh_source_index || return 1
+    for source in "${sources[@]}"; do
+        if ids_rule_source_is_enabled "$source"; then
+            continue
+        fi
+        if ids_rule_enable_source_no_update "$source"; then
+            newly_enabled+=("$source")
+        else
+            msg_warn "Recommended source could not be enabled: $source"
+            failure_count=$((failure_count + 1))
+        fi
+    done
+
+    local saved_ifs="$IFS"
+    IFS=','
+    printf -v "$__new_var" '%s' "${newly_enabled[*]}"
+    IFS="$saved_ifs"
+    printf -v "$__fail_var" '%s' "$failure_count"
+}
+
+ids_write_professional_profile_state() {
+    local failures="${1:-0}"
+    mkdir -p "$(dirname "$IDS_RULE_PROFILE_STATE")"
+    cat >"$IDS_RULE_PROFILE_STATE" <<EOF
+IDS_RULE_PROFILE=professional
+IDS_RULE_PROFILE_APPLIED_AT=$(printf '%q' "$(date -Is)")
+EOF
+    chmod 0600 "$IDS_RULE_PROFILE_STATE"
+    change APPLIED "Applied professional Suricata rule profile"
+    if (( failures )); then
+        result WARN "Professional rule profile" "$failures recommended source(s) unavailable" "ET/Open + available sources validated"
+    else
+        result PASS "Professional rule profile" "ET/Open + managed high-signal add-ons + AD context" "validated"
+    fi
+}
+
+ids_apply_professional_rule_profile() {
+    section "APPLY PROFESSIONAL SURICATA BASELINE"
+    [[ -f "$IDS_CONFIG" ]] || { msg_warn "Configure the passive IDS first with [3]; then apply the professional rule profile."; return 0; }
+    ids_install_optional || return 1
+    ids_prepare_state
+
+    cat <<'EOF'
+Professional passive-IDS baseline:
+  - ET/Open: general maintained threat signatures (suricata-update default)
+  - OISF Traffic ID: application/traffic identification with noalert rules
+  - abuse.ch Feodo Tracker: botnet C2 IP intelligence
+  - abuse.ch URLhaus: malware-distribution URL intelligence
+  - abuse.ch SSLBL: malicious TLS certificate intelligence
+  - Debian AD Assistant context rules: AD/DC exposure + SMB rate anomaly
+
+This does NOT enable inline blocking, does NOT convert alert rules to drop, and does
+not enable broad hunting feeds by default. Vendor/default rule enablement remains intact.
+EOF
+    confirm "Apply this professional detection baseline and rebuild the ruleset?" Y || return 0
+
+    local newly_enabled_text="" failures=0 source
+    local -a newly_enabled=()
+    ids_enable_professional_sources_no_update newly_enabled_text failures || return 1
+    [[ -n "$newly_enabled_text" ]] && IFS=',' read -r -a newly_enabled <<<"$newly_enabled_text"
+
+    ids_ensure_local_rules || { msg_warn "Context rules could not be reconciled."; failures=$((failures + 1)); }
+    if ! ids_update_rules; then
+        msg_warn "Professional baseline validation failed; rolling back newly enabled source state."
+        for source in "${newly_enabled[@]}"; do
+            ids_rule_disable_source_no_update "$source" >/dev/null 2>&1 || true
+        done
+        return 1
+    fi
+
+    ids_write_professional_profile_state "$failures"
+
+    if [[ -f "$IDS_CONFIG" ]] && confirm "Enable automatic validated rule updates every 6 hours?" Y; then
+        ids_install_rule_update_timer six-hourly || true
+    fi
+}
+
+ids_rule_editor() {
+    local candidate="${VISUAL:-${EDITOR:-}}"
+    if [[ -n "$candidate" && "$candidate" != *[[:space:]]* ]] && command_exists "$candidate"; then
+        printf '%s' "$candidate"
+        return 0
+    fi
+    local e
+    for e in nano vim vi; do
+        command_exists "$e" && { printf '%s' "$e"; return 0; }
+    done
+    return 1
+}
+
+ids_edit_custom_rules() {
+    [[ -f "$IDS_CONFIG" ]] || { msg_warn "Configure the passive IDS first; custom rules require full sensor validation."; return 0; }
+    ids_prepare_state
+    ids_ensure_local_rules || return 1
+    local file="${IDS_CUSTOM_RULES}" editor="" tmp_backup="${RUN_ROOT}/custom.rules.before"
+    mkdir -p "$(dirname "$file")"
+    [[ -f "$file" ]] && cp -a "$file" "$tmp_backup" || : >"$tmp_backup"
+    [[ -f "$file" ]] || {
+        cat >"$file" <<'EOF'
+# Operator-managed Suricata rules.
+# This file is deliberately separate from assistant context rules and generated suricata.rules.
+# Use globally unique SIDs; consult https://sidallocation.org/ before allocating a permanent range.
+EOF
+        chmod 0644 "$file"
+    }
+    editor="$(ids_rule_editor 2>/dev/null || true)"
+    [[ -n "$editor" ]] || { msg_warn "No supported terminal editor found (nano/vim/vi)."; return 0; }
+
+    "$editor" "$file" <"$INPUT_FD" >"$INPUT_FD" 2>&1 || {
+        msg_warn "Editor returned an error; custom rules were not activated."
+        cp -a "$tmp_backup" "$file" 2>/dev/null || true
+        return 0
+    }
+    chmod 0644 "$file"
+
+    if ids_rule_reload_after_local_change; then
+        change APPLIED "Updated operator-managed Suricata custom rules file=$file"
+        result PASS "Custom local rules" "$file / $(ids_custom_rules_count) rule lines" "validated + loaded"
+        return 0
+    fi
+
+    msg_warn "Custom rules failed Suricata validation; restoring the previous file."
+    cp -a "$tmp_backup" "$file"
+    chmod 0644 "$file"
+    ids_rule_reload_after_local_change >/dev/null 2>&1 || true
+    return 0
+}
+
+ids_custom_rules_menu() {
+    while true; do
+        ui_menu_screen "LOCAL CUSTOM SURICATA RULES" "Manual fallback for environment-specific detections; upstream feeds remain preferred"
+        ui_menu_item "1" "Show custom rules" "Display operator-managed file and active rule count"
+        ui_menu_item "2" "Edit custom rules" "Backup -> editor -> suricata -T -> reload or rollback" "$C_YELLOW"
+        ui_menu_item "3" "Revalidate / reload" "Test current local rules without editing"
+        ui_menu_item "4" "Remove custom rules" "Delete only operator custom file; context rules remain" "$C_RED"
+        ui_menu_exit
+        ui_rule
+        local choice
+        choice="$(ask 'Select custom-rule operation' '1')"
+        case "$choice" in
+            1)
+                printf 'Path: %s\nActive rule lines: %s\n\n' "$IDS_CUSTOM_RULES" "$(ids_custom_rules_count)"
+                [[ -f "$IDS_CUSTOM_RULES" ]] && cat -- "$IDS_CUSTOM_RULES" || printf '(no custom rule file)\n'
+                ui_pause
+                ;;
+            2) ids_edit_custom_rules || msg_warn "Custom-rule edit was not activated."; ui_pause ;;
+            3) ids_rule_reload_after_local_change && result PASS "Custom/local rules" "validation + reload" "healthy" || msg_warn "Local rule validation failed."; ui_pause ;;
+            4)
+                if [[ -f "$IDS_CUSTOM_RULES" ]] && confirm_high_risk "Delete operator custom Suricata rules file $IDS_CUSTOM_RULES"; then
+                    cp -a "$IDS_CUSTOM_RULES" "${RUN_ROOT}/custom.rules.removed"
+                    rm -f "$IDS_CUSTOM_RULES"
+                    ids_rule_reload_after_local_change || msg_warn "Suricata validation/reload failed after custom-rule removal."
+                    change APPLIED "Removed operator custom Suricata rules file"
+                else
+                    msg_info "No custom-rule file removed."
+                fi
+                ui_pause
+                ;;
+            H|h) MENU_MAIN_REQUESTED=1; return 0 ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid custom-rule operation."; ui_pause ;;
+        esac
+    done
+}
+
+ids_install_rule_update_timer() {
+    local cadence="${1:-six-hourly}" calendar="*-*-* 00,06,12,18:17:00" label="every 6 hours"
+    case "$cadence" in
+        six-hourly) calendar="*-*-* 00,06,12,18:17:00"; label="every 6 hours" ;;
+        twelve-hourly) calendar="*-*-* 00,12:17:00"; label="every 12 hours" ;;
+        daily) calendar="*-*-* 03:17:00"; label="daily" ;;
+        *) return 1 ;;
+    esac
+
+    [[ -f "$IDS_CONFIG" ]] || { msg_warn "Configure the passive IDS before enabling automatic rule updates."; return 1; }
+    local target="/usr/local/libexec/debian-ad-assistant"
+    if [[ ! -x "$target" ]] || ! grep -Fq -- '--ids-rules-update' "$target" 2>/dev/null; then
+        msg_info "Automatic rule updates need the current stable installed assistant path."
+        confirm "Install/refresh ad-* CLI commands now?" Y || return 1
+        install_cli_commands
+    fi
+    [[ -x "$target" ]] && grep -Fq -- '--ids-rules-update' "$target" || {
+        msg_warn "Installed assistant path does not support scheduled rule updates: $target"
+        return 1
+    }
+
+    cat >"$IDS_RULE_UPDATE_SERVICE" <<EOF
+[Unit]
+Description=Debian AD Assistant validated Suricata rule update
+After=network-online.target suricata.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${target} --ids-rules-update --no-color
+EOF
+
+    cat >"$IDS_RULE_UPDATE_TIMER" <<EOF
+[Unit]
+Description=Schedule validated Suricata rule updates
+
+[Timer]
+OnCalendar=${calendar}
+Persistent=true
+RandomizedDelaySec=15m
+Unit=debian-ad-suricata-rules.service
+
+[Install]
+WantedBy=timers.target
+EOF
+    chmod 0644 "$IDS_RULE_UPDATE_SERVICE" "$IDS_RULE_UPDATE_TIMER"
+    systemctl daemon-reload
+    systemctl enable --now debian-ad-suricata-rules.timer
+    result PASS "Automatic Suricata rules" "$label + 15m randomized delay" "enabled"
+    change APPLIED "Enabled automatic validated Suricata rule updates cadence=$cadence"
+}
+
+ids_rule_update_timer_menu() {
+    while true; do
+        ui_menu_screen "AUTOMATIC SURICATA RULE UPDATES" "systemd timer -> suricata-update -> config test -> live reload/restart fallback"
+        printf '  Current timer: %s / %s\n\n' "$(safe_systemctl_enabled debian-ad-suricata-rules.timer)" "$(safe_systemctl_state debian-ad-suricata-rules.timer)"
+        ui_menu_item "1" "Every 6 hours" "Recommended for maintained threat-intelligence feeds" "$C_GREEN"
+        ui_menu_item "2" "Every 12 hours" "Lower-frequency update cadence"
+        ui_menu_item "3" "Daily" "03:17 local time + randomized delay"
+        ui_menu_item "4" "Disable timer" "Keep current rules and source configuration" "$C_YELLOW"
+        ui_menu_item "5" "Show timer" "systemctl status/list-timers"
+        ui_menu_exit
+        ui_rule
+        local choice
+        choice="$(ask 'Select automatic-update operation' '0')"
+        case "$choice" in
+            1) ids_install_rule_update_timer six-hourly || msg_warn "Automatic update timer was not enabled."; ui_pause ;;
+            2) ids_install_rule_update_timer twelve-hourly || msg_warn "Automatic update timer was not enabled."; ui_pause ;;
+            3) ids_install_rule_update_timer daily || msg_warn "Automatic update timer was not enabled."; ui_pause ;;
+            4)
+                systemctl disable --now debian-ad-suricata-rules.timer >/dev/null 2>&1 || true
+                result PASS "Automatic Suricata rules" "timer disabled" "manual updates only"
+                ui_pause
+                ;;
+            5)
+                systemctl status debian-ad-suricata-rules.timer --no-pager --full 2>&1 || true
+                systemctl list-timers debian-ad-suricata-rules.timer --no-pager 2>&1 || true
+                ui_pause
+                ;;
+            H|h) MENU_MAIN_REQUESTED=1; return 0 ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid timer operation."; ui_pause ;;
+        esac
+    done
+}
+
+ids_rule_management_menu() {
+    while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
+        ui_menu_screen "SURICATA RULE MANAGEMENT" \
+            "Managed feeds first; custom rules only for local context. Every change is rebuilt and validated before reload."
+        ui_menu_item "1" "Professional baseline" "ET/Open + OISF TrafficID + abuse.ch C2/URL/TLS + AD context" "$C_GREEN"
+        ui_menu_item "2" "Rule status" "Profile, generated rule count, enabled sources, local/custom state"
+        ui_menu_item "3" "Update now" "Fetch enabled feeds -> build -> validate -> safe reload" "$C_CYAN"
+        ui_menu_item "4" "Recommended sources" "Enable curated optional feeds individually"
+        ui_menu_item "5" "Browse source catalog" "Refresh/list current OISF suricata-update source index"
+        ui_menu_item "6" "Enable indexed source" "Enter any vendor/name from the live catalog"
+        ui_menu_item "7" "Disable source" "Disable one explicitly enabled source without deleting credentials"
+        ui_menu_item "8" "Add HTTPS source" "Register an unauthenticated custom URL via suricata-update" "$C_YELLOW"
+        ui_menu_item "9" "Local custom rules" "Manual environment-specific fallback with validation/rollback" "$C_YELLOW"
+        ui_menu_item "10" "Automatic updates" "Validated systemd timer; default recommendation every 6 hours" "$C_GREEN"
+        ui_menu_exit
+        ui_rule
+
+        local choice
+        choice="$(ask 'Select rule-management operation' '2')"
+        case "$choice" in
+            1) ids_apply_professional_rule_profile || msg_warn "Professional baseline was not fully applied; previous valid rules remain available."; ui_pause ;;
+            2) ids_rule_status; ui_pause ;;
+            3) ids_update_rules || msg_warn "Rule update failed cleanly; review run evidence and previous valid rules."; ui_pause ;;
+            4) ids_rule_recommended_sources_menu ;;
+            5) ids_rule_source_catalog; ui_pause ;;
+            6) ids_rule_enable_indexed_source_interactive || true; ui_pause ;;
+            7) ids_rule_disable_source_interactive || true; ui_pause ;;
+            8) ids_rule_add_url_source_interactive || true; ui_pause ;;
+            9) ids_custom_rules_menu ;;
+            10) ids_rule_update_timer_menu ;;
+            H|h) MENU_MAIN_REQUESTED=1; return 0 ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid rule-management operation."; ui_pause ;;
+        esac
+    done
+}
+
+ids_restore_generated_rules() {
+    local backup="$1" rules_root="$2"
+    [[ -f "$backup" ]] || return 1
+    rm -rf -- "$rules_root"
+    tar -xpf "$backup" -C "$(dirname "$rules_root")"
+}
+
 ids_update_rules() {
     section "SURICATA RULE UPDATE"
     local updater="" rules_root="/var/lib/suricata/rules"
@@ -9198,6 +9773,9 @@ ids_update_rules() {
     if ! "$updater" >"${RUN_ROOT}/suricata-update.txt" 2>&1; then
         msg_warn "suricata-update failed. Evidence: ${RUN_ROOT}/suricata-update.txt"
         tail -n 80 "${RUN_ROOT}/suricata-update.txt" >&2 || true
+        if [[ -f "$backup" ]]; then
+            ids_restore_generated_rules "$backup" "$rules_root" || msg_warn "Unable to restore the previous generated rules directory."
+        fi
         return 1
     fi
 
@@ -9206,13 +9784,15 @@ ids_update_rules() {
     if [[ -z "$rule_file" || ! -s "$rule_file" ]]; then
         msg_error "suricata-update completed but no non-empty suricata.rules file was produced."
         tail -n 80 "${RUN_ROOT}/suricata-update.txt" >&2 || true
+        if [[ -f "$backup" ]]; then
+            ids_restore_generated_rules "$backup" "$rules_root" || msg_warn "Unable to restore the previous generated rules directory."
+        fi
         return 1
     fi
 
     if ! ids_validate_config "after-rule-update"; then
         if [[ -f "$backup" ]]; then
-            rm -rf "$rules_root"
-            tar -xpf "$backup" -C "$(dirname "$rules_root")"
+            ids_restore_generated_rules "$backup" "$rules_root" || msg_warn "Unable to restore the previous generated rules directory."
             msg_warn "Rule update was rolled back after configuration validation failure."
         fi
         return 1
@@ -9262,10 +9842,31 @@ ids_configure_passive() {
     ids_install_systemd_dropin "$iface" "$home_nets" || return 1
 
     if ids_suricata_update_binary >/dev/null 2>&1; then
-        ids_update_rules || {
+        local use_professional_profile=0 profile_new_text="" profile_failures=0 source
+        local -a profile_new_sources=()
+        if confirm "Enable the recommended professional managed-rule baseline (ET/Open + OISF TrafficID + abuse.ch high-signal feeds + AD context)?" Y; then
+            use_professional_profile=1
+            if ! ids_enable_professional_sources_no_update profile_new_text profile_failures; then
+                msg_warn "The managed source catalog could not be prepared; continuing with ET/Open + local AD context only."
+                use_professional_profile=0
+            fi
+            [[ -n "$profile_new_text" ]] && IFS=',' read -r -a profile_new_sources <<<"$profile_new_text"
+        fi
+
+        if ! ids_update_rules; then
             msg_warn "Initial rule update failed; Suricata configuration remains staged for inspection."
+            if (( use_professional_profile )); then
+                for source in "${profile_new_sources[@]}"; do
+                    ids_rule_disable_source_no_update "$source" >/dev/null 2>&1 || true
+                done
+            fi
             return 1
-        }
+        fi
+        if (( use_professional_profile )); then
+            ids_write_professional_profile_state "$profile_failures"
+        else
+            result INFO "Rule profile" "ET/Open + local AD context" "professional baseline can be enabled later from Rule management"
+        fi
     else
         msg_warn "No rules updater is available; service start is deferred."
         return 1
@@ -9388,7 +9989,7 @@ ids_auto_repair_managed_install() {
         change APPLIED "Enabled Suricata EVE flow telemetry for operator activity views"
     fi
 
-    if [[ -s "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" ]] && ! ids_dropin_has_local_rules; then
+    if [[ -s "${IDS_LOCAL_RULES}" ]] && ! ids_dropin_has_local_rules; then
         msg_warn "Managed Suricata drop-in does not yet load assistant local AD/DC rules; upgrading it."
         ids_install_systemd_dropin "$iface" "$home_net" || return 1
         restart_needed=1
@@ -9912,7 +10513,7 @@ ids_sensor_health() {
             msg_warn "Automatic repair could not fully normalize the managed Suricata installation."
     fi
 
-    local bin="" config="" rules="" eve="${IDS_EVE_DIR}/eve.json" local_rules="${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}"
+    local bin="" config="" rules="" eve="${IDS_EVE_DIR}/eve.json" local_rules="${IDS_LOCAL_RULES}"
     bin="$(ids_suricata_binary 2>/dev/null || true)"
     config="$(ids_suricata_config 2>/dev/null || true)"
     rules="$(ids_rules_file 2>/dev/null || true)"
@@ -9952,6 +10553,12 @@ ids_sensor_health() {
         result PASS "AD local rules" "$local_rules / ${local_count:-0} contextual alert rules" "loaded"
     else
         result WARN "AD local rules" "missing or empty" "$local_rules; ET/Open remains usable"
+    fi
+
+    if [[ -s "${IDS_CUSTOM_RULES}" ]]; then
+        result PASS "Operator custom rules" "${IDS_CUSTOM_RULES} / $(ids_custom_rules_count) rule lines" "loaded alongside managed context"
+    else
+        result INFO "Operator custom rules" "none" "optional"
     fi
 
     if [[ -n "$rules" && -s "$rules" ]]; then
@@ -9995,7 +10602,9 @@ ids_readiness() {
     printf '  %-28s %s\n' "suricata-update" "$(package_installed_version suricata-update)"
     printf '  %-28s %s\n' "Service" "$(safe_systemctl_state suricata.service)"
     printf '  %-28s %s\n' "Managed overlay" "$( [[ -f "$IDS_CONFIG" ]] && printf 'present' || printf 'absent' )"
-    printf '  %-28s %s\n' "Local AD rules" "$( [[ -s "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" ]] && printf 'present' || printf 'absent' )"
+    printf '  %-28s %s\n' "Local AD rules" "$( [[ -s "${IDS_LOCAL_RULES}" ]] && printf 'present' || printf 'absent' )"
+    printf '  %-28s %s\n' "Custom local rules" "$( [[ -s "${IDS_CUSTOM_RULES}" ]] && printf '%s rules' "$(ids_custom_rules_count)" || printf 'none' )"
+    printf '  %-28s %s\n' "Rule update timer" "$(safe_systemctl_enabled debian-ad-suricata-rules.timer) / $(safe_systemctl_state debian-ad-suricata-rules.timer)"
     printf '  %-28s %s\n' "EVE log" "$( [[ -f "${IDS_EVE_DIR}/eve.json" ]] && printf 'present' || printf 'absent' )"
 
     local exec=""
@@ -10127,7 +10736,11 @@ ids_export_evidence() {
 
     [[ -f "$IDS_CONFIG" ]] && cp -a "$IDS_CONFIG" "$bundle/"
     [[ -f "$IDS_MANAGED_STATE" ]] && cp -a "$IDS_MANAGED_STATE" "$bundle/managed-state.env"
-    [[ -f "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" ]] && cp -a "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" "$bundle/"
+    [[ -d "${IDS_RULE_DIR}" ]] && cp -a "${IDS_RULE_DIR}" "$bundle/local-rules"
+    ids_rule_enabled_sources >"$bundle/enabled-rule-sources.txt" 2>&1 || true
+    local updater=""
+    updater="$(ids_suricata_update_binary 2>/dev/null || true)"
+    [[ -n "$updater" ]] && "$updater" list-sources >"$bundle/rule-source-catalog.txt" 2>&1 || true
     systemctl status suricata.service --no-pager --full >"$bundle/service-status.txt" 2>&1 || true
     journalctl -u suricata.service -b --no-pager -n 200 >"$bundle/journal.txt" 2>&1 || true
     ids_summary 24 >"$bundle/summary-24h.txt" 2>&1 || true
@@ -10150,11 +10763,16 @@ ids_disable_integration() {
 
     systemctl disable --now debian-ad-ids-daily.timer >/dev/null 2>&1 || true
     rm -f "$IDS_DAILY_TIMER" "$IDS_DAILY_SERVICE"
+    systemctl disable --now debian-ad-suricata-rules.timer >/dev/null 2>&1 || true
+    rm -f "$IDS_RULE_UPDATE_TIMER" "$IDS_RULE_UPDATE_SERVICE"
 
     systemctl disable --now suricata.service >/dev/null 2>&1 || true
     rm -f "$IDS_DROPIN" "$IDS_CONFIG"
     if ids_local_rules_managed; then
-        rm -f "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}"
+        rm -f "${IDS_LOCAL_RULES}"
+    fi
+    if [[ -f "${IDS_CUSTOM_RULES}" ]]; then
+        msg_warn "Operator custom rules were preserved: ${IDS_CUSTOM_RULES}"
     fi
     rmdir "$(dirname "$IDS_DROPIN")" >/dev/null 2>&1 || true
     systemctl daemon-reload
@@ -10176,7 +10794,7 @@ ids_menu() {
         ui_menu_item "5" "Operator overview" "Plain-language activity, who contacted the DC, services and explained alerts"
         ui_menu_item "6" "Recent alerts explained" "Plain-language signature meaning, endpoints, trust scope and next action"
         ui_menu_item "7" "AD protocol intelligence" "Kerberos attempts/errors/sources, DNS activity, SMB dialects and NTLMSSP"
-        ui_menu_item "8" "Update rules" "suricata-update -> config test -> safe reload" "$C_YELLOW"
+        ui_menu_item "8" "Rule management" "Professional profile, managed feeds, custom sources/rules and automatic updates" "$C_GREEN"
         ui_menu_item "9" "Daily local reports" "Generate/view reports or enable a systemd timer"
         ui_menu_item "10" "Export evidence" "Config/health/summary bundle without raw EVE payload"
         ui_menu_item "11" "Disable IDS integration" "Remove assistant config/timer; retain packages" "$C_RED"
@@ -10204,10 +10822,7 @@ ids_menu() {
                 hours="$(ids_choose_window)" || { ui_pause; continue; }
                 ids_ad_intelligence "$hours"; ui_pause
                 ;;
-            8)
-                ids_update_rules
-                ui_pause
-                ;;
+            8) ids_rule_management_menu ;;
             9)
                 printf '\n  [1] Generate report now\n  [2] View generated reports\n  [3] Enable/refresh daily timer\n  [4] Disable daily timer\n  [0] Cancel\n'
                 local daily_choice
@@ -10234,6 +10849,28 @@ ids_menu() {
             *) msg_warn "Invalid IDS operation."; ui_pause ;;
         esac
     done
+}
+
+ids_rule_update_mode() {
+    # Non-interactive target for the systemd rule-update timer. It never
+    # changes source selection; it only refreshes already configured sources,
+    # validates the complete sensor configuration and reloads safely.
+    ids_prepare_state
+    if ! ids_suricata_update_binary >/dev/null 2>&1; then
+        msg_warn "suricata-update is unavailable; scheduled rule update skipped."
+        return 0
+    fi
+    if [[ ! -f "$IDS_CONFIG" ]]; then
+        msg_warn "Managed Suricata IDS configuration is absent; scheduled rule update skipped."
+        return 0
+    fi
+    ids_ensure_local_rules || true
+    if ids_update_rules; then
+        event_emit INFO suricata rules update PASS "" "scheduled Suricata rule update completed and validated" || true
+        return 0
+    fi
+    event_emit ERROR suricata rules update FAIL "" "scheduled Suricata rule update failed; previous generated rules were retained/restored" || true
+    return 1
 }
 
 ids_daily_mode() {
@@ -12165,6 +12802,7 @@ main() {
         remote) prepare_existing_ad_context; remote_ops_menu; save_config ;;
         events) prepare_event_context; event_center_menu ;;
         ids-daily) load_config || true; ids_daily_mode ;;
+        ids-rules-update) load_config || true; ids_rule_update_mode ;;
         install-cli) install_cli_commands ;;
         cli-info) show_cli_commands ;;
         interactive) interactive_mode ;;
