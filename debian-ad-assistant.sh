@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 5.2.0-event-center
+# Version 5.2.1-ids-local-rules
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -45,7 +45,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.2.0-event-center"
+SCRIPT_VERSION="5.2.1-ids-local-rules"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -71,6 +71,7 @@ IDS_EVE_GLOB="${IDS_EVE_DIR}/eve.json*"
 IDS_DAILY_SERVICE="/etc/systemd/system/debian-ad-ids-daily.service"
 IDS_DAILY_TIMER="/etc/systemd/system/debian-ad-ids-daily.timer"
 IDS_MANAGED_STATE="${IDS_STATE_DIR}/managed.env"
+IDS_LOCAL_RULES="/etc/suricata/rules/debian-ad-assistant.rules"
 
 SAMBA_HEALTH_HELPER="/usr/local/libexec/debian-ad-samba-health"
 SAMBA_HEALTH_SERVICE="/etc/systemd/system/debian-ad-samba-health.service"
@@ -8579,6 +8580,47 @@ ids_default_home_net() {
 }
 
 
+ids_local_rules_managed() {
+    local rules="${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}"
+    [[ -r "$rules" ]] || return 1
+    grep -Fq "# Managed by ${SCRIPT_NAME}" "$rules"
+}
+
+ids_write_local_rules() {
+    local rules="${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" rules_dir tmp
+    rules_dir="$(dirname "$rules")"
+    mkdir -p "$rules_dir"
+    if [[ -e "$rules" ]] && ! ids_local_rules_managed; then
+        msg_warn "Local Suricata rules exist but are not assistant-managed: $rules"
+        return 0
+    fi
+    tmp="$(mktemp "${rules_dir}/.debian-ad-assistant.rules.XXXXXX")"
+    cat >"$tmp" <<'EOF'
+# Managed by DEBIAN AD Assistant
+# Passive AD/DC contextual detections. Alert-only; ET/Open remains the general ruleset.
+alert tcp $EXTERNAL_NET any -> $HOME_NET [88,389,464,636,3268,3269] (msg:"DAD IDS External access to AD auth-directory TCP surface"; flags:S; flow:stateless; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901001; rev:1;)
+alert udp $EXTERNAL_NET any -> $HOME_NET [88,389,464] (msg:"DAD IDS External access to AD auth-directory UDP surface"; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901002; rev:1;)
+alert tcp $EXTERNAL_NET any -> $HOME_NET [135,139,445] (msg:"DAD IDS External access to AD SMB-RPC TCP surface"; flags:S; flow:stateless; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901003; rev:1;)
+alert udp $EXTERNAL_NET any -> $HOME_NET [137,138] (msg:"DAD IDS External access to NetBIOS UDP surface"; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901004; rev:1;)
+alert tcp $EXTERNAL_NET any -> $HOME_NET 53 (msg:"DAD IDS External access to AD DNS TCP surface"; flags:S; flow:stateless; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901005; rev:1;)
+alert udp $EXTERNAL_NET any -> $HOME_NET 53 (msg:"DAD IDS External access to AD DNS UDP surface"; threshold:type limit,track by_src,count 1,seconds 300; priority:2; sid:9901006; rev:1;)
+alert udp $EXTERNAL_NET any -> $HOME_NET 123 (msg:"DAD IDS External access to AD-DC NTP surface"; threshold:type limit,track by_src,count 1,seconds 300; priority:3; sid:9901007; rev:1;)
+alert tcp any any -> $HOME_NET 445 (msg:"DAD IDS High-rate SMB connection attempts toward AD-DC"; flags:S; flow:stateless; detection_filter:track by_src,count 40,seconds 10; priority:2; sid:9901008; rev:1;)
+EOF
+    chmod 0644 "$tmp"
+    if [[ -f "$rules" ]] && cmp -s "$tmp" "$rules"; then rm -f "$tmp"; return 0; fi
+    [[ -f "$rules" ]] && backup_file "$rules"
+    mv -f "$tmp" "$rules"
+    chmod 0644 "$rules"
+    change APPLIED "Installed/updated assistant-managed Suricata AD/DC local rules"
+}
+
+ids_ensure_local_rules() {
+    local rules="${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}"
+    [[ -s "$rules" ]] && return 0
+    ids_write_local_rules
+}
+
 ids_write_managed_state() {
     local iface="$1" home_net="$2"
     ids_prepare_state
@@ -8691,6 +8733,7 @@ ids_install_systemd_dropin() {
 
     # --set overrides a scalar without replacing the vendor "vars" mapping.
     vendor_exec+=" --set vars.address-groups.HOME_NET=[${home_net}]"
+    [[ -s "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" ]] && vendor_exec+=" -s ${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}"
     vendor_exec+=" --include ${IDS_CONFIG}"
 
     mkdir -p "$(dirname "$IDS_DROPIN")"
@@ -8702,6 +8745,12 @@ ExecStart=${vendor_exec}
 EOF
     chmod 0644 "$IDS_DROPIN"
     systemctl daemon-reload
+}
+
+ids_dropin_has_local_rules() {
+    local rules="${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}"
+    [[ -s "$rules" && -r "$IDS_DROPIN" ]] || return 1
+    grep -Fq " -s ${rules}" "$IDS_DROPIN"
 }
 
 ids_validate_config() {
@@ -8719,9 +8768,10 @@ ids_validate_config() {
         return 1
     }
 
-    if "$bin" -T -c "$config" \
-        --set "vars.address-groups.HOME_NET=[${home_net}]" \
-        --include "$IDS_CONFIG" >"$evidence" 2>&1; then
+    local -a test_cmd=("$bin" -T -c "$config" --set "vars.address-groups.HOME_NET=[${home_net}]")
+    [[ -s "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" ]] && test_cmd+=( -s "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" )
+    test_cmd+=( --include "$IDS_CONFIG" )
+    if "${test_cmd[@]}" >"$evidence" 2>&1; then
         result PASS "Suricata config test" "$label" "valid"
         return 0
     fi
@@ -8821,6 +8871,7 @@ ids_configure_passive() {
     confirm "Apply this passive IDS configuration?" Y || return 0
 
     ids_write_managed_config "$iface" "$home_net"
+    ids_ensure_local_rules || return 1
     ids_install_systemd_dropin "$iface" "$home_net" || return 1
 
     if ids_suricata_update_binary >/dev/null 2>&1; then
@@ -8857,8 +8908,9 @@ ids_configure_passive() {
 ids_auto_repair_managed_install() {
     ids_prepare_state
     ids_load_managed_state
+    ids_ensure_local_rules || msg_warn "Assistant local IDS rules unavailable; external rules remain usable."
 
-    local iface="${IDS_INTERFACE:-${AD_IFACE:-}}" home_net="${IDS_HOME_NET:-}"
+    local iface="${IDS_INTERFACE:-${AD_IFACE:-}}" home_net="${IDS_HOME_NET:-}" restart_needed=0
     [[ -n "$home_net" ]] || home_net="$(ids_default_home_net 2>/dev/null || true)"
     [[ -n "$iface" && -n "$home_net" ]] || return 1
 
@@ -8866,7 +8918,15 @@ ids_auto_repair_managed_install() {
         msg_warn "Legacy assistant Suricata overlay detected; migrating away from top-level vars/rule-files overrides."
         ids_write_managed_config "$iface" "$home_net"
         ids_install_systemd_dropin "$iface" "$home_net" || return 1
+        restart_needed=1
         change APPLIED "Migrated Suricata managed overlay to vendor-vars-preserving format"
+    fi
+
+    if [[ -s "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" ]] && ! ids_dropin_has_local_rules; then
+        msg_warn "Managed Suricata drop-in does not yet load assistant local AD/DC rules; upgrading it."
+        ids_install_systemd_dropin "$iface" "$home_net" || return 1
+        restart_needed=1
+        change APPLIED "Added assistant local AD/DC rules to Suricata service command"
     fi
 
     local rules=""
@@ -8878,10 +8938,11 @@ ids_auto_repair_managed_install() {
         msg_warn "Managed Suricata configuration is invalid; rewriting assistant-owned overlay and drop-in."
         ids_write_managed_config "$iface" "$home_net"
         ids_install_systemd_dropin "$iface" "$home_net" || return 1
+        restart_needed=1
         ids_validate_config "auto-repair-rewritten" || return 1
     fi
 
-    if ! systemctl is-active --quiet suricata.service; then
+    if (( restart_needed )) || ! systemctl is-active --quiet suricata.service; then
         systemctl restart suricata.service >/dev/null 2>&1 || return 1
     fi
     return 0
@@ -9261,7 +9322,7 @@ ids_sensor_health() {
             msg_warn "Automatic repair could not fully normalize the managed Suricata installation."
     fi
 
-    local bin="" config="" rules="" eve="${IDS_EVE_DIR}/eve.json"
+    local bin="" config="" rules="" eve="${IDS_EVE_DIR}/eve.json" local_rules="${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}"
     bin="$(ids_suricata_binary 2>/dev/null || true)"
     config="$(ids_suricata_config 2>/dev/null || true)"
     rules="$(ids_rules_file 2>/dev/null || true)"
@@ -9281,12 +9342,12 @@ ids_sensor_health() {
         ids_validate_config health || true
     fi
 
-    if [[ -s "$IDS_LOCAL_RULES" ]]; then
+    if [[ -s "$local_rules" ]]; then
         local local_count=""
-        local_count="$(grep -hcE '^[[:space:]]*(alert|drop|reject)[[:space:]]' "$IDS_LOCAL_RULES" 2>/dev/null || true)"
-        result PASS "AD local rules" "$IDS_LOCAL_RULES / ${local_count:-0} signal rules" "loaded"
+        local_count="$(grep -hcE '^[[:space:]]*(alert|drop|reject)[[:space:]]' "$local_rules" 2>/dev/null || true)"
+        result PASS "AD local rules" "$local_rules / ${local_count:-0} contextual alert rules" "loaded"
     else
-        result FAIL "AD local rules" "missing" "$IDS_LOCAL_RULES"
+        result WARN "AD local rules" "missing or empty" "$local_rules; ET/Open remains usable"
     fi
 
     if [[ -n "$rules" && -s "$rules" ]]; then
@@ -9294,7 +9355,7 @@ ids_sensor_health() {
         count="$(grep -hcE '^[[:space:]]*(alert|drop|reject)[[:space:]]' "$rules" 2>/dev/null || true)"
         result PASS "External rules" "$rules / ${count:-0} active rule lines" "suricata-update"
     else
-        result WARN "External rules" "not found or empty" "suricata-update recommended; local AD rules remain active"
+        result WARN "External rules" "not found or empty" "suricata-update recommended; contextual local rules checked separately"
     fi
 
     if [[ -f "$eve" ]]; then
@@ -9325,6 +9386,7 @@ ids_readiness() {
     printf '  %-28s %s\n' "suricata-update" "$(package_installed_version suricata-update)"
     printf '  %-28s %s\n' "Service" "$(safe_systemctl_state suricata.service)"
     printf '  %-28s %s\n' "Managed overlay" "$( [[ -f "$IDS_CONFIG" ]] && printf 'present' || printf 'absent' )"
+    printf '  %-28s %s\n' "Local AD rules" "$( [[ -s "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" ]] && printf 'present' || printf 'absent' )"
     printf '  %-28s %s\n' "EVE log" "$( [[ -f "${IDS_EVE_DIR}/eve.json" ]] && printf 'present' || printf 'absent' )"
 
     local exec=""
@@ -9454,6 +9516,7 @@ ids_export_evidence() {
     mkdir -p "$bundle"
 
     [[ -f "$IDS_CONFIG" ]] && cp -a "$IDS_CONFIG" "$bundle/"
+    [[ -f "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" ]] && cp -a "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}" "$bundle/"
     systemctl status suricata.service --no-pager --full >"$bundle/service-status.txt" 2>&1 || true
     journalctl -u suricata.service -b --no-pager -n 200 >"$bundle/journal.txt" 2>&1 || true
     ids_summary 24 >"$bundle/summary-24h.txt" 2>&1 || true
@@ -9479,6 +9542,9 @@ ids_disable_integration() {
 
     systemctl disable --now suricata.service >/dev/null 2>&1 || true
     rm -f "$IDS_DROPIN" "$IDS_CONFIG"
+    if ids_local_rules_managed; then
+        rm -f "${IDS_LOCAL_RULES:-/etc/suricata/rules/debian-ad-assistant.rules}"
+    fi
     rmdir "$(dirname "$IDS_DROPIN")" >/dev/null 2>&1 || true
     systemctl daemon-reload
 
