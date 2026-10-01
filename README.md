@@ -32,6 +32,7 @@ El proyecto está orientado a administración técnica real: primero detecta el 
 - [Asistentes de clientes AD](#asistentes-de-clientes-ad)
 - [DNS: requisito fundamental](#dns-requisito-fundamental)
 - [Operaciones remotas](#operaciones-remotas)
+- [GPO y SYSVOL: permisos y diagnóstico](#gpo-y-sysvol-permisos-y-diagnostico)
 - [Suricata IDS](#suricata-ids)
 - [Backups, snapshots y recuperación](#backups-snapshots-y-recuperacion)
 - [Hardening y compatibilidad](#hardening-y-compatibilidad)
@@ -661,6 +662,148 @@ Windows → JEA / role capabilities
 Linux   → sudoers limitado
 Network → WinRM/SSH solo desde redes de management
 ```
+
+---
+
+<a id="gpo-y-sysvol-permisos-y-diagnostico"></a>
+## GPO y SYSVOL: permisos y diagnóstico
+
+Crear una GPO en un Samba AD DC combina **privilegios locales** y **autorización de dominio**. Son capas diferentes:
+
+```text
+shell del operador
+      │
+      ├─ sudo/root ────────────────> ficheros locales, runtime, backups, herramientas
+      │
+      └─ ticket Kerberos del admin
+              │
+              ├─ LDAP ────────────> CN=Policies,CN=System,...
+              │
+              └─ CIFS/SMB ────────> \\DC\SYSVOL\dominio\Policies\{GUID}
+```
+
+El asistente se autoeleva mediante `sudo` cuando se inicia como usuario normal. Por tanto, ejecutar:
+
+```bash
+./debian-ad-assistant.sh --gpo
+```
+
+es válido; no es necesario anteponer `sudo` manualmente mientras `sudo` esté disponible y el usuario local tenga permiso para utilizarlo. El control plane muestra y conserva el invocador original, pero las operaciones locales se ejecutan como root.
+
+**Root no sustituye al administrador de Active Directory.** `samba-tool gpo create` utiliza las credenciales Kerberos del operador para acceder tanto a LDAP como a SYSVOL. Un proceso root puede seguir recibiendo un rechazo de LDAP o SMB.
+
+### GPO mutation preflight
+
+Antes de una mutación GPO, el asistente ejecuta automáticamente un preflight y reutiliza el resultado durante unos minutos dentro de la misma ejecución. También puede lanzarse manualmente desde:
+
+```text
+Group Policy Control
+  -> [11] GPO mutation preflight
+```
+
+El preflight:
+
+1. confirma que el proceso efectivo es root;
+2. destruye el ccache privado anterior y solicita un **TGT Kerberos fresco** del administrador seleccionado;
+3. verifica la identidad exacta del principal;
+4. comprueba la membresía administrativa registrada en el directorio;
+5. solicita tickets para `ldap/<DC_FQDN>` y `cifs/<DC_FQDN>` cuando `kvno` está disponible;
+6. comprueba lectura GPO por LDAP;
+7. ejecuta `samba-tool ntacl sysvolcheck`;
+8. accede a SYSVOL mediante `smbclient` usando **el mismo ccache**;
+9. crea y elimina un directorio temporal `.DAD-GPO-PROBE-*` bajo `SYSVOL/<dominio>/Policies` para comprobar escritura SMB real;
+10. ejecuta `gpo aclcheck` como diagnóstico de consistencia de las GPO existentes;
+11. captura el DS ACL de `CN=Policies,CN=System,<baseDN>` y el NT ACL del directorio `Policies`.
+
+La prueba de escritura se ejecuta únicamente dentro de una ruta de mutación/diagnóstico GPO y elimina inmediatamente el directorio temporal. Si la limpieza falla, el asistente muestra la ruta exacta para revisión manual.
+
+La evidencia queda bajo:
+
+```text
+/var/lib/debian-ad-assistant/runs/<run>/gpo-diagnostics/
+```
+
+Archivos relevantes pueden incluir:
+
+```text
+execution-context.txt
+kvno-ldap.txt
+kvno-cifs.txt
+gpo-listall.txt
+sysvolcheck.txt
+sysvol-smb-read.txt
+sysvol-smb-write.txt
+gpo-aclcheck.txt
+policies-container-dsacl.txt
+policies-filesystem-acl.txt
+gpo-create-<nombre>.txt
+```
+
+### Por qué una membresía correcta puede seguir fallando
+
+Ver:
+
+```text
+Domain Admins       : member
+GPO Creator Owners  : member
+```
+
+confirma el **estado del directorio**, pero no demuestra que un TGT Kerberos ya emitido contenga esas autorizaciones. Si un usuario se añadió recientemente a un grupo privilegiado, un ticket anterior puede seguir representando el token viejo.
+
+Por eso el preflight fuerza un nuevo `kinit` antes de la primera mutación GPO del run. Esto evita diagnosticar como "ACL roto" lo que en realidad era un PAC/ticket antiguo.
+
+Además, históricamente han existido diferencias y problemas de Samba alrededor de la delegación mediante `Group Policy Creator Owners`. Para operaciones administrativas críticas, la membresía de `Domain Admins` con un ticket fresco es una referencia diagnóstica más fuerte; no conviene modificar ACLs de SYSVOL únicamente para compensar una delegación que todavía no se ha aislado correctamente.
+
+### Interpretar un fallo de `samba-tool gpo create`
+
+El asistente conserva la salida completa y muestra una clasificación inicial:
+
+| Evidencia | Frontera probable | Primer paso |
+|---|---|---|
+| `LDAP_INSUFFICIENT_ACCESS_RIGHTS`, `LDAP error 50` | ACL/autorización en `CN=Policies,CN=System` o token Kerberos antiguo | refrescar ticket y revisar `policies-container-dsacl.txt` |
+| `NT_STATUS_ACCESS_DENIED` | autorización SMB/NT ACL de SYSVOL | revisar `sysvol-smb-write.txt` y ACL de `Policies` |
+| `KDC_ERR*`, SPNEGO/GSSAPI, `LOGON_FAILURE` | Kerberos, DNS, SPN o tiempo | revisar `kvno-ldap.txt`, `kvno-cifs.txt`, DNS y reloj |
+| error creando directorio temporal | problema local `/tmp`, espacio o privilegio Unix | revisar root, permisos y almacenamiento |
+| `gpo aclcheck` falla pero `sysvolcheck` y write probe pasan | inconsistencia en alguna GPO existente | inspeccionar `gpo-aclcheck.txt`; no asumir que todo SYSVOL está roto |
+
+### `sysvolcheck`, `gpo aclcheck` y `sysvolreset` no son equivalentes
+
+`ntacl sysvolcheck` comprueba que los ACL de SYSVOL coincidan con lo esperado por Samba. `gpo aclcheck` compara aspectos de los ACL de las GPO entre LDAP y SYSVOL. Un fallo en uno no identifica automáticamente la reparación correcta.
+
+No ejecutes `samba-tool ntacl sysvolreset` únicamente porque falle la creación de una GPO o `gpo aclcheck`. Es una operación amplia sobre ACL de SYSVOL y debe tratarse como **último recurso**, después de:
+
+- backup de dominio;
+- identificar si el rechazo es LDAP o SMB;
+- comprobar el ticket Kerberos efectivo;
+- revisar los ACL concretos afectados;
+- confirmar la versión de Samba y el comportamiento esperado de herencia.
+
+El asistente mantiene `sysvolreset` en el flujo avanzado y nunca lo ejecuta automáticamente tras un fallo GPO.
+
+### Flujo recomendado para una GPO que no se crea
+
+```text
+[11] GPO mutation preflight
+          │
+          ├─ LDAP ticket FAIL ──> DNS / hora / SPN / Kerberos
+          │
+          ├─ CIFS ticket FAIL ──> SPN CIFS / DNS / Kerberos
+          │
+          ├─ SYSVOL read FAIL ──> autenticación SMB / share
+          │
+          ├─ SYSVOL create FAIL -> NT ACL / autorización efectiva
+          │
+          ├─ sysvolcheck FAIL ──> investigar ACL local/NT ACL antes de reparar
+          │
+          └─ todo PASS
+                 │
+                 └─ retry Create GPO
+                        │
+                        └─ si falla: revisar gpo-create-*.txt
+                           para distinguir LDAP add de SMB/set_acl
+```
+
+Para un administrador delegado recién añadido a grupos privilegiados, salir/entrar de una sesión de escritorio **no es el mecanismo relevante para el asistente**: utiliza un ccache privado por ejecución y el preflight solicita un ticket fresco explícitamente.
 
 ---
 

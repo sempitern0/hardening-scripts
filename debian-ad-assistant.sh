@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 5.2.3-operator-observability
+# Version 5.2.4-gpo-authz-preflight
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -45,7 +45,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.2.3-operator-observability"
+SCRIPT_VERSION="5.2.4-gpo-authz-preflight"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -613,13 +613,19 @@ detect_terminal() {
 }
 
 ensure_privileges() {
+    local invoker="${DAD_INVOKER:-${SUDO_USER:-}}"
+    [[ -n "$invoker" ]] || invoker="$(id -un 2>/dev/null || printf unknown)"
+
     if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+        export DAD_INVOKER="$invoker"
         return 0
     fi
+
     command_exists sudo || die "Root privileges are required and sudo is unavailable."
     if [[ -f "$0" && -r "$0" ]]; then
-        msg_info "Root privileges required; re-executing through sudo."
+        msg_info "Root privileges required; re-executing through sudo (invoker=$invoker)."
         exec sudo -- env \
+            DAD_INVOKER="$invoker" \
             SSH_CONNECTION="${SSH_CONNECTION:-}" \
             SSH_CLIENT="${SSH_CLIENT:-}" \
             TERM="${TERM:-dumb}" \
@@ -3912,6 +3918,7 @@ resume_or_provision_domain() {
 ensure_kerberos_ticket() {
     require_cmd kinit "Kerberos authentication" || return 1
     local user="${1:-${ADMIN_USER:-}}"
+    local freshness="${2:-reuse}"
     [[ -n "$user" ]] || user="$(ask 'AD admin account' 'Administrator')"
     local principal="${user}@${REALM}"
 
@@ -3919,11 +3926,16 @@ ensure_kerberos_ticket() {
         local current
         current="$(KRB5CCNAME="$KRB5CCNAME" klist 2>/dev/null |
             awk -F': ' '/Default principal:/{print $2;exit}' || true)"
-        [[ "${current^^}" == "${principal^^}" ]] && return 0
+        if [[ "$freshness" != fresh && "${current^^}" == "${principal^^}" ]]; then
+            return 0
+        fi
         KRB5CCNAME="$KRB5CCNAME" kdestroy >/dev/null 2>&1 || true
     fi
 
-    printf 'Kerberos ticket required for %s\n' "$principal"
+    # stderr is intentional: callers such as create_gpo_safe return a GUID on
+    # stdout and are frequently evaluated inside command substitution.
+    printf 'Kerberos ticket required for %s%s\n' "$principal" \
+        "$( [[ "$freshness" == fresh ]] && printf ' (fresh authorization token)' || true )" >&2
     KRB5CCNAME="$KRB5CCNAME" kinit "$principal" <"$INPUT_FD"
     KRB5CCNAME="$KRB5CCNAME" klist -s
 }
@@ -4113,67 +4125,330 @@ capture_samba_gpo() {
     [[ $rc -eq 0 ]] || return "$rc"
 }
 
-gpo_readiness_diagnostics() {
-    local reason="${1:-GPO operation failed}"
+assistant_kerberos_principal() {
+    KRB5CCNAME="$KRB5CCNAME" klist 2>/dev/null |
+        awk -F': ' '/Default principal:/{print $2;exit}' || true
+}
+
+gpo_smbclient() {
+    local command="$1"
+    command_exists smbclient || return 127
+    [[ -n "${DC_FQDN:-}" ]] || return 2
+
+    local share="//${DC_FQDN}/sysvol"
+    if command_help_contains '--use-krb5-ccache' smbclient --help; then
+        KRB5CCNAME="$KRB5CCNAME" smbclient "$share" \
+            --use-krb5-ccache="$KRB5CCNAME" --no-pass -c "$command"
+    elif command_help_contains '--use-kerberos' smbclient --help; then
+        KRB5CCNAME="$KRB5CCNAME" smbclient "$share" \
+            --use-kerberos=required --no-pass -c "$command"
+    else
+        KRB5CCNAME="$KRB5CCNAME" smbclient "$share" -k -N -c "$command"
+    fi
+}
+
+gpo_failure_explanation() {
+    local output="${1:-}"
+    if grep -Eqi 'LDAP_INSUFFICIENT_ACCESS_RIGHTS|LDAP error 50|insufficient access rights' <<<"$output"; then
+        printf '  Likely failure stage : LDAP authorization on CN=Policies,CN=System\n' >&2
+        printf '  Recommended action   : refresh the admin Kerberos ticket and inspect the Policies container DS ACL; do not run sysvolreset for an LDAP-only failure.\n' >&2
+    elif grep -Eqi 'NT_STATUS_ACCESS_DENIED|ACCESS_DENIED|authenticated user does not have sufficient privileges' <<<"$output"; then
+        printf '  Likely failure stage : SYSVOL SMB authorization / NT ACL application\n' >&2
+        printf '  Recommended action   : run GPO mutation preflight and inspect the SYSVOL SMB write probe plus gpo-aclcheck evidence.\n' >&2
+    elif grep -Eqi 'KDC_ERR|Server not found in Kerberos|gssapi|gensec|SPNEGO|NT_STATUS_LOGON_FAILURE' <<<"$output"; then
+        printf '  Likely failure stage : Kerberos service authentication (LDAP/CIFS SPN or ticket)\n' >&2
+        printf '  Recommended action   : verify DNS, time, ldap/%s and cifs/%s service tickets.\n' "${DC_FQDN:-dc}" "${DC_FQDN:-dc}" >&2
+    elif grep -Eqi 'temporary GPO directory|Permission denied.*tmp|No space left on device' <<<"$output"; then
+        printf '  Likely failure stage : local temporary workspace\n' >&2
+        printf '  Recommended action   : verify root elevation, /tmp and free space.\n' >&2
+    else
+        printf '  Likely failure stage : not classified from samba-tool output\n' >&2
+        printf '  Recommended action   : review the captured create output and GPO diagnostics bundle.\n' >&2
+    fi
+}
+
+gpo_mutation_preflight() {
+    local mode="${1:-auto}"
+    local admin="${ADMIN_USER:-Administrator}"
     local diag_dir="${RUN_ROOT}/gpo-diagnostics"
+    local marker="${RUN_ROOT}/gpo-preflight.ok"
+    local principal="" expected="${admin}@${REALM}"
+    local now age mtime output="" parent_dn="" sysvol="" policies=""
+    local probe="" probe_created=0
+    local critical_fail=0
+
     mkdir -p "$diag_dir"
 
-    printf '\n%bGPO DIAGNOSTICS%b\n' "$C_YELLOW" "$C_RESET" >&2
-    printf '  %s\n' "$reason" >&2
-    printf '  Kerberos principal : %s\n' "$(KRB5CCNAME="$KRB5CCNAME" klist 2>/dev/null | awk -F': ' '/Default principal:/{print $2;exit}' || printf 'none')" >&2
-
-    if [[ -n "${ADMIN_USER:-}" ]]; then
-        if samba_group_has_member 'Domain Admins' "$ADMIN_USER"; then
-            printf '  Domain Admins       : member\n' >&2
-        else
-            printf '  Domain Admins       : NOT a direct member\n' >&2
-        fi
-        if samba_group_has_member 'Group Policy Creator Owners' "$ADMIN_USER"; then
-            printf '  GPO Creator Owners  : member\n' >&2
-        else
-            printf '  GPO Creator Owners  : not a direct member\n' >&2
+    # A successful preflight is reusable for a few minutes in the same run.
+    # The marker is a file (rather than a shell variable) because GPO helpers
+    # are frequently called from command substitutions/subshells.
+    if [[ "$mode" == auto && -f "$marker" ]]; then
+        now="$(date +%s)"
+        mtime="$(stat -c %Y "$marker" 2>/dev/null || printf 0)"
+        age=$(( now - mtime ))
+        principal="$(assistant_kerberos_principal)"
+        if (( age >= 0 && age < 600 )) && [[ "${principal^^}" == "${expected^^}" ]]; then
+            return 0
         fi
     fi
 
-    if samba-tool ntacl sysvolcheck >"${diag_dir}/sysvolcheck.txt" 2>&1; then
-        printf '  SYSVOL ACL check    : PASS\n' >&2
+    printf '\n%bGPO MUTATION PREFLIGHT%b\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  Invoker             : %s\n' "${DAD_INVOKER:-unknown}" >&2
+    printf '  Effective process   : uid=%s user=%s\n' "$(id -u)" "$(id -un 2>/dev/null || printf unknown)" >&2
+
+    if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+        msg_warn "GPO mutation preflight requires the assistant's root execution context."
+        return 1
+    fi
+
+    # Force a fresh TGT once per mutation session. LDAP membership shown by
+    # samba-tool is not proof that an older Kerberos PAC contains new groups.
+    if ! ensure_kerberos_ticket "$admin" fresh; then
+        msg_warn "Unable to acquire a fresh Kerberos ticket for $admin."
+        return 1
+    fi
+    principal="$(assistant_kerberos_principal)"
+    printf '  Fresh principal      : %s\n' "${principal:-none}" >&2
+    if [[ "${principal^^}" != "${expected^^}" ]]; then
+        msg_warn "Unexpected Kerberos principal: ${principal:-none}; expected $expected."
+        return 1
+    fi
+
+    if samba_group_has_member 'Domain Admins' "$admin"; then
+        printf '  Domain Admins        : member\n' >&2
+    elif samba_group_has_member 'Group Policy Creator Owners' "$admin"; then
+        printf '  Domain Admins        : no direct membership\n' >&2
+        printf '  GPO Creator Owners   : member (delegated path; Samba-version behavior can differ)\n' >&2
     else
-        printf '  SYSVOL ACL check    : WARN/FAIL (see %s)\n' "${diag_dir}/sysvolcheck.txt" >&2
+        msg_warn "$admin is not a direct member of Domain Admins or Group Policy Creator Owners."
+        return 1
+    fi
+
+    # Prove both service tickets can be issued for the same freshly-issued TGT.
+    if command_exists kvno; then
+        if KRB5CCNAME="$KRB5CCNAME" kvno "ldap/${DC_FQDN}" >"${diag_dir}/kvno-ldap.txt" 2>&1; then
+            printf '  LDAP service ticket  : PASS\n' >&2
+        else
+            printf '  LDAP service ticket  : FAIL (see %s)\n' "${diag_dir}/kvno-ldap.txt" >&2
+            critical_fail=1
+        fi
+        if KRB5CCNAME="$KRB5CCNAME" kvno "cifs/${DC_FQDN}" >"${diag_dir}/kvno-cifs.txt" 2>&1; then
+            printf '  CIFS service ticket  : PASS\n' >&2
+        else
+            printf '  CIFS service ticket  : FAIL (see %s)\n' "${diag_dir}/kvno-cifs.txt" >&2
+            critical_fail=1
+        fi
+    else
+        printf '  Service-ticket probe : SKIP (kvno unavailable)\n' >&2
+    fi
+
+    if capture_samba_gpo output listall; then
+        printf '%s\n' "$output" >"${diag_dir}/gpo-listall.txt"
+        printf '  LDAP GPO read        : PASS\n' >&2
+    else
+        printf '%s\n' "$output" >"${diag_dir}/gpo-listall.txt"
+        printf '  LDAP GPO read        : FAIL (see %s)\n' "${diag_dir}/gpo-listall.txt" >&2
+        critical_fail=1
+    fi
+
+    parent_dn="CN=Policies,CN=System,$(domain_dn "$DOMAIN")"
+    if samba-tool dsacl get --objectdn="$parent_dn" >"${diag_dir}/policies-container-dsacl.txt" 2>&1; then
+        printf '  Policies DS ACL      : captured\n' >&2
+    else
+        printf '  Policies DS ACL      : WARN (capture failed)\n' >&2
+    fi
+
+    if samba-tool ntacl sysvolcheck >"${diag_dir}/sysvolcheck.txt" 2>&1; then
+        printf '  SYSVOL ACL baseline  : PASS\n' >&2
+    else
+        printf '  SYSVOL ACL baseline  : FAIL (see %s)\n' "${diag_dir}/sysvolcheck.txt" >&2
+        critical_fail=1
+    fi
+
+    if command_exists smbclient; then
+        if gpo_smbclient "cd ${DOMAIN,,}/Policies; ls" >"${diag_dir}/sysvol-smb-read.txt" 2>&1; then
+            printf '  SYSVOL SMB read      : PASS\n' >&2
+        else
+            printf '  SYSVOL SMB read      : FAIL (see %s)\n' "${diag_dir}/sysvol-smb-read.txt" >&2
+            critical_fail=1
+        fi
+
+        probe="${DOMAIN,,}/Policies/.DAD-GPO-PROBE-${TIMESTAMP:-$(date +%Y%m%d-%H%M%S)}-$$"
+        if gpo_smbclient "mkdir $probe" >"${diag_dir}/sysvol-smb-write.txt" 2>&1; then
+            probe_created=1
+            printf '  SYSVOL SMB create    : PASS\n' >&2
+            if gpo_smbclient "rmdir $probe" >>"${diag_dir}/sysvol-smb-write.txt" 2>&1; then
+                probe_created=0
+                printf '  SYSVOL SMB cleanup   : PASS\n' >&2
+            else
+                printf '  SYSVOL SMB cleanup   : FAIL — remove %s manually\n' "$probe" >&2
+                critical_fail=1
+            fi
+        else
+            printf '  SYSVOL SMB create    : FAIL (see %s)\n' "${diag_dir}/sysvol-smb-write.txt" >&2
+            critical_fail=1
+        fi
+        if (( probe_created )); then
+            gpo_smbclient "rmdir $probe" >>"${diag_dir}/sysvol-smb-write.txt" 2>&1 || true
+        fi
+    else
+        printf '  SYSVOL SMB probe     : SKIP (smbclient unavailable; samba-tool will still perform its own SMB operation)\n' >&2
+    fi
+
+    if samba-tool gpo aclcheck --help >/dev/null 2>&1; then
+        if capture_samba_gpo output aclcheck; then
+            printf '%s\n' "$output" >"${diag_dir}/gpo-aclcheck.txt"
+            printf '  Existing GPO ACLs    : PASS\n' >&2
+        else
+            printf '%s\n' "$output" >"${diag_dir}/gpo-aclcheck.txt"
+            # This can describe an already-existing GPO mismatch and does not
+            # by itself prove that the current operator cannot create a GPO.
+            printf '  Existing GPO ACLs    : WARN/FAIL (see %s)\n' "${diag_dir}/gpo-aclcheck.txt" >&2
+        fi
+    fi
+
+    sysvol="$(get_sysvol_path 2>/dev/null || true)"
+    policies="${sysvol:+${sysvol}/${DOMAIN,,}/Policies}"
+    if [[ -n "$policies" && -d "$policies" ]]; then
+        {
+            printf 'path=%s\n' "$policies"
+            stat -c 'mode=%a owner=%U:%G uid=%u gid=%g' "$policies" 2>/dev/null || true
+            samba-tool ntacl get "$policies" --as-sddl 2>&1 || true
+        } >"${diag_dir}/policies-filesystem-acl.txt"
+    fi
+
+    if (( critical_fail )); then
+        msg_warn "GPO mutation preflight failed. No GPO mutation was attempted. Evidence: $diag_dir"
+        rm -f "$marker"
+        return 1
+    fi
+
+    printf 'principal=%s\nvalidated_at=%s\n' "$principal" "$(date -Is)" >"$marker"
+    chmod 600 "$marker"
+    printf '  Preflight result     : PASS\n' >&2
+    printf '  Evidence             : %s\n' "$diag_dir" >&2
+    return 0
+}
+
+gpo_readiness_diagnostics() {
+    local reason="${1:-GPO operation failed}"
+    local diag_dir="${RUN_ROOT}/gpo-diagnostics"
+    local principal="" sysvol="" policies="" output=""
+    mkdir -p "$diag_dir"
+
+    principal="$(assistant_kerberos_principal)"
+    printf '\n%bGPO DIAGNOSTICS%b\n' "$C_YELLOW" "$C_RESET" >&2
+    printf '  %s\n' "$reason" >&2
+    printf '  Invoker              : %s\n' "${DAD_INVOKER:-unknown}" >&2
+    printf '  Effective process    : uid=%s user=%s\n' "$(id -u)" "$(id -un 2>/dev/null || printf unknown)" >&2
+    printf '  Kerberos principal   : %s\n' "${principal:-none}" >&2
+
+    {
+        printf 'reason=%s\n' "$reason"
+        printf 'invoker=%s\n' "${DAD_INVOKER:-unknown}"
+        id
+        printf '\n--- klist ---\n'
+        KRB5CCNAME="$KRB5CCNAME" klist 2>&1 || true
+        printf '\n--- samba version ---\n'
+        samba-tool --version 2>&1 || true
+    } >"${diag_dir}/execution-context.txt"
+
+    if [[ -n "${ADMIN_USER:-}" ]]; then
+        if samba_group_has_member 'Domain Admins' "$ADMIN_USER"; then
+            printf '  Domain Admins        : member in directory\n' >&2
+        else
+            printf '  Domain Admins        : NOT a direct member\n' >&2
+        fi
+        if samba_group_has_member 'Group Policy Creator Owners' "$ADMIN_USER"; then
+            printf '  GPO Creator Owners   : member in directory\n' >&2
+        else
+            printf '  GPO Creator Owners   : not a direct member\n' >&2
+        fi
+    fi
+
+    if command_exists kvno && [[ -n "${DC_FQDN:-}" ]]; then
+        KRB5CCNAME="$KRB5CCNAME" kvno "ldap/${DC_FQDN}" >"${diag_dir}/kvno-ldap.txt" 2>&1 \
+            && printf '  LDAP service ticket  : PASS\n' >&2 \
+            || printf '  LDAP service ticket  : WARN/FAIL (see %s)\n' "${diag_dir}/kvno-ldap.txt" >&2
+        KRB5CCNAME="$KRB5CCNAME" kvno "cifs/${DC_FQDN}" >"${diag_dir}/kvno-cifs.txt" 2>&1 \
+            && printf '  CIFS service ticket  : PASS\n' >&2 \
+            || printf '  CIFS service ticket  : WARN/FAIL (see %s)\n' "${diag_dir}/kvno-cifs.txt" >&2
+    fi
+
+    if samba-tool ntacl sysvolcheck >"${diag_dir}/sysvolcheck.txt" 2>&1; then
+        printf '  SYSVOL ACL check     : PASS\n' >&2
+    else
+        printf '  SYSVOL ACL check     : WARN/FAIL (see %s)\n' "${diag_dir}/sysvolcheck.txt" >&2
+    fi
+
+    if command_exists smbclient; then
+        if gpo_smbclient "cd ${DOMAIN,,}/Policies; ls" >"${diag_dir}/sysvol-smb-read.txt" 2>&1; then
+            printf '  SYSVOL SMB read      : PASS as current Kerberos principal\n' >&2
+        else
+            printf '  SYSVOL SMB read      : WARN/FAIL (see %s)\n' "${diag_dir}/sysvol-smb-read.txt" >&2
+        fi
     fi
 
     local acl_output=""
     if samba-tool gpo aclcheck --help >/dev/null 2>&1; then
         if capture_samba_gpo acl_output aclcheck; then
             printf '%s\n' "$acl_output" >"${diag_dir}/gpo-aclcheck.txt"
-            printf '  GPO LDAP/SYSVOL ACL : PASS\n' >&2
+            printf '  GPO LDAP/SYSVOL ACL  : PASS\n' >&2
         else
             printf '%s\n' "$acl_output" >"${diag_dir}/gpo-aclcheck.txt"
-            printf '  GPO LDAP/SYSVOL ACL : WARN/FAIL (see %s)\n' "${diag_dir}/gpo-aclcheck.txt" >&2
+            printf '  GPO LDAP/SYSVOL ACL  : WARN/FAIL (see %s)\n' "${diag_dir}/gpo-aclcheck.txt" >&2
         fi
     fi
 
-    printf '  Diagnostics         : %s\n' "$diag_dir" >&2
-    printf '\nThe assistant will NOT run sysvolreset automatically. Use the advanced SYSVOL repair only after reviewing these diagnostics and taking a domain backup.\n' >&2
+    local parent_dn="CN=Policies,CN=System,$(domain_dn "$DOMAIN")"
+    samba-tool dsacl get --objectdn="$parent_dn" >"${diag_dir}/policies-container-dsacl.txt" 2>&1 || true
+
+    sysvol="$(get_sysvol_path 2>/dev/null || true)"
+    policies="${sysvol:+${sysvol}/${DOMAIN,,}/Policies}"
+    if [[ -n "$policies" && -d "$policies" ]]; then
+        {
+            printf 'path=%s\n' "$policies"
+            stat -c 'mode=%a owner=%U:%G uid=%u gid=%g' "$policies" 2>/dev/null || true
+            samba-tool ntacl get "$policies" --as-sddl 2>&1 || true
+        } >"${diag_dir}/policies-filesystem-acl.txt"
+    fi
+
+    printf '  Diagnostics          : %s\n' "$diag_dir" >&2
+    printf '\nRoot elevation only supplies local host privileges. samba-tool gpo create also authenticates to LDAP and SYSVOL/SMB as the Kerberos principal shown above.\n' >&2
+    printf 'Use GPO mutation preflight to force a fresh ticket and test LDAP/CIFS/SYSVOL access before changing policy.\n' >&2
+    printf 'The assistant will NOT run sysvolreset automatically; an aclcheck failure is not by itself a reason to reset SYSVOL.\n' >&2
 }
 
 create_gpo_safe() {
     local name="$1" output="" guid="" rc=0
+    local diag_dir="${RUN_ROOT}/gpo-diagnostics" evidence="" safe_name=""
 
-    if ! ensure_kerberos_ticket "${ADMIN_USER:-Administrator}"; then
-        msg_warn "Kerberos authentication is unavailable; GPO creation was not attempted."
-        gpo_readiness_diagnostics "Kerberos authentication failed before creation of GPO '$name'."
+    # This is intentionally stronger than a simple LDAP membership check:
+    # it refreshes the Kerberos authorization token and exercises the same
+    # LDAP/CIFS/SYSVOL path used by samba-tool gpo create.
+    if ! gpo_mutation_preflight auto; then
+        gpo_readiness_diagnostics "GPO mutation preflight failed before creation of '$name'."
         return 1
     fi
 
+    mkdir -p "$diag_dir"
+    safe_name="$(printf '%s' "$name" | tr -cs '[:alnum:]._- ' '_' | tr ' ' '_' | cut -c1-80)"
+    evidence="${diag_dir}/gpo-create-${safe_name:-policy}.txt"
+
     if capture_samba_gpo output create "$name"; then
         printf '%s\n' "$output" >>"$LOG_FILE"
+        printf '%s\n' "$output" >"$evidence"
         printf '%s\n' "$output" >&2
     else
         rc=$?
         printf '%s\n' "$output" >>"$LOG_FILE"
+        printf '%s\n' "$output" >"$evidence"
         printf '\n%b[ERROR]%b Samba could not create GPO %q (rc=%s).\n' "$C_RED" "$C_RESET" "$name" "$rc" >&2
         [[ -n "$output" ]] && printf '%s\n' "$output" >&2
-        gpo_readiness_diagnostics "Creation of GPO '$name' failed."
+        gpo_failure_explanation "$output"
+        printf '  Create evidence       : %s\n' "$evidence" >&2
+        gpo_readiness_diagnostics "Creation of GPO '$name' failed after a successful mutation preflight."
+        rm -f "${RUN_ROOT}/gpo-preflight.ok"
         return 1
     fi
 
@@ -5752,6 +6027,8 @@ deploy_security_gpo_template() {
     local id="$1" target_dn="$2"
     local name file guid="" output=""
 
+    gpo_mutation_preflight auto || return 1
+
     case "$id" in
         1) name="SEC - PowerShell Logging"; file="${GPO_WINDOWS_DIR}/sec-powershell-logging.json" ;;
         2) name="SEC - Disable LLMNR"; file="${GPO_WINDOWS_DIR}/sec-disable-llmnr.json" ;;
@@ -6472,6 +6749,7 @@ stage_windows_starter_gpos() {
     printf '\nThis stages six Windows security GPOs with policy content loaded,\n'
     printf 'but leaves them ALL_DISABLED and UNLINKED for safe review/testing.\n\n'
     confirm "Stage the recommended Windows GPO set?" N || return 0
+    gpo_mutation_preflight auto || return 1
 
     for id in 1 2 3 4 5 6; do
         case "$id" in
@@ -7345,7 +7623,7 @@ gpo_admin_menu() {
         ui_menu_item "8" "Link / update" "Select GPO and domain/OU target" "$C_GREEN"
         ui_menu_item "9" "Remove link" "Select GPO and domain/OU target" "$C_YELLOW"
         ui_menu_item "10" "Backup GPO" "Select and export one GPO"
-        ui_menu_item "11" "GPO readiness" "Kerberos, operator membership and SYSVOL/GPO ACL diagnostics"
+        ui_menu_item "11" "GPO mutation preflight" "Fresh Kerberos PAC + LDAP/CIFS tickets + SYSVOL SMB read/write probe + ACL diagnostics"
         ui_menu_item "12" "Delete GPO" "Backup/domain-backup then permanently delete" "$C_RED"
         ui_menu_item "13" "Legacy baseline pair" "Create/update original assistant user+machine baselines"
         ui_menu_item "14" "GPO paths & manual" "Show policy library/SYSVOL paths and open generated guide"
@@ -7412,7 +7690,7 @@ gpo_admin_menu() {
                 backup_gpo_safe "$guid" || true
                 ui_pause
                 ;;
-            11) gpo_readiness_diagnostics "Manual GPO readiness check"; ui_pause ;;
+            11) gpo_mutation_preflight force || true; gpo_readiness_diagnostics "Manual GPO readiness check"; ui_pause ;;
             12)
                 guid="$(select_gpo_guid)" || { ui_pause; continue; }
                 printf 'A domain backup is strongly recommended before deleting a GPO.\n'
