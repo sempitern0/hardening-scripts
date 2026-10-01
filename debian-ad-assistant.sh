@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 5.1.1-ids-dns-resilience
+# Version 5.2.0-event-center
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -34,6 +34,7 @@
 #   --gpo            GPO menu
 #   --security       host/DC security menu
 #   --remote         remote endpoint operations center
+#   --events         unified operational/audit event center
 #   --install-cli    install adctl/ad-users/... terminal commands
 
 set -Eeuo pipefail
@@ -44,7 +45,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.1.1-ids-dns-resilience"
+SCRIPT_VERSION="5.2.0-event-center"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -77,6 +78,17 @@ SAMBA_HEALTH_SERVICE="/etc/systemd/system/debian-ad-samba-health.service"
 REMOTE_OPS_DIR="${STATE_DIR}/remote-ops"
 REMOTE_OPS_EVIDENCE_DIR="${REMOTE_OPS_DIR}/evidence"
 REMOTE_OPS_LOG="${REMOTE_OPS_DIR}/operations.tsv"
+
+EVENT_STATE_DIR="${STATE_DIR}/events"
+EVENT_REPORT_DIR="${EVENT_STATE_DIR}/reports"
+EVENT_LOG_DIR="${LOG_DIR}/events"
+EVENT_LOG="${EVENT_LOG_DIR}/assistant-events.jsonl"
+EVENT_SCHEMA_VERSION=2
+EVENT_DEFAULT_HOURS=24
+EVENT_MAX_ROWS=200
+EVENT_EXPORT_MAX_ROWS=5000
+EVENT_MAX_BYTES=$((5 * 1024 * 1024))
+EVENT_KEEP_FILES=5
 
 RUN_ROOT=""
 LOG_FILE=""
@@ -372,15 +384,20 @@ log() {
 warn_msg() {
     WARNINGS+=("$*")
     log WARN "$*"
+    event_emit WARN assistant runtime warning observed "" "$*" || true
 }
 
 fail_msg() {
     FAILURES+=("$*")
     log ERROR "$*"
+    event_emit ERROR assistant runtime failure failed "" "$*" || true
 }
 
 change() {
-    CHANGES+=("$1|${*:2}")
+    local state="$1"
+    shift
+    CHANGES+=("${state}|$*")
+    event_emit NOTICE assistant change "$state" applied "" "$*" || true
 }
 
 result() {
@@ -451,7 +468,11 @@ confirm_high_risk() {
     printf '  %s\n' "$action"
     printf '  Type %bAPPLY%b to authorize: ' "$C_RED" "$C_RESET" >&2
     read -r answer <"$INPUT_FD" || return 1
-    [[ "$answer" == "APPLY" ]]
+    if [[ "$answer" == "APPLY" ]]; then
+        event_emit NOTICE assistant authorization high-impact authorized "" "$action" || true
+        return 0
+    fi
+    return 1
 }
 
 ask() {
@@ -493,6 +514,7 @@ Usage:
   sudo bash $0 --dependencies
   sudo bash $0 --ids
   sudo bash $0 --remote
+  sudo bash $0 --events
   sudo bash $0 --install-cli
   sudo bash $0 --cli-info
   sudo bash $0 --no-color
@@ -500,13 +522,14 @@ Usage:
 
 Convenience commands installed by --install-cli:
   adctl, ad-users, ad-groups, ad-computers, ad-permissions,
-  ad-gpo, ad-security, ad-samba, ad-kerberos, ad-migrate, ad-reset, ad-deps, ad-ids, ad-remote,
+  ad-gpo, ad-security, ad-samba, ad-kerberos, ad-migrate, ad-reset, ad-deps, ad-ids, ad-remote, ad-events,
   ad-audit, ad-validate, ad-status, ad-backup, ad-tools
 
 Safety:
   - Existing sam.ldb is never reprovisioned.
   - Bootstrap state is persisted before domain provision.
   - Destructive AD operations require explicit confirmation.
+  - Event Center persists assistant audit events locally; journald/Suricata are queried on demand.
   - Vendor systemd unit files are not edited directly.
 EOF
 }
@@ -529,6 +552,7 @@ detect_invocation_alias() {
         ad-deps) MODE="dependencies" ;;
         ad-ids) MODE="ids" ;;
         ad-remote) MODE="remote" ;;
+        ad-events) MODE="events" ;;
         ad-audit) MODE="audit" ;;
         ad-validate) MODE="validate" ;;
         ad-backup) MODE="backup" ;;
@@ -560,6 +584,7 @@ parse_args() {
             --dependencies|--deps) MODE="dependencies" ;;
             --ids|--suricata|--network-ids) MODE="ids" ;;
             --remote|--remote-ops|--remote-control) MODE="remote" ;;
+            --events|--event-center|--activity) MODE="events" ;;
             --ids-daily) MODE="ids-daily" ;;
             --install-cli) MODE="install-cli" ;;
             --cli-info|--tools) MODE="cli-info" ;;
@@ -605,7 +630,7 @@ ensure_privileges() {
 
 need_tty() {
     case "$MODE" in
-        bootstrap|manage|interactive|backup|admin|users|groups|computers|permissions|gpo|security|migration|reset-domain|dependencies|ids|remote|install-cli)
+        bootstrap|manage|interactive|backup|admin|users|groups|computers|permissions|gpo|security|migration|reset-domain|dependencies|ids|remote|events|install-cli)
             [[ -r /dev/tty ]] || die "Mode '$MODE' requires a controlling TTY."
             INPUT_FD="/dev/tty"
             ;;
@@ -621,8 +646,8 @@ init_runtime() {
     BACKUP_DIR="${RUN_ROOT}/backup"
     DOMAIN_BACKUP_DIR="${RUN_ROOT}/domain-backup"
 
-    mkdir -p "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR" "$MIGRATION_DIR" "$REMOTE_OPS_DIR" "$REMOTE_OPS_EVIDENCE_DIR"
-    chmod 700 "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_BUILTIN_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR" "$MIGRATION_DIR" "$REMOTE_OPS_DIR" "$REMOTE_OPS_EVIDENCE_DIR"
+    mkdir -p "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR" "$MIGRATION_DIR" "$REMOTE_OPS_DIR" "$REMOTE_OPS_EVIDENCE_DIR" "$EVENT_STATE_DIR" "$EVENT_REPORT_DIR" "$EVENT_LOG_DIR"
+    chmod 700 "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_BUILTIN_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR" "$MIGRATION_DIR" "$REMOTE_OPS_DIR" "$REMOTE_OPS_EVIDENCE_DIR" "$EVENT_STATE_DIR" "$EVENT_REPORT_DIR" "$EVENT_LOG_DIR"
     touch "$LOG_FILE" "$REPORT_FILE"
     chmod 600 "$LOG_FILE" "$REPORT_FILE"
 
@@ -655,6 +680,7 @@ on_error() {
         printf '[FATAL] rc=%s command=%s\n' "$rc" "$cmd"
         printf '[FATAL] mode=%s step=%s/%s\n' "$MODE" "$CURRENT_STEP" "$TOTAL_STEPS"
     } >>"$LOG_FILE" 2>/dev/null || true
+    event_emit CRITICAL assistant runtime fatal failed "" "command failed rc=${rc}: ${cmd}" || true
     printf '\n%b[FATAL]%b command failed (rc=%s): %s\n' "$C_RED" "$C_RESET" "$rc" "$cmd" >&2
     return "$rc"
 }
@@ -7729,7 +7755,11 @@ confirm_exact_text() {
     printf '%b›%b %s\n' "$C_RED" "$C_RESET" "$prompt" >&2
     printf '  Type exactly: %b%s%b\n  > ' "$C_BOLD" "$expected" "$C_RESET" >&2
     read -r answer <"$INPUT_FD" || return 1
-    [[ "$answer" == "$expected" ]]
+    if [[ "$answer" == "$expected" ]]; then
+        event_emit NOTICE assistant authorization exact-confirmation authorized "" "$prompt" || true
+        return 0
+    fi
+    return 1
 }
 
 earliest_assistant_backup_for_path() {
@@ -9536,6 +9566,578 @@ ids_daily_mode() {
     ids_generate_daily_report 24 >/dev/null
 }
 
+# ---------------------------------------------------------------------------
+# Unified operational / audit event center
+# ---------------------------------------------------------------------------
+# The assistant persists only its own structured audit events. journald,
+# Remote Ops and Suricata remain authoritative and are queried on demand.
+# This avoids a second daemon/database while still providing one timeline.
+
+event_prepare_state() {
+    mkdir -p "$EVENT_STATE_DIR" "$EVENT_REPORT_DIR" "$EVENT_LOG_DIR"
+    chmod 700 "$EVENT_STATE_DIR" "$EVENT_REPORT_DIR" "$EVENT_LOG_DIR"
+    touch "$EVENT_LOG"
+    chmod 600 "$EVENT_LOG"
+}
+
+event_rotate_if_needed() {
+    local size=0 i src dst
+    [[ -f "$EVENT_LOG" ]] || return 0
+    size="$(stat -c '%s' "$EVENT_LOG" 2>/dev/null || printf 0)"
+    [[ "$size" =~ ^[0-9]+$ ]] || size=0
+    (( size < EVENT_MAX_BYTES )) && return 0
+
+    for (( i=EVENT_KEEP_FILES-1; i>=1; i-- )); do
+        src="${EVENT_LOG}.${i}"
+        dst="${EVENT_LOG}.$((i+1))"
+        [[ -f "$src" ]] && mv -f -- "$src" "$dst"
+    done
+    mv -f -- "$EVENT_LOG" "${EVENT_LOG}.1"
+    : >"$EVENT_LOG"
+    chmod 600 "$EVENT_LOG" "${EVENT_LOG}.1" 2>/dev/null || true
+}
+
+event_actor() {
+    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        printf '%s' "$SUDO_USER"
+    elif [[ -n "${LOGNAME:-}" && "${LOGNAME}" != "root" ]]; then
+        printf '%s' "$LOGNAME"
+    else
+        printf '%s' "${USER:-root}"
+    fi
+}
+
+event_emit() {
+    local severity="${1:-INFO}" source="${2:-assistant}" category="${3:-runtime}"
+    local action="${4:-event}" result_state="${5:-observed}" target="${6:-}" message="${7:-}"
+    local actor ad_operator session host domain remote src_ip boot_id
+
+    command_exists python3 || return 0
+    event_prepare_state || return 0
+    event_rotate_if_needed || true
+
+    severity="${severity^^}"
+    case "$severity" in
+        DEBUG|INFO|NOTICE|WARN|ERROR|CRITICAL) ;;
+        *) severity="INFO" ;;
+    esac
+
+    actor="$(event_actor)"
+    ad_operator="${ADMIN_USER:-}"
+    session="${TIMESTAMP:-unknown}-$$"
+    host="$(hostname -f 2>/dev/null || hostname 2>/dev/null || printf unknown)"
+    domain="${DOMAIN:-}"
+    remote="no"
+    src_ip=""
+    boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+    if [[ ${REMOTE_SESSION:-0} -eq 1 ]]; then
+        remote="yes"
+        src_ip="${SSH_CLIENT_IP:-}"
+    fi
+
+    python3 - "$EVENT_LOG" "$EVENT_SCHEMA_VERSION" "$severity" "$source" "$category" \
+        "$action" "$result_state" "$target" "$message" "$actor" "$ad_operator" \
+        "$session" "$host" "$domain" "$remote" "$src_ip" "$MODE" "$boot_id" <<'PY' || true
+import datetime as dt
+import json
+import os
+import re
+import sys
+
+(
+    path, schema, severity, source, category, action, result_state, target,
+    message, actor, ad_operator, session, host, domain, remote, src_ip, mode,
+    boot_id,
+) = sys.argv[1:]
+
+# Defensive redaction for accidental secret-like key/value strings. The event
+# subsystem should never be used as a credential store.
+message = re.sub(
+    r"(?i)(password|passwd|secret|token|credential|unicodepwd)(\s*[:=]\s*)([^\s,;]+)",
+    lambda m: m.group(1) + m.group(2) + "<redacted>",
+    message,
+)
+message = re.sub(
+    r"(?i)(--password(?:=|\s+))([^\s]+)",
+    lambda m: m.group(1) + "<redacted>",
+    message,
+)
+now = dt.datetime.now().astimezone()
+event = {
+    "schema": int(schema),
+    "timestamp": now.isoformat(timespec="seconds"),
+    "epoch": int(now.timestamp()),
+    "severity": severity,
+    "source": source,
+    "category": category,
+    "action": action,
+    "result": result_state,
+    "actor": actor,
+    "ad_operator": ad_operator,
+    "target": target,
+    "host": host,
+    "domain": domain,
+    "session": session,
+    "mode": mode,
+    "pid": os.getppid(),
+    "boot_id": boot_id,
+    "remote_session": remote == "yes",
+    "source_ip": src_ip,
+    "message": message,
+}
+
+fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+with os.fdopen(fd, "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+PY
+}
+
+event_choose_window() {
+    local choice hours
+    printf '\n' >&2
+    ui_rule >&2
+    printf '  [1] Last hour\n' >&2
+    printf '  [2] Last 6 hours\n' >&2
+    printf '  [3] Last 24 hours\n' >&2
+    printf '  [4] Last 7 days\n' >&2
+    printf '  [C] Custom hours\n' >&2
+    printf '  [0] Cancel\n' >&2
+    ui_rule >&2
+    choice="$(ask 'Time window' '3')"
+    case "${choice^^}" in
+        1) printf '1' ;;
+        2) printf '6' ;;
+        3) printf '24' ;;
+        4) printf '168' ;;
+        C)
+            hours="$(ask 'Hours' '24')"
+            [[ "$hours" =~ ^[0-9]+([.][0-9]+)?$ ]] || { msg_warn "Invalid time window."; return 1; }
+            python3 - "$hours" <<'PY'
+import sys
+h = float(sys.argv[1])
+if not 0 < h <= 8760:
+    raise SystemExit(1)
+print(f"{h:g}")
+PY
+            ;;
+        0) return 1 ;;
+        *) msg_warn "Invalid time window."; return 1 ;;
+    esac
+}
+
+event_since_timestamp() {
+    local hours="${1:-24}"
+    python3 - "$hours" <<'PY'
+import datetime as dt, sys
+hours=float(sys.argv[1])
+value=dt.datetime.now().astimezone()-dt.timedelta(hours=hours)
+print(value.strftime("%Y-%m-%d %H:%M:%S"))
+PY
+}
+
+event_render_timeline() {
+    local hours="${1:-$EVENT_DEFAULT_HOURS}" view="${2:-all}" min_severity="${3:-INFO}"
+    local output="${4:-text}" max_rows="${5:-$EVENT_MAX_ROWS}"
+    [[ "$hours" =~ ^[0-9]+([.][0-9]+)?$ ]] || hours="$EVENT_DEFAULT_HOURS"
+    [[ "$max_rows" =~ ^[0-9]+$ ]] || max_rows="$EVENT_MAX_ROWS"
+    command_exists python3 || { msg_warn "python3 is required for the event timeline."; return 1; }
+    event_prepare_state
+
+    python3 - "$hours" "$view" "$min_severity" "$output" "$max_rows" \
+        "${EVENT_LOG}*" "$REMOTE_OPS_LOG" "$IDS_EVE_GLOB" <<'PY'
+import datetime as dt
+import glob
+import gzip
+import json
+import os
+import subprocess
+import sys
+
+hours, view, min_severity, output, max_rows, assistant_glob, remote_log, eve_glob = sys.argv[1:]
+hours = float(hours)
+max_rows = max(1, min(int(max_rows), 10000))
+now = dt.datetime.now().astimezone()
+cutoff_dt = now - dt.timedelta(hours=hours)
+cutoff = cutoff_dt.timestamp()
+since_text = cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+rank = {"DEBUG": 0, "INFO": 1, "NOTICE": 2, "WARN": 3, "ERROR": 4, "CRITICAL": 5}
+min_rank = rank.get(min_severity.upper(), 1)
+events = []
+seen = set()
+
+
+def normalize_text(value):
+    return " ".join(str(value or "").split())
+
+
+def add(epoch, severity, source, category, actor="", target="", action="", result="", message=""):
+    try:
+        epoch = float(epoch)
+    except Exception:
+        return
+    if epoch < cutoff:
+        return
+    severity = str(severity or "INFO").upper()
+    if severity not in rank:
+        severity = "INFO"
+    if rank[severity] < min_rank:
+        return
+    message = normalize_text(message)
+    ev = {
+        "epoch": epoch,
+        "timestamp": dt.datetime.fromtimestamp(epoch).astimezone().isoformat(timespec="seconds"),
+        "severity": severity,
+        "source": str(source or "unknown"),
+        "category": str(category or "runtime"),
+        "actor": normalize_text(actor),
+        "target": normalize_text(target),
+        "action": normalize_text(action),
+        "result": normalize_text(result),
+        "message": message,
+    }
+    key = (round(epoch, 3), ev["source"], ev["category"], ev["target"], message)
+    if key in seen:
+        return
+    seen.add(key)
+    events.append(ev)
+
+
+def view_accepts(category, source):
+    if view == "all":
+        return True
+    if view == "assistant":
+        return source == "assistant"
+    if view == "ad":
+        return category in {"ad", "replication", "dns", "kerberos", "time", "system"} and source in {"journal", "assistant"}
+    if view == "auth":
+        return category == "auth"
+    if view == "remote":
+        return source == "remote-ops"
+    if view == "ids":
+        return source == "suricata"
+    if view == "critical":
+        return True
+    return True
+
+
+# Persistent assistant events, including size-rotated generations.
+assistant_paths = [p for p in glob.glob(assistant_glob) if os.path.isfile(p)]
+assistant_paths.sort(key=lambda p: os.path.getmtime(p))
+for path in assistant_paths:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    ev = json.loads(line)
+                except Exception:
+                    continue
+                source = ev.get("source", "assistant")
+                category = ev.get("category", "runtime")
+                if not view_accepts(category, source):
+                    continue
+                add(
+                    ev.get("epoch", 0), ev.get("severity", "INFO"), source, category,
+                    ev.get("actor", ""), ev.get("target", ""), ev.get("action", ""),
+                    ev.get("result", ""), ev.get("message", ""),
+                )
+    except (FileNotFoundError, OSError):
+        continue
+
+
+# Existing Remote Ops TSV remains authoritative for endpoint actions.
+if view in {"all", "remote", "critical"}:
+    try:
+        with open(remote_log, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                parts = line.rstrip("\n").split("\t", 4)
+                if len(parts) != 5:
+                    continue
+                ts, actor, target, action, state_detail = parts
+                try:
+                    epoch = dt.datetime.fromisoformat(ts).timestamp()
+                except Exception:
+                    continue
+                result, _, detail = state_detail.partition(":")
+                sev = "NOTICE" if result.lower() in {"ok", "success", "applied", "pass"} else "WARN"
+                add(epoch, sev, "remote-ops", "remote", actor, target, action, result, detail)
+    except (FileNotFoundError, OSError):
+        pass
+
+
+def classify_journal(ident, unit, message, category_hint=None):
+    low = f"{ident} {unit} {message}".lower()
+    if ident in {"sshd", "sudo"} or "pam_" in low or "authentication failure" in low:
+        return "auth"
+    if any(x in low for x in ("kerberos", "krb5", "kdc", "krbtgt")):
+        return "kerberos"
+    if any(x in low for x in ("dns", "named", "resolver", "resolve")):
+        return "dns"
+    if any(x in low for x in ("chrony", "ntp", "time sync", "clock skew")):
+        return "time"
+    if any(x in low for x in ("replication", "drs", "werr_ds_dra", "drepl")):
+        return "replication"
+    if any(x in low for x in ("samba", "winbind", "ldap", "sam.ldb", "sysvol", "ldb")):
+        return "ad"
+    return category_hint or "system"
+
+
+def journal(args, category_hint=None, max_lines=1500):
+    cmd = ["journalctl", "--since", since_text, "--no-pager", "-o", "json", "-n", str(max_lines)] + args
+    try:
+        cp = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    except FileNotFoundError:
+        return
+    for line in cp.stdout.splitlines():
+        try:
+            row = json.loads(line)
+            epoch = int(row.get("__REALTIME_TIMESTAMP", "0")) / 1_000_000
+            pri = int(row.get("PRIORITY", "6"))
+            sev = {0:"CRITICAL",1:"CRITICAL",2:"CRITICAL",3:"ERROR",4:"WARN",5:"NOTICE",6:"INFO",7:"DEBUG"}.get(pri,"INFO")
+            ident = row.get("SYSLOG_IDENTIFIER") or row.get("_COMM") or row.get("_SYSTEMD_UNIT") or "journal"
+            unit = row.get("_SYSTEMD_UNIT", "")
+            msg = row.get("MESSAGE", "")
+            category = classify_journal(ident, unit, msg, category_hint)
+            if not view_accepts(category, "journal"):
+                continue
+            actor = row.get("_UID", "")
+            add(epoch, sev, "journal", category, actor, unit or ident, ident, "observed", msg)
+        except Exception:
+            continue
+
+
+# Broad host warnings/errors provide the critical operational context.
+if view in {"all", "ad", "critical"}:
+    journal(["-p", "warning"], max_lines=2500)
+
+# AD/DC and time notices are operationally useful even below warning priority.
+if view in {"all", "ad", "critical"}:
+    journal(["-u", "samba-ad-dc.service", "-p", "notice"], category_hint="ad", max_lines=1500)
+    journal(["-u", "debian-ad-samba-health.service", "-p", "notice"], category_hint="ad", max_lines=500)
+    journal(["-u", "debian-ad-network-ready.service", "-p", "notice"], category_hint="system", max_lines=300)
+    journal(["-u", "chrony.service", "-p", "notice"], category_hint="time", max_lines=500)
+    journal(["-u", "systemd-resolved.service", "-p", "warning"], category_hint="dns", max_lines=300)
+
+# Authentication/admin activity is intentionally included in the unified view.
+if view in {"all", "auth"}:
+    journal(["-t", "sshd", "-t", "sudo", "-p", "info"], category_hint="auth", max_lines=1500)
+
+
+# Suricata contributes signature alerts only. Protocol intelligence and packet
+# statistics remain owned by the dedicated IDS workspace.
+if view in {"all", "ids", "critical"}:
+    eve_paths = sorted(glob.glob(eve_glob), key=lambda p: os.path.getmtime(p))[-8:]
+    for path in eve_paths:
+        opener = gzip.open if path.endswith(".gz") else open
+        try:
+            with opener(path, "rt", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    try:
+                        ev = json.loads(line)
+                    except Exception:
+                        continue
+                    if ev.get("event_type") != "alert":
+                        continue
+                    try:
+                        epoch = dt.datetime.fromisoformat(ev.get("timestamp", "").replace("Z", "+00:00")).timestamp()
+                    except Exception:
+                        continue
+                    a = ev.get("alert") or {}
+                    try:
+                        s = int(a.get("severity") or 3)
+                    except Exception:
+                        s = 3
+                    sev = "CRITICAL" if s == 1 else "WARN" if s == 2 else "NOTICE"
+                    add(
+                        epoch, sev, "suricata", "ids", "",
+                        f"{ev.get('src_ip','-')} -> {ev.get('dest_ip','-')}",
+                        a.get("category", "alert"), "observed",
+                        a.get("signature", "Suricata alert"),
+                    )
+        except (FileNotFoundError, OSError):
+            continue
+
+if view == "critical":
+    events = [e for e in events if rank[e["severity"]] >= rank["WARN"]]
+
+events.sort(key=lambda e: e["epoch"], reverse=True)
+matched = len(events)
+counts = {k: 0 for k in rank}
+for ev in events:
+    counts[ev["severity"]] += 1
+shown = events[:max_rows]
+
+if output == "jsonl":
+    for ev in shown:
+        print(json.dumps(ev, ensure_ascii=False, separators=(",", ":")))
+    raise SystemExit(0)
+
+print(f"EVENT TIMELINE — LAST {hours:g}H — VIEW={view.upper()}")
+print("=" * 118)
+print(
+    "  CRITICAL={CRITICAL}  ERROR={ERROR}  WARN={WARN}  NOTICE={NOTICE}  INFO={INFO}  |  MATCHED={matched} DISPLAYING={displayed}".format(
+        matched=matched, displayed=len(shown), **counts
+    )
+)
+print("=" * 118)
+if not shown:
+    print("No events matched the selected window and filters.")
+    raise SystemExit(0)
+
+def clip(value, width):
+    value = str(value or "-")
+    if len(value) <= width:
+        return value
+    return value[:max(1, width - 3)] + "..."
+
+for ev in shown:
+    ts = ev["timestamp"].replace("T", " ")[:19]
+    sev = ev["severity"]
+    src = ev["source"][:11]
+    cat = ev["category"][:11]
+    subject = ev["target"] or ev["actor"] or "-"
+    message = ev["message"] or ev["action"] or "-"
+    if ev["action"] and ev["action"] not in {"event", "observed"} and message != ev["action"]:
+        message = f"{ev['action']}: {message}"
+    print(f"{ts}  {sev:<8} {src:<11} {cat:<11} {clip(subject,30):<30} {clip(message,120)}")
+PY
+}
+
+event_status() {
+    event_prepare_state
+    local files=() f total_records=0 total_bytes=0 count=0 size=0 remote_records=0
+    shopt -s nullglob
+    files=("${EVENT_LOG}"*)
+    shopt -u nullglob
+    for f in "${files[@]}"; do
+        [[ -f "$f" ]] || continue
+        count="$(wc -l <"$f" 2>/dev/null || printf 0)"
+        size="$(stat -c '%s' "$f" 2>/dev/null || printf 0)"
+        [[ "$count" =~ ^[0-9]+$ ]] && total_records=$((total_records + count))
+        [[ "$size" =~ ^[0-9]+$ ]] && total_bytes=$((total_bytes + size))
+    done
+
+    printf 'Event subsystem\n'
+    ui_rule
+    printf '  %-28s %s\n' "Assistant event log" "$EVENT_LOG"
+    printf '  %-28s %s\n' "Assistant event records" "$total_records"
+    printf '  %-28s %s\n' "Assistant event bytes" "$total_bytes"
+    printf '  %-28s %s MiB active + %s rotated\n' "Rotation policy" "$((EVENT_MAX_BYTES / 1024 / 1024))" "$EVENT_KEEP_FILES"
+    if [[ -f "$REMOTE_OPS_LOG" ]]; then
+        remote_records="$(wc -l <"$REMOTE_OPS_LOG" 2>/dev/null || printf 0)"
+    fi
+    printf '  %-28s %s\n' "Remote Ops records" "$remote_records"
+    printf '  %-28s %s\n' "journald" "$(command_exists journalctl && printf available || printf unavailable)"
+    printf '  %-28s %s\n' "Journal disk use" "$(journalctl --disk-usage 2>/dev/null | sed 's/^Archived and active journals take up //' || printf unknown)"
+    printf '  %-28s %s\n' "Current boot ID" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf unknown)"
+    printf '  %-28s %s\n' "Suricata EVE" "$(compgen -G "$IDS_EVE_GLOB" >/dev/null 2>&1 && printf available || printf unavailable)"
+    printf '\nThe Event Center queries journald and Suricata on demand; those authoritative logs are not duplicated.\n'
+}
+
+event_export_evidence() {
+    local hours="${1:-24}" outdir out since f
+    event_prepare_state
+    since="$(event_since_timestamp "$hours" 2>/dev/null || true)"
+    [[ -n "$since" ]] || { msg_warn "Unable to calculate event export time boundary."; return 1; }
+
+    outdir="${RUN_ROOT}/events-${TIMESTAMP}"
+    mkdir -p "$outdir/assistant-events"
+    chmod 700 "$outdir" "$outdir/assistant-events"
+
+    event_render_timeline "$hours" all INFO text "$EVENT_EXPORT_MAX_ROWS" >"$outdir/timeline.txt" 2>&1 || true
+    event_render_timeline "$hours" all INFO jsonl "$EVENT_EXPORT_MAX_ROWS" >"$outdir/timeline.jsonl" 2>/dev/null || true
+    journalctl --since "$since" -p warning --no-pager >"$outdir/journal-warning-plus.txt" 2>&1 || true
+    journalctl --since "$since" -u samba-ad-dc.service --no-pager >"$outdir/samba-ad-dc.txt" 2>&1 || true
+    journalctl --since "$since" -u debian-ad-samba-health.service --no-pager >"$outdir/samba-health-guard.txt" 2>&1 || true
+    journalctl --since "$since" -u chrony.service --no-pager >"$outdir/chrony.txt" 2>&1 || true
+    journalctl --since "$since" -t sshd -t sudo --no-pager >"$outdir/auth-admin.txt" 2>&1 || true
+
+    shopt -s nullglob
+    for f in "${EVENT_LOG}"*; do
+        [[ -f "$f" ]] && cp -a -- "$f" "$outdir/assistant-events/"
+    done
+    shopt -u nullglob
+    [[ -f "$REMOTE_OPS_LOG" ]] && cp -a "$REMOTE_OPS_LOG" "$outdir/remote-operations.tsv"
+    if declare -F ids_recent_alerts >/dev/null 2>&1; then
+        ids_recent_alerts "$hours" >"$outdir/suricata-alerts.txt" 2>&1 || true
+    fi
+
+    {
+        printf 'Generated: %s\n' "$(date -Is)"
+        printf 'Assistant: %s %s\n' "$SCRIPT_NAME" "$SCRIPT_VERSION"
+        printf 'Host: %s\n' "$(hostname -f 2>/dev/null || hostname)"
+        printf 'Domain: %s\n' "${DOMAIN:-unknown}"
+        printf 'Window: %s hours\n' "$hours"
+        printf 'Since: %s\n' "$since"
+        printf 'Boot ID: %s\n' "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf unknown)"
+        printf 'Note: raw Suricata EVE payload is intentionally not bundled.\n'
+    } >"$outdir/METADATA.txt"
+    event_status >"$outdir/event-subsystem-status.txt" 2>&1 || true
+
+    chmod 600 "$outdir"/* "$outdir/assistant-events"/* 2>/dev/null || true
+    (
+        cd "$outdir"
+        : >SHA256SUMS
+        while IFS= read -r -d '' f; do
+            sha256sum "$f"
+        done < <(find . -type f ! -name SHA256SUMS -print0 | sort -z)
+    ) >"$outdir/SHA256SUMS"
+    chmod 600 "$outdir/SHA256SUMS"
+
+    out="${RUN_ROOT}/ad-events-evidence-${TIMESTAMP}.tar.gz"
+    tar -czf "$out" -C "$RUN_ROOT" "$(basename "$outdir")"
+    chmod 600 "$out"
+    result PASS "Event evidence" "$out" "timeline + supporting logs + SHA256 manifest"
+}
+
+event_center_menu() {
+    local choice hours
+    while true; do
+        (( MENU_MAIN_REQUESTED )) && return 0
+        ui_menu_screen "AD EVENT CENTER" \
+            "Unified operational/audit timeline: assistant actions, AD/DC, system, auth, Remote Ops and IDS alerts"
+        ui_menu_item "1" "Unified timeline" "All relevant sources ordered by time"
+        ui_menu_item "2" "Critical / warning events" "WARN+ across host, AD/DC, Remote Ops and IDS" "$C_RED"
+        ui_menu_item "3" "Assistant actions" "Applied changes, warnings, failures and high-impact authorizations"
+        ui_menu_item "4" "AD/DC infrastructure" "Samba, replication, DNS, Kerberos, Chrony and host warnings"
+        ui_menu_item "5" "Authentication activity" "sudo / SSH / PAM administrative activity"
+        ui_menu_item "6" "Remote Ops history" "Actions recorded by the Remote Operations Center"
+        ui_menu_item "7" "IDS alert bridge" "Suricata signature alerts; deep telemetry remains in IDS"
+        ui_menu_item "8" "Event subsystem status" "Stores, retention, journal availability and disk usage"
+        ui_menu_item "9" "Export evidence" "TXT + JSONL timeline, source logs and SHA256 manifest" "$C_GREEN"
+        ui_menu_exit
+        ui_rule
+
+        choice="$(ask 'Event operation' '1')"
+        case "${choice^^}" in
+            1) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" all INFO; ui_pause ;;
+            2) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" critical WARN; ui_pause ;;
+            3) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" assistant INFO; ui_pause ;;
+            4) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" ad NOTICE; ui_pause ;;
+            5) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" auth INFO; ui_pause ;;
+            6) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" remote INFO; ui_pause ;;
+            7) hours="$(event_choose_window)" || { ui_pause; continue; }; event_render_timeline "$hours" ids NOTICE; ui_pause ;;
+            8) event_status; ui_pause ;;
+            9) hours="$(event_choose_window)" || { ui_pause; continue; }; event_export_evidence "$hours"; ui_pause ;;
+            H)
+                if [[ "$MODE" == "events" ]]; then
+                    if [[ "$SAMBA_ROLE" == "ad-dc" || "$SAMBA_ROLE" == "ad-dc-config" ]]; then
+                        prepare_existing_ad_context
+                    else
+                        msg_warn "No Samba AD/DC is available for the main control plane."
+                        ui_pause
+                        continue
+                    fi
+                fi
+                MENU_MAIN_REQUESTED=1
+                return 0
+                ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid event operation."; ui_pause ;;
+        esac
+    done
+}
+
 cli_command_catalog() {
     cat <<'EOF'
 adctl|Main control plane|Open the full AD/DC Main Control Plane: maintenance, operations, security, backup and migration.
@@ -9552,6 +10154,7 @@ ad-migrate|Domain migration|Assess domain changes, inventory scope and generate 
 ad-reset|Domain reset|Destructive local Samba AD/DC decommission/reset with external recovery bundle.
 ad-deps|Dependencies|Audit/install/update the minimal official distribution package set used by the control plane.
 ad-ids|Network IDS|Optional passive Suricata IDS, AD protocol telemetry, daily summaries and evidence export.
+ad-events|Event center|Unified operational/audit timeline across assistant actions, AD/DC, journald, Remote Ops and IDS alerts.
 ad-remote|Remote operations|Select domain computers, inspect sessions, message users, collect diagnostics and perform controlled restarts/logoffs.
 ad-audit|Audit|Run a read-only inventory and security evidence review.
 ad-validate|Validation|Run functional Samba AD/DC DNS, Kerberos, LDAP, SMB, DB and SYSVOL checks.
@@ -9628,6 +10231,7 @@ show_cli_commands() {
     printf '    sudo ad-samba     %b# Samba/Kerberos security center%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-kerberos  %b# Kerberos security center%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-ids       %b# passive Suricata IDS / daily security summary%b\n' "$C_DIM" "$C_RESET"
+    printf '    sudo ad-events    %b# unified operational / audit event center%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-remote    %b# remote endpoint operations center%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-validate  %b# full functional validation%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-tools     %b# show this catalog again%b\n' "$C_DIM" "$C_RESET"
@@ -9675,6 +10279,7 @@ security_hardening_menu() {
         ui_menu_item "8" "Repair local resolver" "Replace broken resolved stub with persistent Samba DNS /etc/resolv.conf" "$C_GREEN"
         ui_menu_item "9" "Samba & Kerberos security" "Protocol hardening, crypto readiness and signed domain time" "$C_GREEN"
         ui_menu_item "10" "Network IDS / Suricata" "Passive network detection and AD protocol telemetry" "$C_GREEN"
+        ui_menu_item "11" "AD Event Center" "Operational/audit timeline across assistant, AD/DC, auth and IDS" "$C_YELLOW"
         ui_menu_exit
         ui_rule
         local choice
@@ -9690,6 +10295,7 @@ security_hardening_menu() {
             8) set_progress_plan 1; repair_local_resolver_only; ui_pause ;;
             9) samba_kerberos_security_menu ;;
             10) ids_menu ;;
+            11) event_center_menu ;;
             H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
@@ -9704,8 +10310,9 @@ domain_admin_console() {
         ui_workspace_pair "U" "Users" "$C_CYAN" "G" "Groups" "$C_GREEN"
         ui_workspace_pair "C" "Computers" "$C_BLUE" "A" "Access / delegation" "$C_MAGENTA"
         ui_workspace_pair "P" "Group Policy" "$C_MAGENTA" "R" "Remote operations" "$C_BLUE"
-        ui_workspace_pair "S" "Security" "$C_RED" "V" "Validate controller" "$C_GREEN"
-        ui_workspace_pair "B" "Domain backup" "$C_GREEN" "M" "Migration" "$C_YELLOW"
+        ui_workspace_pair "S" "Security" "$C_RED" "E" "Events / activity" "$C_YELLOW"
+        ui_workspace_pair "V" "Validate controller" "$C_GREEN" "B" "Domain backup" "$C_GREEN"
+        ui_workspace_pair "M" "Migration" "$C_YELLOW"
         ui_menu_root_exit
         ui_rule
 
@@ -9722,6 +10329,7 @@ domain_admin_console() {
             B|10) set_progress_plan 1; create_domain_backup; ui_pause ;;
             M|11) domain_migration_menu ;;
             R) remote_ops_menu ;;
+            E) event_center_menu ;;
             0) return 0 ;;
             *) msg_warn "Invalid daily operation."; ui_pause ;;
         esac
@@ -9769,6 +10377,12 @@ CURRENT IDENTITY
   [ ] Secure recovery credentials for built-in Administrator before disabling it.
   [ ] Keep verified domain backups off-host.
 
+[EVENTS / AUDIT]
+  [ ] sudo ${0} --events -> Unified timeline -> Last 24 hours
+  [ ] Review critical/warning, assistant actions and authentication activity.
+  [ ] Test Event Center evidence export and retain the SHA256 manifest with incident material.
+  [ ] Verify ${EVENT_LOG_DIR} remains root-only (0700) and event files remain 0600.
+
 [CLIENT]
   [ ] Configure clients to use ${DC_IP} for AD DNS.
   [ ] Join a test client to ${DOMAIN}.
@@ -9814,6 +10428,7 @@ summary() {
     printf '  %-18s %s\n' "Report" "$REPORT_FILE"
     printf '  %-18s %s\n' "Backups" "$BACKUP_DIR"
     printf '  %-18s %s\n' "Run data" "$RUN_ROOT"
+    [[ -f "$EVENT_LOG" ]] && printf '  %-18s %s\n' "Event log" "$EVENT_LOG"
     [[ -f "$POST_INSTALL_FILE" ]] && printf '  %-18s %s\n' "Checklist" "$POST_INSTALL_FILE"
     printf '\n'
     if (( fail > 0 )); then
@@ -10565,7 +11180,8 @@ insights_workspace_menu() {
         (( MENU_MAIN_REQUESTED )) && return 0
         ui_menu_screen "INSIGHTS & HEALTH" "Current health, evidence and network detection"
         ui_workspace_pair "V" "Validate AD/DC" "$C_GREEN" "A" "Security audit" "$C_CYAN"
-        ui_workspace_pair "I" "Suricata IDS" "$C_MAGENTA" "F" "Current findings" "$C_YELLOW"
+        ui_workspace_pair "I" "Suricata IDS" "$C_MAGENTA" "E" "Event Center" "$C_YELLOW"
+        ui_workspace_pair "F" "Current findings" "$C_YELLOW"
         ui_menu_exit
         ui_rule
         local choice
@@ -10574,6 +11190,7 @@ insights_workspace_menu() {
             V|1) set_progress_plan 1; validate_ad || true; ui_pause ;;
             A|2) set_progress_plan 2; audit_existing; audit_security_baseline; ui_pause ;;
             I|3) ids_menu ;;
+            E) event_center_menu ;;
             F|4) summary; ui_pause ;;
             H) MENU_MAIN_REQUESTED=1; return 0 ;;
             0) return 0 ;;
@@ -10639,6 +11256,7 @@ manage_all_modules_menu() {
         ui_menu_item "19" "Dependencies & packages" "Minimal required packages, repair missing tools and scoped updates" "$C_GREEN"
         ui_menu_item "20" "Network IDS / Suricata" "Optional passive IDS, AD protocol telemetry and daily security summaries" "$C_GREEN"
         ui_menu_item "21" "Remote operations" "Cross-platform endpoint sessions, diagnostics and controlled power actions" "$C_BLUE"
+        ui_menu_item "22" "AD Event Center" "Unified assistant, AD/DC, system, auth, Remote Ops and IDS timeline" "$C_YELLOW"
         ui_menu_root_exit
         ui_rule
         local choice
@@ -10675,6 +11293,7 @@ manage_all_modules_menu() {
             19) dependency_menu ;;
             20) ids_menu ;;
             21) remote_ops_menu ;;
+            22) event_center_menu ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -10688,7 +11307,7 @@ manage_menu() {
         ui_menu_screen "AD/DC CONTROL PLANE" "Workspace navigation · letters are stable muscle-memory shortcuts"
         ui_workspace_pair "O" "Daily operations" "$C_GREEN" "D" "Directory" "$C_CYAN"
         ui_workspace_pair "P" "Policy / GPO" "$C_MAGENTA" "S" "Security" "$C_RED"
-        ui_workspace_pair "R" "Remote operations" "$C_BLUE" "I" "Insights / IDS" "$C_YELLOW"
+        ui_workspace_pair "R" "Remote operations" "$C_BLUE" "I" "Insights / events+IDS" "$C_YELLOW"
         ui_workspace_pair "M" "Maintenance" "$C_CYAN" "A" "All modules" "$C_DIM"
         ui_menu_root_exit
         ui_rule
@@ -10708,6 +11327,15 @@ manage_menu() {
             *) msg_warn "Invalid workspace."; ui_pause ;;
         esac
     done
+}
+
+prepare_event_context() {
+    load_config || true
+    detect_samba_role
+    if [[ "$SAMBA_ROLE" == "ad-dc" || "$SAMBA_ROLE" == "ad-dc-config" ]]; then
+        discover_existing_identity || true
+    fi
+    event_prepare_state
 }
 
 prepare_existing_ad_context() {
@@ -10826,6 +11454,7 @@ main() {
         dependencies) detect_samba_role; load_config || true; dependency_menu ;;
         ids) prepare_existing_ad_context; ids_menu; save_config ;;
         remote) prepare_existing_ad_context; remote_ops_menu; save_config ;;
+        events) prepare_event_context; event_center_menu ;;
         ids-daily) load_config || true; ids_daily_mode ;;
         install-cli) install_cli_commands ;;
         cli-info) show_cli_commands ;;
