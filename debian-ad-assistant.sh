@@ -430,7 +430,7 @@ ui_context_panel() {
     iface="${AD_IFACE:-n/a}"
     admin="${ADMIN_USER:-not-selected}"
     session="local"
-    current_date="$(date +'%Y-%m-%d' %H:%M)"
+    current_date="$(date +'%Y-%m-%d %H:%M')"
     [[ $REMOTE_SESSION -eq 1 ]] && session="SSH ${SSH_CLIENT_IP:-unknown}"
 
     printf '  %b%-24s%b  %-28s  %s\n' \
