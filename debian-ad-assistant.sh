@@ -45,7 +45,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.3.0-remote-batch-operations"
+SCRIPT_VERSION="5.3.2-linux-remote-transport-repair"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -173,8 +173,14 @@ REMOTE_TARGET_OS=""
 REMOTE_SSH_USER=""
 REMOTE_TARGET_HOST_OVERRIDE=""
 REMOTE_TARGET_KIND_OVERRIDE=""
-REMOTE_PORT_TIMEOUT="${REMOTE_PORT_TIMEOUT:-10}"
-REMOTE_SSH_CONNECT_TIMEOUT="${REMOTE_SSH_CONNECT_TIMEOUT:-20}"
+REMOTE_PORT_TIMEOUT="${REMOTE_PORT_TIMEOUT:-12}"
+REMOTE_DISCOVERY_PORT_TIMEOUT="${REMOTE_DISCOVERY_PORT_TIMEOUT:-2}"
+REMOTE_SSH_CONNECT_TIMEOUT="${REMOTE_SSH_CONNECT_TIMEOUT:-30}"
+REMOTE_SSH_CONNECTION_ATTEMPTS="${REMOTE_SSH_CONNECTION_ATTEMPTS:-2}"
+REMOTE_SSH_CONTROL_PERSIST="${REMOTE_SSH_CONTROL_PERSIST:-180}"
+REMOTE_INVENTORY_CACHE_TTL="${REMOTE_INVENTORY_CACHE_TTL:-60}"
+REMOTE_INVENTORY_CACHE="${REMOTE_OPS_DIR}/computer-inventory.tsv"
+REMOTE_INVENTORY_CACHE_META="${REMOTE_OPS_DIR}/computer-inventory.meta"
 REMOTE_BATCH_ACCOUNTS=()
 
 KRB5_CACHE=""
@@ -435,7 +441,7 @@ ui_context_panel() {
     iface="${AD_IFACE:-n/a}"
     admin="${ADMIN_USER:-not-selected}"
     session="local"
-    current_date="$(date +'%Y-%m-%d')"
+    current_date="$(date +'%Y-%m-%d %H:%M')"
     [[ $REMOTE_SESSION -eq 1 ]] && session="SSH ${SSH_CLIENT_IP:-unknown}"
 
     printf '  %b%-24s%b  %-28s  %s\n' \
@@ -5336,7 +5342,7 @@ normalize_ad_computer_dns_name() {
     fi
 }
 
-domain_computer_inventory_tsv() {
+domain_computer_inventory_tsv_uncached() {
     local account short dns raw_dns ip hint ssh_ok smb_ok
     while IFS= read -r account; do
         [[ -n "$account" ]] || continue
@@ -5371,6 +5377,58 @@ domain_computer_inventory_tsv() {
     done < <(samba-tool computer list 2>/dev/null | sort)
 }
 
+remote_inventory_cache_age() {
+    local now mtime
+    [[ -s "$REMOTE_INVENTORY_CACHE" ]] || { printf '%s' 999999; return 0; }
+    now="$(date +%s)"
+    mtime="$(stat -c %Y "$REMOTE_INVENTORY_CACHE" 2>/dev/null || printf 0)"
+    printf '%s' "$(( now - mtime ))"
+}
+
+remote_inventory_cache_invalidate() {
+    rm -f -- "$REMOTE_INVENTORY_CACHE" "$REMOTE_INVENTORY_CACHE_META" 2>/dev/null || true
+}
+
+remote_inventory_cache_refresh() {
+    local tmp age
+    mkdir -p "$REMOTE_OPS_DIR"
+    tmp="${REMOTE_INVENTORY_CACHE}.tmp.$$"
+
+    msg_info "Refreshing domain computer inventory. Network hints can take a few seconds on slow or virtual links."
+    if domain_computer_inventory_tsv_uncached >"$tmp"; then
+        mv -f -- "$tmp" "$REMOTE_INVENTORY_CACHE"
+        printf 'refreshed_at=%s\n' "$(date -Is)" >"$REMOTE_INVENTORY_CACHE_META"
+        chmod 0600 "$REMOTE_INVENTORY_CACHE" "$REMOTE_INVENTORY_CACHE_META" 2>/dev/null || true
+        return 0
+    fi
+
+    rm -f -- "$tmp" 2>/dev/null || true
+    return 1
+}
+
+domain_computer_inventory_tsv() {
+    local age
+    age="$(remote_inventory_cache_age)"
+    if [[ -s "$REMOTE_INVENTORY_CACHE" ]] && (( age < REMOTE_INVENTORY_CACHE_TTL )); then
+        cat "$REMOTE_INVENTORY_CACHE"
+        return 0
+    fi
+
+    if remote_inventory_cache_refresh; then
+        cat "$REMOTE_INVENTORY_CACHE"
+        return 0
+    fi
+
+    # Preserve usability if a transient refresh fails but an older snapshot is
+    # available. Readiness is always re-checked before an actual remote action.
+    if [[ -s "$REMOTE_INVENTORY_CACHE" ]]; then
+        msg_warn "Live inventory refresh failed; using the last cached computer list."
+        cat "$REMOTE_INVENTORY_CACHE"
+        return 0
+    fi
+    return 1
+}
+
 list_domain_computers_indexed() {
     local filter="${1:-}"
     local -a rows=()
@@ -5390,7 +5448,11 @@ list_domain_computers_indexed() {
         printf '  [%3d]  %-24s %-34s %-16s %s\n' "$((i+1))" "$account" "$dns" "$ip" "$hint" >&2
     done
     ((${#rows[@]})) || printf '  %bNo computers matched.%b\n' "$C_YELLOW" "$C_RESET" >&2
+    local cache_age
+    cache_age="$(remote_inventory_cache_age)"
+    printf '  %bListed: %d endpoint(s) · inventory cache: %ss%b\n' "$C_DIM" "${#rows[@]}" "$cache_age" "$C_RESET" >&2
     printf '  %b[S  ]%b  Search/filter\n' "$C_CYAN" "$C_RESET" >&2
+    printf '  %b[R  ]%b  Refresh live inventory now\n' "$C_GREEN" "$C_RESET" >&2
     printf '  %b[M  ]%b  Enter computer manually\n' "$C_CYAN" "$C_RESET" >&2
     printf '  %b[0  ]%b  Cancel\n' "$C_RED" "$C_RESET" >&2
     ui_rule >&2
@@ -5411,6 +5473,10 @@ select_domain_computer() {
             0|"") return 1 ;;
             S)
                 filter="$(ask 'Computer filter' "$filter")"
+                ;;
+            R)
+                remote_inventory_cache_invalidate
+                remote_inventory_cache_refresh || msg_warn "Could not refresh the live computer inventory."
                 ;;
             M)
                 manual="$(ask 'Computer account / name')"
@@ -12137,10 +12203,41 @@ remote_ops_audit() {
 }
 
 remote_port_open() {
-    local host="$1" port="$2"
-    [[ -n "$host" && "$port" =~ ^[0-9]+$ ]] || return 1
+    local host="$1" port="$2" seconds="${3:-$REMOTE_DISCOVERY_PORT_TIMEOUT}"
+    [[ -n "$host" && "$port" =~ ^[0-9]+$ && "$seconds" =~ ^[0-9]+$ ]] || return 1
     command_exists timeout || return 1
-    timeout "$REMOTE_PORT_TIMEOUT" bash -c 'exec 3<>"/dev/tcp/${1}/${2}"' _ "$host" "$port" >/dev/null 2>&1
+    timeout "$seconds" bash -c 'exec 3<>"/dev/tcp/${1}/${2}"' _ "$host" "$port" >/dev/null 2>&1
+}
+
+remote_wait_ssh_port() {
+    local host="$1" attempt=1 seconds="" total=0
+    [[ -n "$host" ]] || return 1
+
+    if remote_port_open "$host" 22 "$REMOTE_DISCOVERY_PORT_TIMEOUT"; then
+        return 0
+    fi
+
+    msg_info "TCP/22 did not answer immediately on $host. The endpoint may be slow; retrying before declaring it unreachable."
+    for seconds in 5 "$REMOTE_PORT_TIMEOUT" "$REMOTE_PORT_TIMEOUT"; do
+        total=$((total + seconds))
+        printf '  SSH reachability retry %d/3 (up to %ss)...\n' "$attempt" "$seconds"
+        if remote_port_open "$host" 22 "$seconds"; then
+            msg_success "TCP/22 became reachable after a delayed response."
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 2
+    done
+
+    msg_warn "TCP/22 is still unreachable after adaptive retries (~${total}s probe budget)."
+    return 1
+}
+
+remote_ssh_control_path() {
+    local dir="${REMOTE_OPS_DIR}/ssh-control"
+    mkdir -p "$dir"
+    chmod 700 "$dir" 2>/dev/null || true
+    printf '%s/%%C' "$dir"
 }
 
 remote_target_context() {
@@ -12215,12 +12312,18 @@ remote_select_batch_targets() {
         )
         list_domain_computers_indexed "$filter"
         printf '  %b[A  ]%b  Select all listed endpoints\n' "$C_CYAN" "$C_RESET" >&2
+        printf '  %b[R  ]%b  Refresh live inventory\n' "$C_GREEN" "$C_RESET" >&2
         printf '  Multiple selection: 1,3,5-8\n' >&2
 
         choice="$(ask 'Select endpoint(s)' '0')"
         case "${choice^^}" in
             0|"") return 1 ;;
             S) filter="$(ask 'Computer filter' "$filter")"; continue ;;
+            R)
+                remote_inventory_cache_invalidate
+                remote_inventory_cache_refresh || msg_warn "Could not refresh the live computer inventory."
+                continue
+                ;;
         esac
 
         mapfile -t selected < <(remote_parse_selection "$choice" "${#rows[@]}" || true)
@@ -12271,7 +12374,7 @@ remote_batch_message() {
         printf '\n[%s] %s (%s)\n' "$account" "${REMOTE_TARGET_DNS:-unresolved}" "$kind"
         case "$kind" in
             linux)
-                if [[ -n "$host" ]] && remote_port_open "$host" 22 && \
+                if [[ -n "$host" ]] && remote_wait_ssh_port "$host" && \
                    remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); if [ \"\$(id -u)\" -eq 0 ]; then printf '%s\\n' \"\$m\" | wall; else printf '%s\\n' \"\$m\" | sudo wall; fi"; then
                     ((success+=1)); remote_ops_audit "batch-message" "OK" "linux"
                 else ((fail+=1)); remote_ops_audit "batch-message" "FAIL" "linux"; fi
@@ -12301,13 +12404,13 @@ remote_batch_diagnostics() {
         printf '\n%b[%s] %s%b\n' "$C_BOLD" "$account" "${REMOTE_TARGET_DNS:-unresolved} / $kind" "$C_RESET"
         case "$kind" in
             linux)
-                if [[ -n "$host" ]] && remote_port_open "$host" 22; then
+                if [[ -n "$host" ]] && remote_wait_ssh_port "$host"; then
                     out="$(remote_ssh_capture "printf 'host='; hostname; printf 'uptime='; uptime -p 2>/dev/null || uptime; printf 'failed_units='; systemctl --failed --no-legend 2>/dev/null | wc -l; printf 'disk_root='; df -P / | awk 'NR==2{print \\$5}'" 2>&1 || true)"
                     printf '%s\n' "$out" | sed 's/^/  /'
                 else msg_warn "SSH unreachable."; fi
                 ;;
             windows)
-                if [[ -n "$host" ]] && remote_port_open "$host" 22; then
+                if [[ -n "$host" ]] && remote_wait_ssh_port "$host"; then
                     remote_windows_ssh_ps_capture "\$os=Get-CimInstance Win32_OperatingSystem; [pscustomobject]@{Computer=\$env:COMPUTERNAME;Uptime=((Get-Date)-\$os.LastBootUpTime).ToString();FreeGB=[math]::Round(\$os.FreePhysicalMemory/1MB,1)} | Format-List" 2>&1 | sed 's/^/  /' || true
                 else msg_warn "Windows SSH unreachable for full diagnostics."; fi
                 ;;
@@ -12331,7 +12434,7 @@ remote_batch_service() {
         printf '\n[%s] %s\n' "$account" "$kind"
         case "$kind" in
             linux)
-                if [[ -n "$host" ]] && remote_port_open "$host" 22; then
+                if [[ -n "$host" ]] && remote_wait_ssh_port "$host"; then
                     if [[ "$action" == 1 ]]; then
                         remote_ssh_exec "systemctl is-active '$service'; systemctl is-enabled '$service' 2>/dev/null || true" && ((okc+=1)) || ((failc+=1))
                     else
@@ -12340,7 +12443,7 @@ remote_batch_service() {
                 else ((failc+=1)); fi
                 ;;
             windows)
-                if [[ -n "$host" ]] && remote_port_open "$host" 22; then
+                if [[ -n "$host" ]] && remote_wait_ssh_port "$host"; then
                     if [[ "$action" == 1 ]]; then
                         remote_windows_ssh_ps "Get-Service -Name '$service' -ErrorAction Stop | Format-List Name,Status,StartType" && ((okc+=1)) || ((failc+=1))
                     else
@@ -12369,7 +12472,7 @@ remote_batch_power() {
         printf '\n[%s] %s / %s\n' "$account" "${REMOTE_TARGET_DNS:-unresolved}" "$kind"
         case "$kind" in
             linux)
-                if [[ -n "$host" ]] && remote_port_open "$host" 22; then
+                if [[ -n "$host" ]] && remote_wait_ssh_port "$host"; then
                     if [[ "$action" == restart ]]; then
                         remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); if [ \"\$(id -u)\" -eq 0 ]; then shutdown -r +$minutes \"\$m\"; else sudo shutdown -r +$minutes \"\$m\"; fi" && ((okc+=1)) || ((failc+=1))
                     else
@@ -12378,7 +12481,7 @@ remote_batch_power() {
                 else ((failc+=1)); fi
                 ;;
             windows)
-                if [[ -n "$host" ]] && remote_port_open "$host" 22; then
+                if [[ -n "$host" ]] && remote_wait_ssh_port "$host"; then
                     if [[ "$action" == restart ]]; then
                         ps="\$m=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$msg64')); & shutdown.exe /r /t $delay /c \$m"
                     else
@@ -12565,18 +12668,26 @@ remote_ensure_ssh_user() {
 }
 
 remote_ssh_exec() {
-    local command="$1" host=""
+    local command="$1" host="" control_path=""
     host="$(remote_target_host)"
     remote_ensure_ssh_user || return 1
     command_exists ssh || {
         msg_warn "OpenSSH client is not installed on this controller."
         return 1
     }
+    remote_wait_ssh_port "$host" || return 1
+    control_path="$(remote_ssh_control_path)"
 
     ssh \
         -tt \
         -o ConnectTimeout="$REMOTE_SSH_CONNECT_TIMEOUT" \
-        -o ServerAliveInterval=10 \
+        -o ConnectionAttempts="$REMOTE_SSH_CONNECTION_ATTEMPTS" \
+        -o ServerAliveInterval=15 \
+        -o ServerAliveCountMax=4 \
+        -o TCPKeepAlive=yes \
+        -o ControlMaster=auto \
+        -o ControlPersist="${REMOTE_SSH_CONTROL_PERSIST}s" \
+        -o ControlPath="$control_path" \
         -o StrictHostKeyChecking=accept-new \
         -l "$REMOTE_SSH_USER" \
         "$host" \
@@ -12584,18 +12695,128 @@ remote_ssh_exec() {
 }
 
 remote_ssh_capture() {
-    local command="$1" host=""
+    local command="$1" host="" control_path=""
     host="$(remote_target_host)"
     remote_ensure_ssh_user || return 1
     command_exists ssh || return 1
+    remote_wait_ssh_port "$host" || return 1
+    control_path="$(remote_ssh_control_path)"
 
     ssh \
         -o ConnectTimeout="$REMOTE_SSH_CONNECT_TIMEOUT" \
-        -o ServerAliveInterval=10 \
+        -o ConnectionAttempts="$REMOTE_SSH_CONNECTION_ATTEMPTS" \
+        -o ServerAliveInterval=15 \
+        -o ServerAliveCountMax=4 \
+        -o TCPKeepAlive=yes \
+        -o ControlMaster=auto \
+        -o ControlPersist="${REMOTE_SSH_CONTROL_PERSIST}s" \
+        -o ControlPath="$control_path" \
         -o StrictHostKeyChecking=accept-new \
         -l "$REMOTE_SSH_USER" \
         "$host" \
         "$command"
+}
+
+remote_linux_transport_troubleshoot() {
+    remote_ensure_target || return 1
+    local kind host src_ip="" resolved="" keyscan_state="failed" ssh_state="not-tested" out=""
+    kind="$(remote_target_kind)"
+    host="$(remote_target_host)"
+
+    section "LINUX REMOTE TRANSPORT TROUBLESHOOTER"
+    printf '  %-22s %s\n' "AD computer" "${REMOTE_TARGET_ACCOUNT:-unknown}"
+    printf '  %-22s %s\n' "DNS name" "${REMOTE_TARGET_DNS:-unresolved}"
+    printf '  %-22s %s\n' "Transport target" "${host:-unresolved}"
+    printf '  %-22s %s\n' "Detected family" "$kind"
+
+    if [[ -z "$host" ]]; then
+        result FAIL "Transport address" "no DNS/IP target" "repair client DNS registration or select an IPv4 override"
+        return 1
+    fi
+
+    resolved="$(getent ahostsv4 "$host" 2>/dev/null | awk 'NR==1{print $1}' || true)"
+    [[ -n "$resolved" ]] && result PASS "IPv4 resolution" "$host -> $resolved" "controller resolver" || \
+        result WARN "IPv4 resolution" "no A result for $host" "an explicit IP can still be used"
+
+    if command_exists ip; then
+        local route=""
+        route="$(ip route get "${resolved:-$host}" 2>/dev/null | head -n1 || true)"
+        if [[ -n "$route" ]]; then
+            printf '  Route: %s\n' "$route"
+            src_ip="$(awk '{for(i=1;i<=NF;i++) if($i=="src" && (i+1)<=NF){print $(i+1); exit}}' <<<"$route")"
+        else
+            result FAIL "Controller route" "no route to ${resolved:-$host}" "fix routing/bridge/VLAN before SSH"
+        fi
+    fi
+
+    if remote_wait_ssh_port "$host"; then
+        result PASS "TCP/22" "reachable" "adaptive probe"
+    else
+        result FAIL "TCP/22" "timed out/unreachable" "client sshd/firewall or VM/network path"
+        msg_info "The controller cannot safely auto-repair a Linux SSH service while every management channel to it is closed."
+        msg_info "On the endpoint, run Linux AD Client Assistant -> Troubleshoot / repair -> remote administration repair."
+        msg_info "The client repair enables OpenSSH, validates PAM/SSSD and creates narrow firewall rules for AD controllers."
+        remote_ops_audit "linux-transport-troubleshoot" "FAIL" "tcp22-unreachable"
+        return 1
+    fi
+
+    if command_exists ssh-keyscan; then
+        if timeout 12 ssh-keyscan -T 8 "$host" >/dev/null 2>&1; then
+            keyscan_state="ok"
+            result PASS "SSH protocol" "host key handshake returned" "sshd is speaking SSH"
+        else
+            result WARN "SSH protocol" "TCP/22 opens but ssh-keyscan did not complete" "inspect sshd/socket activation and packet filtering"
+        fi
+    fi
+
+    msg_info "Testing an authenticated SSH session. Existing multiplexed connections are reused for later operations."
+    if out="$(remote_ssh_capture "printf 'host='; hostname; printf '\\nuser='; id -un; printf '\\nsshd='; (systemctl is-active ssh.service 2>/dev/null || systemctl is-active sshd.service 2>/dev/null || true); printf '\\nlisten='; ss -lnt 2>/dev/null | awk '\''\$4 ~ /:22$/ {print \$4}'\'' | head -n3; printf '\\nufw='; (ufw status 2>/dev/null | head -n1 || true)" 2>&1)"; then
+        ssh_state="ok"
+        printf '%s\n' "$out" | sed 's/^/  /'
+        result PASS "SSH authentication" "session established" "remote operations available"
+    else
+        printf '%s\n' "$out" | tail -n 12 | sed 's/^/  /'
+        result FAIL "SSH authentication" "connection reached the endpoint but login failed" "verify AD identity/PAM/SSSD and SSH policy"
+    fi
+
+    remote_ops_audit "linux-transport-troubleshoot" "$([[ "$ssh_state" == ok ]] && printf OK || printf FAIL)" "tcp22=reachable; keyscan=$keyscan_state; source=${src_ip:-unknown}"
+    [[ "$ssh_state" == ok ]]
+}
+
+remote_linux_transport_repair() {
+    remote_ensure_target || return 1
+    local kind host src_ip="" route="" cfg64=""
+    kind="$(remote_target_kind)"
+    host="$(remote_target_host)"
+    [[ "$kind" == linux ]] || { msg_warn "This repair is intended for Linux endpoints."; return 1; }
+
+    remote_wait_ssh_port "$host" || {
+        msg_warn "No working SSH channel exists, so server-side self-repair cannot be pushed to the endpoint."
+        msg_info "Run the Linux client assistant locally and select the remote-administration repair option."
+        return 1
+    }
+
+    route="$(ip route get "$host" 2>/dev/null | head -n1 || true)"
+    src_ip="$(awk '{for(i=1;i<=NF;i++) if($i=="src" && (i+1)<=NF){print $(i+1); exit}}' <<<"$route")"
+    [[ -n "$src_ip" ]] || src_ip="${PRIMARY_IP:-}"
+
+    section "LINUX REMOTE ACCESS REPAIR"
+    msg_info "This keeps the firewall rule scoped to this controller (${src_ip:-unknown}) and does not grant broad sudo rights."
+    confirm "Repair the existing Linux SSH management channel now?" N || return 0
+
+    cfg64="$(printf '%s\n' '# Managed by Debian AD Assistant remote repair.' 'UsePAM yes' 'KbdInteractiveAuthentication yes' | base64 -w0)"
+    local cmd=""
+    cmd="set -e; svc=''; if systemctl list-unit-files ssh.service >/dev/null 2>&1; then svc=ssh.service; elif systemctl list-unit-files sshd.service >/dev/null 2>&1; then svc=sshd.service; fi; [ -n \"\$svc\" ] || { echo 'OpenSSH server service is not installed'; exit 20; }; d=/etc/ssh/sshd_config.d; if [ \"\$(id -u)\" -eq 0 ]; then mkdir -p \"\$d\"; printf '%s' '$cfg64' | base64 -d >\"\$d/10-ad-client-assistant.conf\"; sshd -t; systemctl enable \"\$svc\" >/dev/null 2>&1 || true; systemctl restart \"\$svc\"; else printf '%s' '$cfg64' | base64 -d | sudo tee \"\$d/10-ad-client-assistant.conf\" >/dev/null; sudo sshd -t; sudo systemctl enable \"\$svc\" >/dev/null 2>&1 || true; sudo systemctl restart \"\$svc\"; fi; if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active' && [ -n '$src_ip' ]; then if [ \"\$(id -u)\" -eq 0 ]; then ufw allow from '$src_ip' to any port 22 proto tcp comment 'AD remote operations' >/dev/null; else sudo ufw allow from '$src_ip' to any port 22 proto tcp comment 'AD remote operations' >/dev/null; fi; fi; systemctl is-active \"\$svc\"; ss -lnt 2>/dev/null | awk '\''\$4 ~ /:22$/ {print}'\'' | head -n5"
+
+    if remote_ssh_exec "$cmd"; then
+        remote_ops_audit "linux-transport-repair" "OK" "controller-source=${src_ip:-unknown}"
+        msg_success "Linux remote-management repair completed."
+        remote_linux_transport_troubleshoot || true
+    else
+        remote_ops_audit "linux-transport-repair" "FAIL" "controller-source=${src_ip:-unknown}"
+        msg_warn "Remote repair could not complete. Use the client assistant locally if the transport becomes unavailable."
+        return 1
+    fi
 }
 
 remote_ps_encoded() {
@@ -12673,7 +12894,7 @@ remote_show_sessions() {
     section "REMOTE USER SESSIONS"
     case "$kind" in
         windows)
-            if remote_port_open "$host" 22; then
+            if remote_wait_ssh_port "$host"; then
                 if remote_windows_ssh_ps '& quser.exe 2>&1'; then
                     remote_ops_audit "sessions" "OK" "windows-ssh"
                 else
@@ -12687,7 +12908,7 @@ remote_show_sessions() {
             fi
             ;;
         linux)
-            if remote_port_open "$host" 22; then
+            if remote_wait_ssh_port "$host"; then
                 remote_ssh_exec 'loginctl list-sessions --no-legend 2>/dev/null || who'
                 remote_ops_audit "sessions" "OK" "linux-ssh"
             else
@@ -12726,7 +12947,7 @@ remote_send_message() {
             fi
             ;;
         linux)
-            remote_port_open "$host" 22 || return 1
+            remote_wait_ssh_port "$host" || return 1
             if remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); if [ \"\$(id -u)\" -eq 0 ]; then printf '%s\n' \"\$m\" | wall; else printf '%s\n' \"\$m\" | sudo wall; fi"; then
                 remote_ops_audit "message" "OK" "linux"
             else
@@ -12787,7 +13008,7 @@ remote_diagnostics() {
 
     case "$kind" in
         windows)
-            remote_port_open "$host" 22 || {
+            remote_wait_ssh_port "$host" || {
                 msg_warn "Full Windows diagnostics from Debian require OpenSSH on the endpoint."
                 return 1
             }
@@ -12813,7 +13034,7 @@ PS
             remote_windows_ssh_ps "$ps_diag"
             ;;
         linux)
-            remote_port_open "$host" 22 || return 1
+            remote_wait_ssh_port "$host" || return 1
             remote_ssh_exec "printf 'HOST\n'; hostnamectl 2>/dev/null || hostname; printf '\nUPTIME\n'; uptime; printf '\nFILESYSTEM\n'; df -h -x tmpfs -x devtmpfs; printf '\nMEMORY\n'; free -h 2>/dev/null || true; printf '\nFAILED UNITS\n'; systemctl --failed --no-pager 2>/dev/null || true; printf '\nNETWORK\n'; ip -brief address 2>/dev/null || true"
             ;;
         *) msg_warn "Unknown endpoint family."; return 1 ;;
@@ -12836,7 +13057,7 @@ remote_service_control() {
 
     case "$kind" in
         windows)
-            remote_port_open "$host" 22 || {
+            remote_wait_ssh_port "$host" || {
                 msg_warn "Windows service control from Debian requires OpenSSH on the endpoint."
                 return 1
             }
@@ -12848,7 +13069,7 @@ remote_service_control() {
             fi
             ;;
         linux)
-            remote_port_open "$host" 22 || return 1
+            remote_wait_ssh_port "$host" || return 1
             remote_ssh_exec "systemctl status --no-pager --full '$service' 2>&1 || true"
             if confirm "Restart '$service' on the remote Linux endpoint?" N; then
                 confirm_high_risk "Restart remote Linux unit '$service'" || return 0
@@ -12899,7 +13120,7 @@ remote_power_action() {
 
     case "$kind" in
         windows)
-            if remote_port_open "$host" 22; then
+            if remote_wait_ssh_port "$host"; then
                 msg64="$(printf '%s' "$message" | base64 -w0)"
                 if [[ "$action" == restart ]]; then
                     ps="\$m=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$msg64')); & shutdown.exe /r /t $delay /c \$m"
@@ -12923,7 +13144,7 @@ remote_power_action() {
             fi
             ;;
         linux)
-            remote_port_open "$host" 22 || return 1
+            remote_wait_ssh_port "$host" || return 1
             msg64="$(printf '%s' "$message" | base64 -w0)"
             local minutes=$(( (delay + 59) / 60 ))
             (( minutes < 1 )) && minutes=1
@@ -12948,7 +13169,7 @@ remote_cancel_power_action() {
 
     case "$kind" in
         windows)
-            if remote_port_open "$host" 22; then
+            if remote_wait_ssh_port "$host"; then
                 remote_windows_ssh_ps '& shutdown.exe /a'
             elif remote_port_open "$host" 445 && command_exists net; then
                 ensure_kerberos_ticket "${ADMIN_USER:-Administrator}" || return 1
@@ -12964,7 +13185,7 @@ remote_cancel_power_action() {
             fi
             ;;
         linux)
-            remote_port_open "$host" 22 || return 1
+            remote_wait_ssh_port "$host" || return 1
             remote_ssh_exec "if [ \"\$(id -u)\" -eq 0 ]; then shutdown -c; else sudo shutdown -c; fi"
             ;;
         *) return 1 ;;
@@ -13002,7 +13223,7 @@ remote_export_evidence() {
 
         case "$kind" in
             windows)
-                if remote_port_open "$host" 22; then
+                if remote_wait_ssh_port "$host"; then
                     local ps_evidence=""
                     ps_evidence="$(cat <<'PS'
 $os = Get-CimInstance Win32_OperatingSystem
@@ -13024,7 +13245,7 @@ PS
                 fi
                 ;;
             linux)
-                if remote_port_open "$host" 22; then
+                if remote_wait_ssh_port "$host"; then
                     remote_ssh_capture "hostnamectl 2>/dev/null || hostname; uptime; loginctl list-sessions --no-legend 2>/dev/null || who; df -h -x tmpfs -x devtmpfs; free -h 2>/dev/null || true; systemctl --failed --no-pager 2>/dev/null || true" 2>&1 || true
                 else
                     printf 'Full diagnostics unavailable: SSH not enabled.\n'
@@ -13059,7 +13280,9 @@ remote_ops_guidance() {
     - Remote actions are appended to remote-ops/operations.tsv.
     - Destructive session/power actions require HIGH-risk confirmation.
     - Multiple endpoints can be selected in Batch operations using 1,3,5-8 or A.
-    - Network probes use configurable timeouts (REMOTE_PORT_TIMEOUT / REMOTE_SSH_CONNECT_TIMEOUT).
+    - Inventory port probes stay short, while real SSH actions use adaptive retries and a longer configurable timeout.
+    - SSH sessions are multiplexed briefly so repeated admin actions do not rebuild the connection every time.
+    - Linux transport troubleshooting separates DNS/routing/TCP/SSH-auth failures before suggesting repair.
     - Arbitrary remote shell/script deployment is intentionally not exposed.
     - Prefer JEA on Windows and restricted sudoers on Linux for delegated operators.
     - Do not enable wide remote-management firewall scopes merely to make the panel work.
@@ -13082,7 +13305,8 @@ remote_ops_menu() {
         ui_workspace_pair "D" "Diagnostics" "$C_CYAN" "V" "Service control" "$C_MAGENTA"
         ui_workspace_pair "R" "Restart endpoint" "$C_YELLOW" "X" "Shut down endpoint" "$C_RED"
         ui_workspace_pair "C" "Cancel shutdown" "$C_GREEN" "E" "Export evidence" "$C_CYAN"
-        ui_workspace_pair "B" "Batch operations" "$C_GREEN" "G" "Guardrails / setup" "$C_MAGENTA"
+        ui_workspace_pair "B" "Batch operations" "$C_GREEN" "F" "Linux transport troubleshoot" "$C_CYAN"
+        ui_menu_item "G" "Guardrails / setup" "Remote-management security model and prerequisites" "$C_MAGENTA"
         ui_menu_exit
         ui_rule
 
@@ -13100,6 +13324,14 @@ remote_ops_menu() {
             C) remote_cancel_power_action || msg_warn "No scheduled power action could be cancelled."; ui_pause ;;
             E) remote_export_evidence || true; ui_pause ;;
             B) remote_batch_menu ;;
+            F)
+                if remote_linux_transport_troubleshoot; then
+                    if confirm "Run the safe Linux remote-access repair as well?" N; then
+                        remote_linux_transport_repair || true
+                    fi
+                fi
+                ui_pause
+                ;;
             G) remote_ops_guidance; ui_pause ;;
             H) MENU_MAIN_REQUESTED=1; return 0 ;;
             0) return 0 ;;

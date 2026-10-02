@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # linux-ad-client-assistant.sh
-# Version 1.5.0-remote-readiness-adaptive-timeouts
+# Version 1.5.2-server-unlinked-clean-leave
 #
 # Reversible Active Directory client join assistant for Linux.
 #
@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.5.1-slow-link-acceptance"
+SCRIPT_VERSION="1.5.4-remote-management-repair"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -35,7 +35,7 @@ INPUT_FD=0
 AD_CLIENT_NETWORK_TIMEOUT="${AD_CLIENT_NETWORK_TIMEOUT:-60}"
 AD_CLIENT_MEMBERSHIP_TIMEOUT="${AD_CLIENT_MEMBERSHIP_TIMEOUT:-180}"
 AD_CLIENT_SLOW_NETWORK_TIMEOUT="${AD_CLIENT_SLOW_NETWORK_TIMEOUT:-180}"
-AD_CLIENT_SSH_SETUP="${AD_CLIENT_SSH_SETUP:-ask}"
+AD_CLIENT_SSH_SETUP="${AD_CLIENT_SSH_SETUP:-yes}"
 
 USE_COLOR=1
 [[ -t 1 && -z "${NO_COLOR:-}" ]] || USE_COLOR=0
@@ -249,6 +249,25 @@ confirm_literal() {
     [[ "$answer" == "$literal" ]]
 }
 
+request_reboot_now() {
+    # Reboot is a terminal action: once accepted, do not return to the menu and
+    # do not show the generic "Press Enter" pause while systemd is scheduling it.
+    confirm "Reboot now?" N || return 1
+
+    info "Reboot requested. The assistant will close now; systemd is scheduling the restart."
+    sync 2>/dev/null || true
+
+    if systemctl reboot --no-block; then
+        # Exit the assistant immediately so the caller cannot consume a stray
+        # keypress in pause_ui() before the reboot job takes effect.
+        exit 0
+    fi
+
+    err "The reboot request could not be submitted to systemd."
+    warn "Reboot manually when convenient."
+    return 1
+}
+
 command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
@@ -359,6 +378,127 @@ membership_evidence_after_leave() {
 
     warn "Post-operation evidence is ambiguous: realmd still reports $domain but the secure-channel test does not validate."
     return 2
+}
+
+
+server_side_membership_state() {
+    local domain="$1"
+    local output="" rc=0 dns_ok=0 dc="" dns_csv=""
+
+    SERVER_MEMBERSHIP_STATE="unknown"
+    SERVER_MEMBERSHIP_DETAIL=""
+
+    if domain_srv_query "$domain" "" >/dev/null 2>&1; then
+        dns_ok=1
+    fi
+
+    if [[ -f "$CURRENT_STATE" ]]; then
+        local AD_DNS_SERVERS=""
+        load_state_file "$CURRENT_STATE" || true
+        dns_csv="${AD_DNS_SERVERS:-}"
+    fi
+    if [[ -z "$dns_csv" ]]; then
+        dns_csv="$(current_dns_summary | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | paste -sd, - || true)"
+    fi
+
+    if [[ -n "$dns_csv" ]] && validate_dns_list "$dns_csv"; then
+        dc="$(ad_dc_targets_from_dns "$domain" "$dns_csv" | awk 'NR==1{print}')"
+    fi
+
+    if ! command_exists adcli; then
+        SERVER_MEMBERSHIP_DETAIL="adcli unavailable"
+        return 2
+    fi
+
+    info "Checking whether the computer account still has a valid trust with Active Directory."
+    output="$(capture_probe "$AD_CLIENT_NETWORK_TIMEOUT" 'pre-leave machine trust validation' adcli testjoin -v -D "$domain")"
+    rc=$?
+    log "pre-leave adcli testjoin rc=$rc output=$(tr '\n' ' ' <<<"$output")"
+
+    if (( rc == 0 )); then
+        SERVER_MEMBERSHIP_STATE="valid"
+        SERVER_MEMBERSHIP_DETAIL="machine trust validates"
+        ok "The server-side computer account still has a valid machine trust."
+        return 0
+    fi
+
+    if (( rc == 124 || rc == 137 )); then
+        SERVER_MEMBERSHIP_STATE="slow-or-unknown"
+        SERVER_MEMBERSHIP_DETAIL="machine-trust validation timed out"
+        warn "Machine-trust validation is slow/inconclusive; the normal authenticated leave path will be used."
+        return 2
+    fi
+
+    if grep -Eiq \
+        'client.*not found in kerberos database|credentials have been revoked|no such object|computer account.*(not found|does not exist)|account.*(not found|deleted|disabled)|unable to find.*computer|not found.*computer|preauthentication failed' \
+        <<<"$output"; then
+        if (( dns_ok == 1 )); then
+            SERVER_MEMBERSHIP_STATE="server-unlinked"
+            SERVER_MEMBERSHIP_DETAIL="AD is discoverable but the machine account/trust is absent or revoked"
+            warn "Active Directory is reachable, but this computer no longer has a usable server-side machine trust."
+            info "This commonly occurs when the computer object was deleted/reset from the server before the client was detached."
+            return 3
+        fi
+    fi
+
+    SERVER_MEMBERSHIP_STATE="invalid-or-unknown"
+    SERVER_MEMBERSHIP_DETAIL="machine trust failed without conclusive server-side deletion evidence"
+    warn "The machine trust did not validate, but the evidence is not strong enough to assume that the server-side object was deleted."
+    return 2
+}
+
+local_detach_after_server_unlink() {
+    local domain="$1"
+    local leave_log="${LOG_ROOT}/${RUN_ID}-realm-local-detach.log"
+    local rc=0
+
+    printf '\n%bSERVER-SIDE ACCOUNT ALREADY UNLINKED%b\n' "$C_BOLD" "$C_RESET"
+    warn "The client still has local realm/SSSD state, but AD no longer accepts the machine trust."
+    info "Skipping the remote computer-delete step because there is no valid server-side account to remove."
+    info "The assistant will detach the local realm state and restore the pre-join client configuration."
+
+    # Do not pass -U here. Supplying an administrator account makes realmd/adcli
+    # attempt a remote delete-computer operation, which is unnecessary and can
+    # stall when the AD object was already removed on the server.
+    if command_exists realm; then
+        run_membership_operation "$AD_CLIENT_NETWORK_TIMEOUT" "Local realm detach" "$leave_log" \
+            realm leave "$domain"
+        rc=$?
+        if (( rc != 0 )); then
+            warn "Local realm detach did not return cleanly; continuing with assistant-owned local restoration because the server-side trust is already absent."
+            warn "Local detach output: $leave_log"
+        else
+            ok "Local realm configuration detached."
+        fi
+    fi
+
+    local snap=""
+    if [[ -f "$CURRENT_STATE" ]]; then
+        local SNAPSHOT_PATH=""
+        load_state_file "$CURRENT_STATE" || true
+        snap="${SNAPSHOT_PATH:-}"
+    fi
+
+    if [[ -n "$snap" && -d "$snap" ]]; then
+        restore_network_from_snapshot "$snap" || warn "DNS restore reported a problem."
+        restore_identity_files "$snap"
+        restore_hostname_from_snapshot "$snap" || warn "Hostname restore reported a problem."
+        restore_sssd_runtime_from_snapshot "$snap" || true
+        rm -f "$CURRENT_STATE" 2>/dev/null || true
+        ok "Local AD client state was restored from the pre-join snapshot."
+    else
+        warn "No assistant snapshot was found; only the realm detach was attempted."
+        warn "Use Deep diagnostics before manually removing SSSD/keytab/DNS configuration."
+    fi
+
+    if command_exists sss_cache; then
+        run_probe 10 "SSSD cache cleanup" sss_cache -E >/dev/null 2>&1 || true
+    fi
+    systemctl try-restart sssd.service >/dev/null 2>&1 || true
+
+    ok "Client-side domain detachment completed for an already-unlinked server account."
+
+    request_reboot_now || true
 }
 
 leave_connectivity_diagnostics() {
@@ -2101,8 +2241,27 @@ ensure_sssd_dynamic_dns() {
     return 0
 }
 
+remote_management_controller_ips() {
+    local domain="${1:-}" dns_csv="${2:-}" ip="" dc=""
+    local -A seen=()
+
+    while IFS= read -r ip; do
+        [[ -n "$ip" ]] || continue
+        [[ -n "${seen[$ip]:-}" ]] || { seen[$ip]=1; printf '%s\n' "$ip"; }
+    done < <(parse_dns_csv "$dns_csv")
+
+    [[ -n "$domain" ]] || return 0
+    while IFS= read -r dc; do
+        [[ -n "$dc" ]] || continue
+        while IFS= read -r ip; do
+            [[ "$ip" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || continue
+            [[ -n "${seen[$ip]:-}" ]] || { seen[$ip]=1; printf '%s\n' "$ip"; }
+        done < <(getent ahostsv4 "$dc" 2>/dev/null | awk '{print $1}' | sort -u)
+    done < <(ad_dc_targets_from_dns "$domain" "$dns_csv" 2>/dev/null || true)
+}
+
 configure_remote_management() {
-    local ssh_service="" ssh_pkg="" setup_choice=""
+    local ssh_service="" ssh_pkg="" setup_choice="" domain="" dns_csv="" ip=""
 
     case "$AD_CLIENT_SSH_SETUP" in
         yes|YES|1|true|TRUE) setup_choice="yes" ;;
@@ -2121,14 +2280,21 @@ configure_remote_management() {
         return 0
     }
 
+    if [[ -f "$CURRENT_STATE" ]]; then
+        local AD_DNS_SERVERS="" DOMAIN=""
+        load_state_file "$CURRENT_STATE" || true
+        dns_csv="${AD_DNS_SERVERS:-}"
+        domain="${DOMAIN:-}"
+    fi
+    [[ -n "$domain" ]] || domain="$(capture_probe 8 'realm query for remote setup' realm list --name-only 2>/dev/null | awk 'NR==1{print}' || true)"
+
     if systemctl list-unit-files ssh.service >/dev/null 2>&1; then
         ssh_service="ssh.service"
     elif systemctl list-unit-files sshd.service >/dev/null 2>&1; then
         ssh_service="sshd.service"
     else
         case "$PKG_FAMILY" in
-            apt) ssh_pkg="openssh-server" ;;
-            dnf) ssh_pkg="openssh-server" ;;
+            apt|dnf) ssh_pkg="openssh-server" ;;
             *) ssh_pkg="" ;;
         esac
 
@@ -2161,47 +2327,53 @@ configure_remote_management() {
     }
 
     mkdir -p /etc/ssh/sshd_config.d 2>/dev/null || true
-    cat >/etc/ssh/sshd_config.d/90-ad-client-assistant.conf <<'EOF'
+    # Use an early drop-in so common cloud-image snippets cannot silently turn
+    # PAM/keyboard-interactive authentication back off before our policy is read.
+    cat >/etc/ssh/sshd_config.d/10-ad-client-assistant.conf <<'EOF'
 # Managed by Linux AD Client Assistant.
-# Keep PAM enabled so SSSD-backed domain identities can authenticate.
+# Domain identities are authenticated through PAM/SSSD.
 UsePAM yes
 KbdInteractiveAuthentication yes
 EOF
+    rm -f /etc/ssh/sshd_config.d/90-ad-client-assistant.conf 2>/dev/null || true
 
     if command_exists sshd && ! sshd -t; then
-        rm -f /etc/ssh/sshd_config.d/90-ad-client-assistant.conf
+        rm -f /etc/ssh/sshd_config.d/10-ad-client-assistant.conf
         warn "sshd rejected the managed drop-in; it was removed."
         return 1
     fi
 
-    systemctl enable --now "$ssh_service" || {
-        warn "Could not enable/start $ssh_service."
+    info "Enabling persistent OpenSSH service for remote AD administration."
+    systemctl enable "$ssh_service" >/dev/null 2>&1 || true
+    systemctl restart "$ssh_service" || systemctl start "$ssh_service" || {
+        warn "Could not start $ssh_service."
         return 1
     }
 
-    # If UFW is active, prefer a narrow rule from the configured AD DNS/DC
-    # addresses. This keeps the default setup useful without opening SSH to
-    # every network.
+    # Keep the firewall scope narrow: AD DNS/DC addresses only. This covers the
+    # controller even when the DNS server and the selected DC are not identical.
     if command_exists ufw && ufw status 2>/dev/null | grep -Fq 'Status: active'; then
-        local dns_csv="" ip=""
-        if [[ -f "$CURRENT_STATE" ]]; then
-            local AD_DNS_SERVERS=""
-            load_state_file "$CURRENT_STATE" || true
-            dns_csv="${AD_DNS_SERVERS:-}"
-        fi
         while IFS= read -r ip; do
             [[ -n "$ip" ]] || continue
             ufw allow from "$ip" to any port 22 proto tcp comment 'AD remote operations' >/dev/null 2>&1 || true
-        done < <(parse_dns_csv "$dns_csv")
+        done < <(remote_management_controller_ips "$domain" "$dns_csv")
+    elif command_exists firewall-cmd && firewall-cmd --state >/dev/null 2>&1; then
+        while IFS= read -r ip; do
+            [[ -n "$ip" ]] || continue
+            firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address=$ip port port=22 protocol=tcp accept" >/dev/null 2>&1 || true
+        done < <(remote_management_controller_ips "$domain" "$dns_csv")
+        firewall-cmd --reload >/dev/null 2>&1 || true
     fi
 
     ok "Remote administration readiness enabled via $ssh_service (TCP/22)."
+    info "The firewall is restricted to discovered AD controller/DNS addresses when a supported host firewall is active."
     info "Privileged remote actions still require an account with appropriate sudo policy; no broad sudo grant was created."
     return 0
 }
 
 audit_remote_management_readiness() {
-    local ssh_service="" ssh_port=""
+    local ssh_service="" ssh_port="" effective="" domain="" fqdn="" resolved="" dns_csv="" ip=""
+    local failures=0 warnings=0
 
     if systemctl list-unit-files ssh.service >/dev/null 2>&1; then
         ssh_service="ssh.service"
@@ -2211,53 +2383,105 @@ audit_remote_management_readiness() {
 
     printf '\nREMOTE MANAGEMENT READINESS\n'
     if [[ -z "$ssh_service" ]]; then
-        warn "OpenSSH server is not installed/enabled as a systemd service."
-        info "Domain membership does not provide remote command execution by itself."
-        info "Install/enable OpenSSH server only if this host should be remotely administered."
+        warn "OpenSSH server is not installed as a systemd service."
         return 1
     fi
 
-    if run_probe 8 "SSH service state" systemctl is-active --quiet "$ssh_service"; then
+    if run_probe 10 "SSH service state" systemctl is-active --quiet "$ssh_service"; then
         ok "OpenSSH service is active: $ssh_service."
     else
         warn "OpenSSH service exists but is not active: $ssh_service."
-        return 1
+        failures=$((failures+1))
     fi
 
     if command_exists ss; then
-        ssh_port="$(ss -lnt 2>/dev/null | awk '$4 ~ /:22$/ {print $4; exit}')"
+        ssh_port="$(ss -lnt 2>/dev/null | awk '$4 ~ /(^|:|\])22$/ {print $4; exit}')"
         if [[ -n "$ssh_port" ]]; then
-            ok "SSH is listening on TCP/22."
+            ok "SSH is listening on TCP/22 ($ssh_port)."
         else
-            warn "OpenSSH is active but TCP/22 was not observed listening."
-            return 1
+            warn "OpenSSH is not observed listening on TCP/22."
+            failures=$((failures+1))
         fi
     fi
 
     if command_exists sshd; then
-        local effective=""
         effective="$(sshd -T 2>/dev/null || true)"
         if grep -Eq '^usepam yes$' <<<"$effective"; then
             ok "sshd PAM integration is enabled for SSSD-backed identities."
         else
-            warn "sshd effective configuration does not report UsePAM=yes; domain-user SSH authentication may fail."
+            warn "sshd does not report UsePAM=yes."
+            failures=$((failures+1))
+        fi
+        if grep -Eq '^kbdinteractiveauthentication yes$' <<<"$effective"; then
+            ok "Interactive PAM authentication is enabled for domain users."
+        else
+            warn "Keyboard-interactive PAM authentication is disabled; some domain SSH logins may fail."
+            warnings=$((warnings+1))
         fi
     fi
 
-    local joined_domain="" fqdn="" resolved=""
-    joined_domain="$(capture_probe 10 'realm membership query' realm list --name-only 2>/dev/null | awk 'NR==1{print}' || true)"
-    if [[ -n "$joined_domain" ]]; then
-        fqdn="$(client_ad_fqdn "$joined_domain")"
+    if command_exists ssh-keyscan; then
+        if run_probe 8 "Local SSH protocol handshake" ssh-keyscan -T 5 127.0.0.1 >/dev/null 2>&1; then
+            ok "Local SSH protocol handshake succeeds."
+        else
+            warn "TCP/22 may be listening, but a local SSH protocol handshake did not complete."
+            warnings=$((warnings+1))
+        fi
+    fi
+
+    if [[ -f "$CURRENT_STATE" ]]; then
+        local AD_DNS_SERVERS="" DOMAIN=""
+        load_state_file "$CURRENT_STATE" || true
+        dns_csv="${AD_DNS_SERVERS:-}"
+        domain="${DOMAIN:-}"
+    fi
+    [[ -n "$domain" ]] || domain="$(capture_probe 10 'realm membership query' realm list --name-only 2>/dev/null | awk 'NR==1{print}' || true)"
+
+    if [[ -n "$domain" ]]; then
+        fqdn="$(client_ad_fqdn "$domain")"
         resolved="$(getent ahostsv4 "$fqdn" 2>/dev/null | awk 'NR==1{print $1}' || true)"
         if [[ -n "$resolved" ]]; then
             ok "Remote-management hostname resolves: $fqdn -> $resolved."
         else
-            warn "No DNS A record resolves for $fqdn; name-based remote operations may require repair/registration."
+            warn "No DNS A record resolves for $fqdn; name-based remote operations can fail."
+            warnings=$((warnings+1))
         fi
+
+        while IFS= read -r ip; do
+            [[ -n "$ip" ]] || continue
+            if ip route get "$ip" >/dev/null 2>&1; then
+                ok "A route exists between this client and AD controller $ip."
+            else
+                warn "No route to AD controller $ip was found from this client."
+                warnings=$((warnings+1))
+            fi
+        done < <(remote_management_controller_ips "$domain" "$dns_csv")
     fi
 
-    info "The Debian AD remote-operations console also requires network/firewall reachability from the controller to TCP/22."
-    return 0
+    if command_exists ufw && ufw status 2>/dev/null | grep -Fq 'Status: active'; then
+        info "UFW is active; remote setup keeps TCP/22 rules scoped to discovered AD controller addresses."
+    elif command_exists firewall-cmd && firewall-cmd --state >/dev/null 2>&1; then
+        info "firewalld is active; remote setup keeps TCP/22 rules scoped to discovered AD controller addresses."
+    else
+        info "No supported active host firewall was detected by this check."
+    fi
+
+    if (( failures == 0 )); then
+        (( warnings == 0 )) && ok "This client is locally ready for Debian AD remote operations." || \
+            warn "Remote management is locally usable, with ${warnings} warning condition(s) to review."
+        return 0
+    fi
+
+    err "Remote management has ${failures} blocking condition(s). Run repair from Troubleshoot / repair."
+    return 1
+}
+
+repair_remote_management_readiness() {
+    printf '\nREMOTE MANAGEMENT REPAIR\n'
+    info "This repair only manages the Linux-side OpenSSH service, PAM integration and narrow host-firewall access from AD controllers."
+    info "It does not grant broad sudo rights to domain users."
+    configure_remote_management || return 1
+    audit_remote_management_readiness
 }
 
 validate_sssd_identity_lookup() {
@@ -2848,9 +3072,7 @@ join_domain_guided() {
 
     info "Snapshot retained at: $snap"
     info "A reboot is required for final acceptance and lifecycle completion."
-    if confirm "Reboot now?" N; then
-        systemctl reboot
-    fi
+    request_reboot_now || true
 }
 
 # ---------------------------------------------------------------------------
@@ -3290,8 +3512,7 @@ SAFE FOLLOW-UP
             fi
             ;;
         5)
-            configure_remote_management || true
-            audit_remote_management_readiness || true
+            repair_remote_management_readiness || true
             ;;
         *) : ;;
     esac
@@ -3544,10 +3765,27 @@ leave_domain_cleanly() {
 
     local domain=""
     domain="$(awk 'NR==1{print}' <<<"$realm_names")"
+
+    printf 'Domain: %s\n' "$domain"
+    info "Pre-leave checks will determine whether AD still has a usable computer trust before asking for credentials."
+
+    local server_state_rc=0
+    server_side_membership_state "$domain"
+    server_state_rc=$?
+
+    if (( server_state_rc == 3 )); then
+        warn "The server appears to have already removed/reset this computer account."
+        info "No domain administrator credential is required for the local cleanup path."
+        confirm_literal \
+            "Detach this client locally and restore its pre-join configuration." \
+            "DETACH" || return 0
+        local_detach_after_server_unlink "$domain"
+        return $?
+    fi
+
     local leave_user=""
     leave_user="$(prompt_domain_admin_account 'remove this computer from the domain' 'Administrator')"
 
-    printf '\nDomain: %s\n' "$domain"
     confirm_literal \
         "The machine will leave Active Directory. A reboot will be required." \
         "LEAVE" || return 0
@@ -3555,7 +3793,8 @@ leave_domain_cleanly() {
     local leave_log="${LOG_ROOT}/${RUN_ID}-realm-leave.log"
     local leave_rc=0 evidence_rc=0
 
-    run_membership_operation 60 "Clean realm leave" "$leave_log"         realm leave -v -U "$leave_user" "$domain"
+    run_membership_operation "$AD_CLIENT_MEMBERSHIP_TIMEOUT" "Clean realm leave" "$leave_log" \
+        realm leave -v -U "$leave_user" "$domain"
     leave_rc=$?
 
     if (( leave_rc != 0 )); then
@@ -3575,6 +3814,16 @@ leave_domain_cleanly() {
                 return 1
                 ;;
             *)
+                # A server-side delete may have happened while realm/adcli was
+                # waiting. Re-check before declaring an ambiguous failure.
+                server_side_membership_state "$domain" || server_state_rc=$?
+                if [[ "${SERVER_MEMBERSHIP_STATE:-}" == "server-unlinked" ]]; then
+                    warn "The authenticated leave did not finish cleanly, but AD now reports no usable machine trust."
+                    warn "Treating this as a server-unlinked client and finishing local cleanup."
+                    local_detach_after_server_unlink "$domain"
+                    return $?
+                fi
+
                 err "Clean realm leave ended in an ambiguous state."
                 warn "No DNS, SSSD, keytab or hostname rollback will be performed automatically."
                 leave_connectivity_diagnostics "$domain"
@@ -3614,9 +3863,7 @@ leave_domain_cleanly() {
         warn "No assistant snapshot was found. Domain membership was removed, but local DNS/config was not rewritten."
     fi
 
-    if confirm "Reboot now?" N; then
-        systemctl reboot
-    fi
+    request_reboot_now || true
 }
 
 restore_prejoin_state() {
