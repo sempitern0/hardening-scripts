@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # linux-ad-client-assistant.sh
-# Version 1.5.2-server-unlinked-clean-leave
+# Version 1.6.0-defense-parity-sanitization
 #
 # Reversible Active Directory client join assistant for Linux.
 #
@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.5.5-managed-remote-identity"
+SCRIPT_VERSION="1.6.0-defense-parity-sanitization"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -29,6 +29,15 @@ BACKUP_ROOT="/var/backups/ad-client-assistant"
 LOG_ROOT="/var/log/ad-client-assistant"
 CURRENT_STATE="${STATE_ROOT}/current.env"
 INPUT_FD=0
+
+# Endpoint-defense state. These paths are initialized here (rather than lazily
+# inside the menu) because init_runtime creates the directory under `set -u`.
+REMOTE_SECURITY_DIR="${STATE_ROOT}/security"
+SECURITY_CONFIG="${REMOTE_SECURITY_DIR}/security.conf"
+SECURITY_TRUSTED="${REMOTE_SECURITY_DIR}/trusted-ips.txt"
+SECURITY_BLOCKS="${REMOTE_SECURITY_DIR}/blocks.tsv"
+TELEGRAM_CONFIG="${REMOTE_SECURITY_DIR}/telegram.conf"
+SURICATA_EVE_DEFAULT="/var/log/suricata/eve.json"
 
 # Network operations are intentionally tolerant of slow virtual/lab environments.
 # Override from the environment when needed without editing the script.
@@ -99,7 +108,7 @@ init_runtime() {
         exit 1
     }
 
-    mkdir -p "$STATE_ROOT" "$BACKUP_ROOT" "$LOG_ROOT"
+    mkdir -p "$STATE_ROOT" "$BACKUP_ROOT" "$LOG_ROOT" "$REMOTE_SECURITY_DIR"
     chmod 0700 "$STATE_ROOT" "$BACKUP_ROOT" "$LOG_ROOT" 2>/dev/null || true
 
     RUN_LOG="${LOG_ROOT}/${RUN_ID}.log"
@@ -200,6 +209,18 @@ ui_text() {
         'Computer OU DN (optional)') printf 'DN de la OU del equipo (opcional)' ;;
         'Optional AD user for SSSD identity lookup (not Kerberos authentication; blank to skip)') printf 'Usuario AD opcional para validar resolución de identidad por SSSD (no autenticación Kerberos; vacío para omitir)' ;;
         'Reboot now?') printf '¿Reiniciar ahora?' ;;
+        'Endpoint security / Suricata + Wazuh') printf 'Seguridad del endpoint / Suricata + Wazuh' ;;
+        'Security status') printf 'Estado de seguridad' ;;
+        'Validate Suricata') printf 'Validar Suricata' ;;
+        'Configure Wazuh integration') printf 'Configurar integración Wazuh' ;;
+        'IDS / IPS response center') printf 'Centro de respuesta IDS / IPS' ;;
+        'Blocked IP addresses') printf 'Direcciones IP bloqueadas' ;;
+        'Unblock IP address') printf 'Desbloquear dirección IP' ;;
+        'Emergency unblock all') printf 'Desbloqueo de emergencia total' ;;
+        'Temporarily block IP') printf 'Bloquear IP temporalmente' ;;
+        'Trusted IP addresses') printf 'Direcciones IP de confianza' ;;
+        'Awareness schedule') printf 'Horario de vigilancia' ;;
+        'Telegram notifications') printf 'Notificaciones de Telegram' ;;
         *) printf '%s' "$t" ;;
     esac
 }
@@ -3983,6 +4004,264 @@ list_snapshots() {
 }
 
 # ---------------------------------------------------------------------------
+# Endpoint security: Suricata + Wazuh + guarded response
+# ---------------------------------------------------------------------------
+
+security_init() {
+    mkdir -p "$REMOTE_SECURITY_DIR"
+    chmod 0700 "$REMOTE_SECURITY_DIR" 2>/dev/null || true
+    touch "$SECURITY_TRUSTED" "$SECURITY_BLOCKS"
+    chmod 0600 "$SECURITY_TRUSTED" "$SECURITY_BLOCKS" 2>/dev/null || true
+    if [[ ! -f "$SECURITY_CONFIG" ]]; then
+        cat >"$SECURITY_CONFIG" <<'EOF_SEC'
+BUSINESS_START=08:00
+BUSINESS_END=18:00
+BUSINESS_HOURS_WINDOW=1
+AFTER_HOURS_WINDOW=8
+BLOCK_TTL_MINUTES=30
+EOF_SEC
+        chmod 0600 "$SECURITY_CONFIG"
+    fi
+}
+
+security_load_config() {
+    security_init
+    BUSINESS_START=08:00; BUSINESS_END=18:00; BUSINESS_HOURS_WINDOW=1; AFTER_HOURS_WINDOW=8; BLOCK_TTL_MINUTES=30
+    # shellcheck disable=SC1090
+    source "$SECURITY_CONFIG" 2>/dev/null || true
+}
+
+security_is_public_ipv4() {
+    local ip="$1" a b
+    [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    IFS=. read -r a b _ _ <<<"$ip"
+    ((a>=1 && a<=223)) || return 1
+    ((a==10 || a==127 || a==0 || (a==169 && b==254) || (a==172 && b>=16 && b<=31) || (a==192 && b==168))) && return 1
+    ((a>=224)) && return 1
+    return 0
+}
+
+security_trusted() { grep -Fxq -- "$1" "$SECURITY_TRUSTED" 2>/dev/null; }
+security_nft_ready() { command -v nft >/dev/null 2>&1; }
+security_nft_setup() {
+    security_nft_ready || { warn "nftables is not available; guarded response cannot manage blocks."; return 1; }
+    nft list table inet ad_client_guard >/dev/null 2>&1 || nft add table inet ad_client_guard
+    nft list set inet ad_client_guard blocked4 >/dev/null 2>&1 || nft 'add set inet ad_client_guard blocked4 { type ipv4_addr; flags timeout; }'
+    nft list chain inet ad_client_guard input >/dev/null 2>&1 || {
+        nft 'add chain inet ad_client_guard input { type filter hook input priority -5; policy accept; }'
+        nft add rule inet ad_client_guard input ip saddr @blocked4 counter drop comment 'Linux AD Client Assistant guarded IPS'
+    }
+}
+security_list_blocks() {
+    security_init
+    printf '\n%s\n' "$(ui_text 'Blocked IP addresses')"
+    if security_nft_ready && nft list set inet ad_client_guard blocked4 >/dev/null 2>&1; then nft list set inet ad_client_guard blocked4; else info "No assistant-managed nftables block set is active."; fi
+}
+security_block_ip() {
+    security_load_config
+    local ip="$1" ttl="${2:-$BLOCK_TTL_MINUTES}"
+    security_is_public_ipv4 "$ip" || { warn "Only public IPv4 addresses may be blocked by this guarded workflow."; return 1; }
+    security_trusted "$ip" && { warn "$ip is trusted; remove it from the trusted list first."; return 1; }
+    [[ "$ttl" =~ ^[0-9]+$ ]] && ((ttl>=1 && ttl<=10080)) || { warn "TTL must be 1..10080 minutes."; return 1; }
+    security_nft_setup || return 1
+    nft delete element inet ad_client_guard blocked4 "{ $ip }" 2>/dev/null || true
+    nft add element inet ad_client_guard blocked4 "{ $ip timeout ${ttl}m }"
+    printf '%s\t%s\t%s\n' "$(date -Is)" "$ip" "$ttl" >>"$SECURITY_BLOCKS"
+    ok "Temporarily blocked $ip for ${ttl} minutes."
+}
+security_unblock_ip() {
+    local ip="$1"; security_nft_ready || return 1
+    nft delete element inet ad_client_guard blocked4 "{ $ip }" 2>/dev/null && ok "Unblocked $ip." || warn "$ip was not present in the assistant block set."
+}
+security_unblock_all() {
+    security_nft_ready || return 1
+    confirm_literal "Emergency removal of every assistant-managed temporary network block." "UNBLOCK-ALL" || return 0
+    nft flush set inet ad_client_guard blocked4 2>/dev/null || true
+    ok "All assistant-managed temporary blocks were cleared."
+}
+security_trust_add() {
+    local ip="$1"; [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { warn "Invalid IPv4 address."; return 1; }
+    security_init; grep -Fxq "$ip" "$SECURITY_TRUSTED" || printf '%s\n' "$ip" >>"$SECURITY_TRUSTED"
+    security_unblock_ip "$ip" >/dev/null 2>&1 || true
+    ok "$ip is now trusted and excluded from guarded response."
+}
+security_trust_remove() { local ip="$1"; security_init; grep -Fxv -- "$ip" "$SECURITY_TRUSTED" >"${SECURITY_TRUSTED}.tmp" || true; mv "${SECURITY_TRUSTED}.tmp" "$SECURITY_TRUSTED"; chmod 0600 "$SECURITY_TRUSTED"; ok "Removed $ip from trusted addresses."; }
+security_trust_list() { security_init; printf '\n%s\n' "$(ui_text 'Trusted IP addresses')"; if [[ -s "$SECURITY_TRUSTED" ]]; then nl -ba "$SECURITY_TRUSTED"; else info "No trusted IP addresses configured."; fi; }
+
+security_suricata_info() {
+    printf '\nSURICATA / IDS\n'
+    command -v suricata >/dev/null 2>&1 && { printf '  Binary  : %s\n' "$(command -v suricata)"; suricata --build-info 2>/dev/null | head -1 | sed 's/^/  Version : /'; } || printf '  Binary  : not installed\n'
+    printf '  Service : %s\n' "$(systemctl is-active suricata 2>/dev/null || true)"
+    local eve="$SURICATA_EVE_DEFAULT"; [[ -r "$eve" ]] && printf '  EVE     : %s\n' "$eve" || printf '  EVE     : not detected\n'
+}
+security_suricata_validate() { command -v suricata >/dev/null 2>&1 || { warn "Suricata is not installed."; return 1; }; local cfg=/etc/suricata/suricata.yaml; [[ -r "$cfg" ]] || { warn "Suricata configuration was not found."; return 1; }; run_probe 30 "Suricata configuration" suricata -T -c "$cfg"; }
+security_wazuh_info() {
+    printf '\nWAZUH AGENT\n'; local svc=''; for x in wazuh-agent wazuh WazuhSvc; do systemctl list-unit-files "$x.service" >/dev/null 2>&1 && { svc="$x"; break; }; done
+    [[ -n "$svc" ]] && printf '  Service : %s (%s)\n' "$svc" "$(systemctl is-active "$svc" 2>/dev/null || true)" || printf '  Service : not detected\n'
+    [[ -r /var/ossec/etc/ossec.conf ]] && printf '  Config  : /var/ossec/etc/ossec.conf\n' || printf '  Config  : not detected\n'
+}
+security_wazuh_integrate() {
+    local cfg=/var/ossec/etc/ossec.conf eve="$SURICATA_EVE_DEFAULT"
+    [[ -r "$cfg" ]] || { warn "Wazuh agent configuration was not detected."; return 1; }
+    [[ -r "$eve" ]] || { warn "Suricata EVE JSON is not available."; return 1; }
+    grep -Fq "$eve" "$cfg" && { ok "Wazuh already ingests Suricata EVE JSON."; return 0; }
+    confirm "Add Suricata EVE JSON as Wazuh localfile telemetry?" Y || return 0
+    cp -a "$cfg" "${cfg}.rhel-ad.$(date +%s).bak"
+    local tmp; tmp="$(mktemp)"
+    awk -v eve="$eve" 'BEGIN{done=0} /<\/ossec_config>/ && !done {print "  <localfile>\n    <log_format>json</log_format>\n    <location>" eve "</location>\n  </localfile>"; done=1} {print}' "$cfg" >"$tmp"
+    install -m 0640 "$tmp" "$cfg"; rm -f "$tmp"
+    if systemctl restart wazuh-agent 2>/dev/null || systemctl restart wazuh 2>/dev/null; then ok "Wazuh now ingests Suricata EVE JSON."; else warn "Wazuh restart failed; restore the latest .bak if validation shows a problem."; return 1; fi
+}
+security_alert_review() {
+    security_load_config; local eve="$SURICATA_EVE_DEFAULT"; [[ -r "$eve" ]] || { warn "Suricata EVE JSON is unavailable."; return 1; }
+    local now hm hours="$BUSINESS_HOURS_WINDOW" label="business-hours"; hm="$(date +%H:%M)"
+    if [[ "$hm" < "$BUSINESS_START" || "$hm" > "$BUSINESS_END" ]]; then hours="$AFTER_HOURS_WINDOW"; label="after-hours"; fi
+    printf '\nIDS AWARENESS (%s, last %sh)\n' "$label" "$hours"
+    python3 - "$eve" "$hours" <<'PY_EVE'
+import json,sys,datetime,collections
+p,h=sys.argv[1],int(sys.argv[2]); now=datetime.datetime.now(datetime.timezone.utc); cut=now-datetime.timedelta(hours=h); c=collections.Counter()
+try: f=open(p,'r',errors='replace')
+except OSError: sys.exit(0)
+for line in f:
+ try: e=json.loads(line)
+ except: continue
+ if e.get('event_type')!='alert': continue
+ try:
+  t=datetime.datetime.fromisoformat(str(e.get('timestamp','')).replace('Z','+00:00'))
+  if t<cut: continue
+ except: pass
+ a=e.get('alert') or {}; src=e.get('src_ip','?'); dst=e.get('dest_ip','?'); sig=a.get('signature','unknown'); sev=a.get('severity','?'); cat=a.get('category','')
+ c[(src,dst,sev,sig,cat)]+=1
+for (src,dst,sev,sig,cat),n in c.most_common(40): print(f'{n:4}  sev={sev}  {src:15} -> {dst:15}  {sig}  [{cat}]')
+PY_EVE
+}
+security_recommended_blocks() {
+    local eve="$SURICATA_EVE_DEFAULT"; [[ -r "$eve" ]] || { warn "Suricata EVE JSON is unavailable."; return 1; }
+    local rows; rows="$(python3 - "$eve" <<'PY_BLOCK'
+import sys,json,collections,ipaddress,datetime
+p=sys.argv[1]; cut=datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=8); c=collections.Counter()
+with open(p,errors='replace') as f:
+ for l in f:
+  try:
+   e=json.loads(l); a=e.get('alert') or {}; ip=e.get('src_ip')
+   if e.get('event_type')!='alert' or int(a.get('severity',9))!=1 or not ip or not ipaddress.ip_address(ip).is_global: continue
+   try:
+    if datetime.datetime.fromisoformat(str(e.get('timestamp','')).replace('Z','+00:00'))<cut: continue
+   except Exception: pass
+   c[ip]+=1
+  except Exception: pass
+for ip,n in c.most_common(20): print(f'{ip}\t{n}')
+PY_BLOCK
+)"
+    [[ -n "$rows" ]] || { info "No severity-1 public IPv4 source currently qualifies."; return 0; }
+    printf '%s\n' "$rows" | nl -ba
+    local pick; pick="$(ask 'IP to block (blank to cancel)' '')"; [[ -n "$pick" ]] || return 0; security_block_ip "$pick"
+}
+security_schedule_config() {
+    security_load_config
+    local bs be bh ah ttl
+    bs="$(ask 'Business hours start (HH:MM)' "$BUSINESS_START")"; be="$(ask 'Business hours end (HH:MM)' "$BUSINESS_END")"
+    bh="$(ask 'IDS lookback hours during business hours' "$BUSINESS_HOURS_WINDOW")"; ah="$(ask 'IDS lookback hours after hours' "$AFTER_HOURS_WINDOW")"; ttl="$(ask 'Default block TTL minutes' "$BLOCK_TTL_MINUTES")"
+    [[ "$bs" =~ ^[0-2][0-9]:[0-5][0-9]$ && "$be" =~ ^[0-2][0-9]:[0-5][0-9]$ && "$bh" =~ ^[0-9]+$ && "$ah" =~ ^[0-9]+$ && "$ttl" =~ ^[0-9]+$ ]] || { warn "Invalid schedule values."; return 1; }
+    cat >"$SECURITY_CONFIG" <<EOF_SEC
+BUSINESS_START=$bs
+BUSINESS_END=$be
+BUSINESS_HOURS_WINDOW=$bh
+AFTER_HOURS_WINDOW=$ah
+BLOCK_TTL_MINUTES=$ttl
+EOF_SEC
+    chmod 0600 "$SECURITY_CONFIG"; ok "Awareness schedule updated."
+}
+security_telegram_config() {
+    security_init; local token chat
+    token="$(ask 'Telegram bot token (blank keeps current)' '')"; chat="$(ask 'Telegram chat/channel ID' '')"
+    [[ -n "$token" || -f "$TELEGRAM_CONFIG" ]] || { warn "A bot token is required for first configuration."; return 1; }
+    if [[ -z "$token" && -f "$TELEGRAM_CONFIG" ]]; then token="$(awk -F= '$1=="TOKEN"{sub(/^TOKEN=/,"");print;exit}' "$TELEGRAM_CONFIG")"; fi
+    cat >"$TELEGRAM_CONFIG" <<EOF_TG
+TOKEN=$token
+CHAT_ID=$chat
+EOF_TG
+    chmod 0600 "$TELEGRAM_CONFIG"; ok "Telegram alert hook configured."
+}
+security_telegram_test() {
+    [[ -r "$TELEGRAM_CONFIG" ]] || { warn "Telegram is not configured."; return 1; }; local TOKEN CHAT_ID; source "$TELEGRAM_CONFIG"
+    [[ -n "${TOKEN:-}" && -n "${CHAT_ID:-}" ]] || return 1
+    curl -fsS --max-time 12 -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" --data-urlencode "chat_id=${CHAT_ID}" --data-urlencode "text=Linux AD Client Assistant security notification test on $(hostname -f 2>/dev/null || hostname)." >/dev/null && ok "Telegram test notification sent." || warn "Telegram test notification failed."
+}
+security_watch_once() {
+    security_load_config
+    local eve="$SURICATA_EVE_DEFAULT"; [[ -r "$eve" ]] || return 0
+    local hm hours="$BUSINESS_HOURS_WINDOW"; hm="$(date +%H:%M)"; if [[ "$hm" < "$BUSINESS_START" || "$hm" > "$BUSINESS_END" ]]; then hours="$AFTER_HOURS_WINDOW"; fi
+    local summary; summary="$(python3 - "$eve" "$hours" <<'PY_WATCH'
+import sys,json,ipaddress,collections,datetime
+p,h=sys.argv[1],int(sys.argv[2]); cut=datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=h); c=collections.Counter()
+with open(p,errors='replace') as f:
+ for l in f:
+  try:
+   e=json.loads(l); a=e.get('alert') or {}; ip=e.get('src_ip')
+   ts=str(e.get('timestamp','')).replace('Z','+00:00')
+   try:
+    if datetime.datetime.fromisoformat(ts)<cut: continue
+   except Exception: pass
+   if e.get('event_type')=='alert' and int(a.get('severity',9))<=1 and ip and ipaddress.ip_address(ip).is_global: c[(ip,a.get('signature','unknown'))]+=1
+  except Exception: pass
+for (ip,sig),n in c.most_common(5): print(f'{n}x {ip} {sig}')
+PY_WATCH
+)"
+    [[ -n "$summary" && -r "$TELEGRAM_CONFIG" ]] || return 0
+    local TOKEN CHAT_ID; source "$TELEGRAM_CONFIG"; [[ -n "${TOKEN:-}" && -n "${CHAT_ID:-}" ]] || return 0
+    curl -fsS --max-time 12 -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" --data-urlencode "chat_id=${CHAT_ID}" --data-urlencode "text=Linux AD endpoint attention required on $(hostname -f 2>/dev/null||hostname):\n${summary}\nReview manually in the assistant; no chat-side action was executed." >/dev/null || true
+}
+security_enable_watch_timer() {
+    local install=/usr/local/sbin/linux-ad-client-assistant
+    install -m 0750 "$0" "$install"
+    cat >/etc/systemd/system/linux-ad-security-watch.service <<EOF
+[Unit]
+Description=Linux AD Client IDS awareness check
+[Service]
+Type=oneshot
+ExecStart=$install --security-watch
+EOF
+    cat >/etc/systemd/system/linux-ad-security-watch.timer <<'EOF'
+[Unit]
+Description=Linux AD Client IDS awareness timer
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=15m
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload; systemctl enable --now linux-ad-security-watch.timer
+    ok "15-minute IDS awareness notification timer enabled."
+}
+
+security_response_menu() {
+    security_init
+    while true; do
+        printf '\n%s\n' "$(ui_text 'IDS / IPS response center')"
+        printf '  [1] %s\n  [2] %s\n  [3] %s\n  [4] %s\n  [5] %s\n  [6] Remove trusted IP\n  [7] Recommended high-confidence blocks\n  [8] %s\n  [9] %s\n  [10] Enable 15-minute alert timer\n  [0] %s\n' "$(ui_text 'Blocked IP addresses')" "$(ui_text 'Unblock IP address')" "$(ui_text 'Emergency unblock all')" "$(ui_text 'Temporarily block IP')" "$(ui_text 'Trusted IP addresses')" "$(ui_text 'Awareness schedule')" "$(ui_text 'Telegram notifications')" "$(ui_text 'Exit')"
+        local c ip; c="$(ask 'Select operation' '1')"
+        case "$c" in
+          1) security_list_blocks ;; 2) ip="$(ask 'IPv4 address' '')"; [[ -n "$ip" ]] && security_unblock_ip "$ip" ;; 3) security_unblock_all ;;
+          4) ip="$(ask 'Public IPv4 address' '')"; [[ -n "$ip" ]] && security_block_ip "$ip" ;; 5) security_trust_list; ip="$(ask 'IPv4 to trust (blank to keep list)' '')"; [[ -n "$ip" ]] && security_trust_add "$ip" ;;
+          6) security_trust_list; ip="$(ask 'Trusted IPv4 to remove' '')"; [[ -n "$ip" ]] && security_trust_remove "$ip" ;; 7) security_recommended_blocks ;; 8) security_schedule_config ;;
+          9) printf '  [1] Configure\n  [2] Test\n'; c="$(ask 'Action' '1')"; [[ "$c" == 2 ]] && security_telegram_test || security_telegram_config ;; 10) security_enable_watch_timer ;; 0) return 0 ;; *) warn "Unknown option." ;;
+        esac; pause_ui
+    done
+}
+security_menu_client() {
+    while true; do
+        header; printf '%b%s%b\n\n' "$C_BOLD" "$(ui_text 'Endpoint security / Suricata + Wazuh')" "$C_RESET"
+        security_suricata_info; security_wazuh_info
+        printf '\n  [1] %s\n  [2] %s\n  [3] %s\n  [4] IDS alert review\n  [5] %s\n  [0] %s\n\n' "$(ui_text 'Security status')" "$(ui_text 'Validate Suricata')" "$(ui_text 'Configure Wazuh integration')" "$(ui_text 'IDS / IPS response center')" "$(ui_text 'Exit')"
+        local c; c="$(ask 'Select operation' '1')"
+        case "$c" in 1) security_suricata_info; security_wazuh_info ;; 2) security_suricata_validate ;; 3) security_wazuh_integrate ;; 4) security_alert_review ;; 5) security_response_menu ;; 0) return 0 ;; *) warn "Unknown option." ;; esac
+        pause_ui
+    done
+}
+
+# ---------------------------------------------------------------------------
 # Interactive control plane
 # ---------------------------------------------------------------------------
 
@@ -4000,6 +4279,7 @@ main_menu() {
         printf '  [8] %s\n' "$(ui_text 'Export diagnostic bundle')"
         printf '  [9] %s\n' "$(ui_text 'Restore pre-join state')"
         printf '  [10] %s\n' "$(ui_text 'List snapshots')"
+        printf '  [11] %s\n' "$(ui_text 'Endpoint security / Suricata + Wazuh')"
         printf '  [L] %s [%s]\n' "$(ui_text 'Language / Idioma')" "${UI_LANG^^}"
         printf '  [0] %s\n\n' "$(ui_text 'Exit')"
 
@@ -4017,6 +4297,7 @@ main_menu() {
             8) export_diagnostic_bundle || true; pause_ui ;;
             9) restore_prejoin_state || warn "Restore operation did not complete."; pause_ui ;;
             10) list_snapshots || true; pause_ui ;;
+            11) security_menu_client ;;
             L) toggle_ui_language ;;
             0) return 0 ;;
             *) warn "Unknown option."; pause_ui ;;
@@ -4048,6 +4329,8 @@ Modes:
   --diagnostics             Export a local diagnostic bundle
   --restore                 Restore pre-join local state
   --snapshots               List local snapshots
+  --security                Suricata + Wazuh endpoint security center
+  --security-watch          Non-interactive IDS notification check
   --lang en|es              UI language
   --no-color                Disable ANSI color
   --help                    Show this help
@@ -4089,6 +4372,8 @@ main() {
             --lang=*) set_ui_language "${1#*=}" || return 2 ;;
             --restore) mode="restore" ;;
             --snapshots) mode="snapshots" ;;
+            --security) mode="security" ;;
+            --security-watch) mode="security-watch" ;;
             --no-color)
                 USE_COLOR=0
                 C_RESET="" C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_CYAN=""
@@ -4120,6 +4405,8 @@ main() {
         diagnostics) export_diagnostic_bundle ;;
         restore) restore_prejoin_state ;;
         snapshots) list_snapshots ;;
+        security) security_menu_client ;;
+        security-watch) security_watch_once ;;
     esac
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # rhel-ad-client-assistant.sh
-# Version 2.0.0-functional-parity
+# Version 2.0.1-runtime-sanitization
 #
 # Reversible Active Directory client join assistant for Linux.
 #
@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="2.0.0-functional-parity"
+SCRIPT_VERSION="2.0.1-runtime-sanitization"
 PRODUCT_NAME="RHEL AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -29,6 +29,15 @@ BACKUP_ROOT="/var/backups/ad-client-assistant"
 LOG_ROOT="/var/log/ad-client-assistant"
 CURRENT_STATE="${STATE_ROOT}/current.env"
 INPUT_FD=0
+
+# Endpoint-defense state. These paths are initialized here (rather than lazily
+# inside the menu) because init_runtime creates the directory under `set -u`.
+REMOTE_SECURITY_DIR="${STATE_ROOT}/security"
+SECURITY_CONFIG="${REMOTE_SECURITY_DIR}/security.conf"
+SECURITY_TRUSTED="${REMOTE_SECURITY_DIR}/trusted-ips.txt"
+SECURITY_BLOCKS="${REMOTE_SECURITY_DIR}/blocks.tsv"
+TELEGRAM_CONFIG="${REMOTE_SECURITY_DIR}/telegram.conf"
+SURICATA_EVE_DEFAULT="/var/log/suricata/eve.json"
 
 # Network operations are intentionally tolerant of slow virtual/lab environments.
 # Override from the environment when needed without editing the script.
@@ -200,6 +209,18 @@ ui_text() {
         'Computer OU DN (optional)') printf 'DN de la OU del equipo (opcional)' ;;
         'Optional AD user for SSSD identity lookup (not Kerberos authentication; blank to skip)') printf 'Usuario AD opcional para validar resolución de identidad por SSSD (no autenticación Kerberos; vacío para omitir)' ;;
         'Reboot now?') printf '¿Reiniciar ahora?' ;;
+        'Endpoint security / Suricata + Wazuh') printf 'Seguridad del endpoint / Suricata + Wazuh' ;;
+        'Security status') printf 'Estado de seguridad' ;;
+        'Validate Suricata') printf 'Validar Suricata' ;;
+        'Configure Wazuh integration') printf 'Configurar integración Wazuh' ;;
+        'IDS / IPS response center') printf 'Centro de respuesta IDS / IPS' ;;
+        'Blocked IP addresses') printf 'Direcciones IP bloqueadas' ;;
+        'Unblock IP address') printf 'Desbloquear dirección IP' ;;
+        'Emergency unblock all') printf 'Desbloqueo de emergencia total' ;;
+        'Temporarily block IP') printf 'Bloquear IP temporalmente' ;;
+        'Trusted IP addresses') printf 'Direcciones IP de confianza' ;;
+        'Awareness schedule') printf 'Horario de vigilancia' ;;
+        'Telegram notifications') printf 'Notificaciones de Telegram' ;;
         *) printf '%s' "$t" ;;
     esac
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # rhel-ad-assistant.sh
-# Version 3.0.0-functional-parity
+# Version 3.0.1-runtime-sanitization
 #
 # Self-contained Samba Active Directory Domain Controller assistant for
 # Enterprise Linux-style systems.
@@ -33,11 +33,19 @@ umask 077
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
-SCRIPT_VERSION="3.0.0-functional-parity"
+SCRIPT_VERSION="3.0.1-runtime-sanitization"
 PRODUCT_NAME="RHEL AD Control Plane"
 MODE="interactive"
 FORCE_NO_COLOR=0
 UI_LANG="${RHEL_AD_LANG:-en}"
+
+# Base state paths must be defined before any derived security/report paths.
+# Keep this ordering safe under `set -u` so even --help and first-run startup
+# cannot fail with an unbound STATE_DIR.
+STATE_DIR="/var/lib/rhel-ad-assistant"
+LOG_DIR="/var/log/rhel-ad-assistant"
+BACKUP_ROOT="/var/backups/rhel-ad-assistant"
+
 DEFENSE_DIR="${STATE_DIR}/defense"
 DEFENSE_CONFIG="${DEFENSE_DIR}/defense.conf"
 DEFENSE_TRUSTED="${DEFENSE_DIR}/trusted-ips.txt"
@@ -53,9 +61,6 @@ INITIAL_AUTH_USER="Administrator"
 TIMEZONE="UTC"
 NTP_POOL="pool.ntp.org"
 
-STATE_DIR="/var/lib/rhel-ad-assistant"
-LOG_DIR="/var/log/rhel-ad-assistant"
-BACKUP_ROOT="/var/backups/rhel-ad-assistant"
 REPORT_DIR="${STATE_DIR}/reports"
 GPO_DIR="${STATE_DIR}/gpo"
 GPO_BUILTIN_DIR="${GPO_DIR}/builtin"

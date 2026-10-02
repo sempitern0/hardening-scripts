@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 5.3.0-remote-batch-operations
+# Version 5.4.2-runtime-sanitization
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -45,7 +45,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.4.1-defense-response-awareness"
+SCRIPT_VERSION="5.4.2-runtime-sanitization"
 
 MODE="interactive"
 FORCE_NO_COLOR=0

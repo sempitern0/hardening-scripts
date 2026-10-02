@@ -1,7 +1,7 @@
 ﻿#requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Windows Server AD Control Plane - v1.8.2-bilingual-defense-parity
+    Windows Server AD Control Plane - v1.8.3-runtime-sanitization
 
 .DESCRIPTION
     Professional, audit-first assistant for Windows Server and Active Directory.
@@ -82,7 +82,7 @@ $ErrorActionPreference = 'Stop'
 # ===========================================================================
 
 $script:ProductName = 'Windows Server AD Control Plane'
-$script:Version = '1.8.2-bilingual-defense-parity'
+$script:Version = '1.8.3-runtime-sanitization'
 $script:Started = Get-Date
 
 $script:Results = New-Object 'System.Collections.Generic.List[object]'
@@ -139,7 +139,7 @@ $script:UiSpanish = @{
  'Back'='Volver'; 'Main menu'='Menú principal'; 'Return to previous console'='Volver a la consola anterior'; 'Jump directly to the Windows Server Control Plane'='Ir directamente al plano de control de Windows Server'; 'Select operation'='Selecciona operación'; 'Press ENTER to continue'='Pulsa ENTER para continuar';
  'IDS / Suricata'='IDS / Suricata'; 'Wazuh integration'='Integración Wazuh'; 'Defense operations'='Operaciones de defensa'; 'Guarded IPS response'='Respuesta IPS controlada'; 'Blocked IP addresses'='Direcciones IP bloqueadas'; 'Unblock selected IP'='Desbloquear IP seleccionada'; 'Emergency unblock all'='Desbloqueo de emergencia total'; 'Temporarily block IP'='Bloquear IP temporalmente'; 'Trust selected IP'='Confiar en IP seleccionada'; 'Trusted IP addresses'='Direcciones IP de confianza'; 'Awareness schedule'='Horario de vigilancia'; 'Telegram notifications'='Notificaciones de Telegram';
  'Suricata IDS readiness'='Preparación IDS de Suricata'; 'Suricata sensor health'='Salud del sensor Suricata'; 'Wazuh + Suricata integration'='Integración Wazuh + Suricata'; 'Recent Wazuh agent signals:'='Señales recientes del agente Wazuh:'; 'Configure Wazuh manager'='Configurar manager Wazuh'; 'Integrate Suricata EVE with Wazuh'='Integrar EVE de Suricata con Wazuh'; 'Open graphical Defense Center'='Abrir Centro de Defensa gráfico';
- 'Windows AD Defense Center - Suricata + Wazuh'='Centro de Defensa AD de Windows - Suricata + Wazuh'; 'Windows AD Control Plane - Suricata IDS'='Plano de control AD de Windows - IDS Suricata'; 'Blocks'='Bloqueos'; 'Alerts'='Alertas'; 'Refresh'='Actualizar'; 'Unblock'='Desbloquear'; 'Unblock all'='Desbloquear todo'; 'Block IP'='Bloquear IP'; 'Trust IP'='Confiar en IP'; 'Apply guarded response'='Aplicar respuesta controlada'; 'Close'='Cerrar'; 'Language / Idioma'='Idioma / Language'
+ 'Windows AD Defense Center - Suricata + Wazuh'='Centro de Defensa AD de Windows - Suricata + Wazuh'; 'Windows AD Control Plane - Suricata IDS'='Plano de control AD de Windows - IDS Suricata'; 'Blocks'='Bloqueos'; 'Alerts'='Alertas'; 'Refresh'='Actualizar'; 'Unblock'='Desbloquear'; 'Unblock selected'='Desbloquear seleccionado'; 'Unblock all'='Desbloquear todo'; 'Block IP'='Bloquear IP'; 'Trust IP'='Confiar en IP'; 'Trust selected'='Confiar en seleccionado'; 'Run IPS now'='Ejecutar IPS ahora'; 'Blocked / trusted IPs'='IPs bloqueadas / confiables'; 'Awareness alerts'='Alertas de vigilancia'; 'Operations'='Operaciones'; 'Apply guarded response'='Aplicar respuesta controlada'; 'Close'='Cerrar'; 'Language / Idioma'='Idioma / Language'
 }
 function Get-UiText { param([Parameter(Mandatory=$true)][string]$Text) if($script:UiLanguage -eq 'es' -and $script:UiSpanish.ContainsKey($Text)){ return [string]$script:UiSpanish[$Text] }; return $Text }
 function Switch-UiLanguage { $script:UiLanguage = if($script:UiLanguage -eq 'en'){'es'}else{'en'} }
@@ -7683,19 +7683,19 @@ function Show-DefenseOperationsGui {
     $form.Width=1180;$form.Height=760;$form.StartPosition='CenterScreen'
     $status=New-Object System.Windows.Forms.Label;$status.Dock='Top';$status.Height=55;$status.Padding=New-Object System.Windows.Forms.Padding(10)
     $tabs=New-Object System.Windows.Forms.TabControl;$tabs.Dock='Fill'
-    $blockTab=New-Object System.Windows.Forms.TabPage;$blockTab.Text='Blocked / trusted IPs'
+    $blockTab=New-Object System.Windows.Forms.TabPage;$blockTab.Text=(Get-UiText 'Blocked / trusted IPs')
     $grid=New-Object System.Windows.Forms.DataGridView;$grid.Dock='Fill';$grid.ReadOnly=$true;$grid.SelectionMode='FullRowSelect';$grid.AutoSizeColumnsMode='Fill';$grid.AllowUserToAddRows=$false
     $buttons=New-Object System.Windows.Forms.FlowLayoutPanel;$buttons.Dock='Bottom';$buttons.Height=48
     foreach($spec in @(
         @('Refresh','refresh'),@('Unblock selected','unblock'),@('Unblock all','unblockall'),@('Block IP','block'),@('Trust selected','trust'),@('Run IPS now','runips')
     )){
-        $b=New-Object System.Windows.Forms.Button;$b.Text=$spec[0];$b.Tag=$spec[1];$b.AutoSize=$true;[void]$buttons.Controls.Add($b)
+        $b=New-Object System.Windows.Forms.Button;$b.Text=(Get-UiText ([string]$spec[0]));$b.Tag=$spec[1];$b.AutoSize=$true;[void]$buttons.Controls.Add($b)
     }
     [void]$blockTab.Controls.Add($grid);[void]$blockTab.Controls.Add($buttons)
-    $alertTab=New-Object System.Windows.Forms.TabPage;$alertTab.Text='Awareness alerts'
+    $alertTab=New-Object System.Windows.Forms.TabPage;$alertTab.Text=(Get-UiText 'Awareness alerts')
     $alertGrid=New-Object System.Windows.Forms.DataGridView;$alertGrid.Dock='Fill';$alertGrid.ReadOnly=$true;$alertGrid.AutoSizeColumnsMode='Fill';$alertGrid.AllowUserToAddRows=$false
     [void]$alertTab.Controls.Add($alertGrid)
-    $helpTab=New-Object System.Windows.Forms.TabPage;$helpTab.Text='Operations'
+    $helpTab=New-Object System.Windows.Forms.TabPage;$helpTab.Text=(Get-UiText 'Operations')
     $help=New-Object System.Windows.Forms.TextBox;$help.Dock='Fill';$help.Multiline=$true;$help.ReadOnly=$true;$help.ScrollBars='Vertical'
     $help.Text="Use this window for fast response.`r`n`r`n- Unblock false positives immediately.`r`n- Trust known partner/public IPs to prevent future assistant auto-blocks.`r`n- Manual blocks use the configured TTL.`r`n- After-hours awareness expands the detection window and notification threshold.`r`n- Wazuh is the correlation/agent layer; Suricata remains the network sensor."
     [void]$helpTab.Controls.Add($help)

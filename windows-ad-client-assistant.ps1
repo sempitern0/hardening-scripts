@@ -1,7 +1,7 @@
 ﻿#requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Windows AD Client Assistant - v1.5.2-bilingual-defense-parity
+    Windows AD Client Assistant - v1.5.3-runtime-sanitization
 
 .DESCRIPTION
     Reversible, transaction-aware assistant for joining Windows clients and
@@ -55,7 +55,7 @@ $ErrorActionPreference = 'Stop'
 # ---------------------------------------------------------------------------
 
 $script:ProductName = 'Windows AD Client Assistant'
-$script:Version = '1.5.2-bilingual-defense-parity'
+$script:Version = '1.5.3-runtime-sanitization'
 $script:StartedAt = Get-Date
 $script:SnapshotRoot = Join-Path $StateRoot 'snapshots'
 $script:CurrentState = Join-Path $StateRoot 'current.json'
@@ -207,6 +207,14 @@ $script:UiSpanish = @{
     'Recent Wazuh agent log' = 'Registro reciente del agente Wazuh'
     'Open graphical Defense Center' = 'Abrir Centro de Defensa gráfico'
     'AD Client Defense Center - Suricata + Wazuh' = 'Centro de Defensa del cliente AD - Suricata + Wazuh'
+    'Blocks' = 'Bloqueos'
+    'Alerts' = 'Alertas'
+    'Refresh' = 'Actualizar'
+    'Unblock selected' = 'Desbloquear seleccionado'
+    'Unblock all' = 'Desbloquear todo'
+    'Block IP' = 'Bloquear IP'
+    'Trust selected' = 'Confiar en seleccionado'
+    'Run IPS' = 'Ejecutar IPS'
     'Blocks' = 'Bloqueos'
     'Alerts' = 'Alertas'
     'Refresh' = 'Actualizar'
@@ -2485,11 +2493,11 @@ function Show-ClientDefenseGui {
     $form=New-Object Windows.Forms.Form;$form.Text=(Get-UiText 'AD Client Defense Center - Suricata + Wazuh');$form.Width=1060;$form.Height=700;$form.StartPosition='CenterScreen'
     $status=New-Object Windows.Forms.Label;$status.Dock='Top';$status.Height=48;$status.Padding=New-Object Windows.Forms.Padding(8)
     $tabs=New-Object Windows.Forms.TabControl;$tabs.Dock='Fill'
-    $t1=New-Object Windows.Forms.TabPage;$t1.Text='Blocks';$grid=New-Object Windows.Forms.DataGridView;$grid.Dock='Fill';$grid.ReadOnly=$true;$grid.SelectionMode='FullRowSelect';$grid.AutoSizeColumnsMode='Fill';$grid.AllowUserToAddRows=$false
+    $t1=New-Object Windows.Forms.TabPage;$t1.Text=(Get-UiText 'Blocks');$grid=New-Object Windows.Forms.DataGridView;$grid.Dock='Fill';$grid.ReadOnly=$true;$grid.SelectionMode='FullRowSelect';$grid.AutoSizeColumnsMode='Fill';$grid.AllowUserToAddRows=$false
     $bar=New-Object Windows.Forms.FlowLayoutPanel;$bar.Dock='Bottom';$bar.Height=46
-    foreach($spec in@(@('Refresh','r'),@('Unblock selected','u'),@('Unblock all','ua'),@('Block IP','b'),@('Trust selected','t'),@('Run IPS','i'))){$btn=New-Object Windows.Forms.Button;$btn.Text=$spec[0];$btn.Tag=$spec[1];$btn.AutoSize=$true;[void]$bar.Controls.Add($btn)}
+    foreach($spec in@(@('Refresh','r'),@('Unblock selected','u'),@('Unblock all','ua'),@('Block IP','b'),@('Trust selected','t'),@('Run IPS','i'))){$btn=New-Object Windows.Forms.Button;$btn.Text=(Get-UiText ([string]$spec[0]));$btn.Tag=$spec[1];$btn.AutoSize=$true;[void]$bar.Controls.Add($btn)}
     [void]$t1.Controls.Add($grid);[void]$t1.Controls.Add($bar)
-    $t2=New-Object Windows.Forms.TabPage;$t2.Text='Alerts';$ag=New-Object Windows.Forms.DataGridView;$ag.Dock='Fill';$ag.ReadOnly=$true;$ag.AutoSizeColumnsMode='Fill';$ag.AllowUserToAddRows=$false;[void]$t2.Controls.Add($ag)
+    $t2=New-Object Windows.Forms.TabPage;$t2.Text=(Get-UiText 'Alerts');$ag=New-Object Windows.Forms.DataGridView;$ag.Dock='Fill';$ag.ReadOnly=$true;$ag.AutoSizeColumnsMode='Fill';$ag.AllowUserToAddRows=$false;[void]$t2.Controls.Add($ag)
     [void]$tabs.TabPages.Add($t1);[void]$tabs.TabPages.Add($t2);[void]$form.Controls.Add($tabs);[void]$form.Controls.Add($status)
     $refresh={$state=Get-ClientGuardedIpsState;$p=Get-ClientAwarenessProfile;$s=Get-ClientSuricataInfo;$w=Get-ClientWazuhInfo;$status.Text=("Suricata={0} | Wazuh={1} | IPS={2} | {3}: {4}h/sev<={5}"-f$s.ServiceState,$w.ServiceState,$state.Enabled,$p.Label,$p.WindowHours,$p.Severity);$grid.DataSource=$null;$grid.DataSource=@($state.Rules|Select-Object SourceIp,Created,Expires,Signature);$ag.DataSource=$null;$ag.DataSource=@(Get-ClientAwarenessAlerts -Hours $p.WindowHours -Severity $p.Severity|Select-Object -First 150)}.GetNewClosure()
     foreach($btn in@($bar.Controls)){$btn.Add_Click({try{switch([string]$this.Tag){'u'{if($grid.SelectedRows.Count -gt 0){Remove-ClientBlock -Address ([string]$grid.SelectedRows[0].Cells['SourceIp'].Value)}}'ua'{Remove-AllClientBlocks}'b'{Add-Type -AssemblyName Microsoft.VisualBasic;$ip=[Microsoft.VisualBasic.Interaction]::InputBox('IPv4 address','Temporary block','');if($ip){Add-ClientManualBlock -Address $ip}}'t'{if($grid.SelectedRows.Count -gt 0){Add-ClientTrustedIp -Address ([string]$grid.SelectedRows[0].Cells['SourceIp'].Value)}}'i'{Invoke-ClientGuardedIpsResponse -NonInteractive}};&$refresh}catch{[Windows.Forms.MessageBox]::Show($_.Exception.Message)|Out-Null}}.GetNewClosure())}
