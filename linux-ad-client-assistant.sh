@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # linux-ad-client-assistant.sh
-# Version 1.4.1-bounded-leave-diagnostics
+# Version 1.4.3-secure-dyndns-remote-readiness
 #
 # Reversible Active Directory client join assistant for Linux.
 #
@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.4.2-ad-dns-registration"
+SCRIPT_VERSION="1.4.3-secure-dyndns-remote-readiness"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -1198,10 +1198,10 @@ required_packages() {
 
 
 dns_tools_package_name() {
-    # dig is the actual capability required by this assistant. Do not treat
-    # transitional/virtual package names such as dnsutils as missing when a
-    # real provider already supplies dig.
-    command_exists dig && return 0
+    # dig is required for AD diagnostics and nsupdate is required for secure
+    # Linux host registration in AD-integrated DNS. Treat the provider package
+    # as satisfied only when both capabilities are already present.
+    command_exists dig && command_exists nsupdate && return 0
 
     case "$PKG_FAMILY" in
         apt)
@@ -1258,18 +1258,18 @@ install_required_packages() {
         pkg_installed "$pkg" || missing+=("$pkg")
     done
 
-    # DNS tooling is capability-based. Ubuntu/Debian may satisfy "dnsutils"
-    # through bind9-dnsutils, so never ask to install a package merely because
-    # a transitional package name is absent.
-    if ! command_exists dig; then
+    # DNS tooling is capability-based. The same distribution package normally
+    # provides both dig and nsupdate. nsupdate is intentionally required so a
+    # Linux client can publish/refresh its own secure AD DNS A record.
+    if ! command_exists dig || ! command_exists nsupdate; then
         dns_pkg="$(dns_tools_package_name 2>/dev/null || true)"
         [[ -n "$dns_pkg" ]] || {
-            err "dig is unavailable and no distribution DNS tools package could be identified."
+            err "dig/nsupdate capability is incomplete and no distribution DNS tools package could be identified."
             return 1
         }
         pkg_installed "$dns_pkg" || missing+=("$dns_pkg")
     else
-        ok "DNS diagnostic capability already available: $(command -v dig)."
+        ok "DNS diagnostic/update capabilities available: dig + nsupdate."
     fi
 
     if ((${#missing[@]} == 0)); then
@@ -1332,8 +1332,15 @@ validate_required_commands() {
             err "Missing required DNS diagnostic command: dig"
             missing=1
         fi
+        if command_exists nsupdate; then
+            ok "Command available: nsupdate"
+        else
+            err "Missing secure AD DNS update command: nsupdate"
+            missing=1
+        fi
     else
         command_exists dig || warn "dig is unavailable; generic-mode DNS validation will be reduced."
+        command_exists nsupdate || warn "nsupdate is unavailable; automatic secure AD DNS registration will be skipped."
     fi
 
     require_supported_init || missing=1
@@ -1985,6 +1992,137 @@ repair_sssd_config_compatibility() {
     return 1
 }
 
+
+ensure_sssd_dynamic_dns() {
+    local domain="$1" snap="${2:-}" conf="/etc/sssd/sssd.conf"
+    [[ -s "$conf" ]] || {
+        warn "SSSD configuration is unavailable; persistent dynamic DNS registration could not be configured."
+        return 1
+    }
+
+    local backup="${conf}.before-dyndns-${RUN_ID}" tmp="${conf}.dyndns.$$"
+    cp -a -- "$conf" "$backup" || return 1
+    if [[ -n "$snap" && -d "$snap" && ! -e "${snap}/sssd.conf-before-dyndns" ]]; then
+        cp -a -- "$conf" "${snap}/sssd.conf-before-dyndns" 2>/dev/null || true
+    fi
+
+    awk -v wanted="domain/${domain,,}" '
+        function emit_missing() {
+            if (!seen_update)  print "dyndns_update = true"
+            if (!seen_refresh) print "dyndns_refresh_interval = 43200"
+            if (!seen_ttl)     print "dyndns_ttl = 300"
+        }
+        function norm_section(s, t) {
+            t=tolower(s)
+            gsub(/^[[:space:]]*\[/, "", t)
+            gsub(/\][[:space:]]*$/, "", t)
+            gsub(/[[:space:]]/, "", t)
+            return t
+        }
+        BEGIN {
+            in_target=0
+            found_target=0
+            seen_update=seen_refresh=seen_ttl=0
+        }
+        /^[[:space:]]*\[/ {
+            if (in_target) emit_missing()
+            in_target=(norm_section($0) == wanted)
+            if (in_target) {
+                found_target=1
+                seen_update=seen_refresh=seen_ttl=0
+            }
+            print
+            next
+        }
+        in_target && /^[[:space:]]*dyndns_update[[:space:]]*=/ {
+            print "dyndns_update = true"
+            seen_update=1
+            next
+        }
+        in_target && /^[[:space:]]*dyndns_refresh_interval[[:space:]]*=/ {
+            print "dyndns_refresh_interval = 43200"
+            seen_refresh=1
+            next
+        }
+        in_target && /^[[:space:]]*dyndns_ttl[[:space:]]*=/ {
+            print "dyndns_ttl = 300"
+            seen_ttl=1
+            next
+        }
+        { print }
+        END {
+            if (in_target) emit_missing()
+            if (!found_target) exit 42
+        }
+    ' "$conf" >"$tmp"
+    local rc=$?
+
+    if (( rc == 42 )); then
+        rm -f -- "$tmp" "$backup"
+        warn "Could not locate [domain/${domain,,}] in sssd.conf; dynamic DNS policy was left unchanged."
+        return 1
+    elif (( rc != 0 )); then
+        rm -f -- "$tmp"
+        mv -f -- "$backup" "$conf" 2>/dev/null || true
+        return 1
+    fi
+
+    chmod --reference="$conf" "$tmp" 2>/dev/null || chmod 0600 "$tmp"
+    chown --reference="$conf" "$tmp" 2>/dev/null || true
+    mv -f -- "$tmp" "$conf" || {
+        mv -f -- "$backup" "$conf" 2>/dev/null || true
+        return 1
+    }
+
+    if command_exists sssctl && ! run_probe 10 "SSSD dynamic DNS configuration validation" sssctl config-check >/dev/null 2>&1; then
+        warn "SSSD rejected the dynamic DNS settings; restoring the previous configuration."
+        mv -f -- "$backup" "$conf" 2>/dev/null || true
+        return 1
+    fi
+
+    rm -f -- "$backup"
+    ok "SSSD secure dynamic DNS refresh enabled for ${domain,,}."
+    return 0
+}
+
+audit_remote_management_readiness() {
+    local ssh_service="" ssh_port=""
+
+    if systemctl list-unit-files ssh.service >/dev/null 2>&1; then
+        ssh_service="ssh.service"
+    elif systemctl list-unit-files sshd.service >/dev/null 2>&1; then
+        ssh_service="sshd.service"
+    fi
+
+    printf '\nREMOTE MANAGEMENT READINESS\n'
+    if [[ -z "$ssh_service" ]]; then
+        warn "OpenSSH server is not installed/enabled as a systemd service."
+        info "Domain membership does not provide remote command execution by itself."
+        info "Install/enable OpenSSH server only if this host should be remotely administered."
+        return 1
+    fi
+
+    if run_probe 8 "SSH service state" systemctl is-active --quiet "$ssh_service"; then
+        ok "OpenSSH service is active: $ssh_service."
+    else
+        warn "OpenSSH service exists but is not active: $ssh_service."
+        return 1
+    fi
+
+    if command_exists ss; then
+        ssh_port="$(ss -lnt 2>/dev/null | awk '$4 ~ /:22$/ {print $4; exit}')"
+        if [[ -n "$ssh_port" ]]; then
+            ok "SSH is listening on TCP/22."
+        else
+            warn "OpenSSH is active but TCP/22 was not observed listening."
+            return 1
+        fi
+    fi
+
+    info "The Debian AD remote-operations console also requires network/firewall reachability from the controller to TCP/22."
+    return 0
+}
+
 validate_sssd_identity_lookup() {
     local input="$1" domain="$2"
     local -a candidates=()
@@ -2431,6 +2569,8 @@ join_domain_guided() {
         return 1
     fi
 
+    ensure_sssd_dynamic_dns "$domain" "$snap" ||         warn "Persistent SSSD dynamic DNS refresh could not be enabled; immediate DNS registration will still be attempted."
+
     if ! run_probe 45 "SSSD enable/start" systemctl enable --now sssd.service; then
         set_current_phase "JOINED_DEGRADED" || true
         err "Domain join succeeded, but SSSD failed to start. AD DNS and snapshot are retained for repair/clean leave."
@@ -2439,10 +2579,16 @@ join_domain_guided() {
         return 1
     fi
 
+    # Retry secure registration after SSSD is active so the client leaves the
+    # join flow with both immediate and persistent DNS registration paths.
+    register_client_ad_dns "$domain" "$dns_csv" || true
+
     configure_mkhomedir "$snap" || \
         warn "Home-directory automation could not be fully configured."
     apply_access_policy "$domain" || \
         warn "Login authorization policy was not changed."
+
+    audit_remote_management_readiness || true
 
     test_user="$(ask 'Optional AD user for SSSD identity lookup (not Kerberos authentication; blank to skip)' '')"
     if postjoin_acceptance "$domain" "$test_user"; then
@@ -2712,6 +2858,33 @@ DNS DISCOVERY
         degraded=$((degraded+1))
     fi
 
+    printf '\nCLIENT DNS REGISTRATION\n'
+    local client_fqdn="" client_ip="" registration_dns="" registered_ip=""
+    client_fqdn="$(client_ad_fqdn "$domain")"
+    client_ip="$(client_primary_ipv4 "$ACTIVE_IFACE" || true)"
+    registration_dns="$(dns_first "$dns_csv")"
+
+    printf '  Client FQDN    : %s\n' "${client_fqdn:-unknown}"
+    printf '  Client IPv4    : %s\n' "${client_ip:-unknown}"
+    printf '  AD DNS target  : %s\n' "${registration_dns:-unknown}"
+
+    if [[ -n "$registration_dns" && -n "$client_fqdn" && -n "$client_ip" ]] && command_exists dig; then
+        registered_ip="$(dig +time=3 +tries=1 @"$registration_dns" "$client_fqdn" A +short 2>/dev/null | awk 'NR==1{print}')"
+        if [[ "$registered_ip" == "$client_ip" ]]; then
+            ok "AD DNS A record matches this client: $client_fqdn -> $client_ip."
+        elif [[ -n "$registered_ip" ]]; then
+            warn "AD DNS A record points elsewhere: $client_fqdn -> $registered_ip (local IP: $client_ip)."
+            degraded=$((degraded+1))
+        else
+            warn "No AD DNS A record exists for $client_fqdn."
+            info "The domain join can still be valid, but name-based remote administration and automatic endpoint discovery will be degraded."
+            degraded=$((degraded+1))
+        fi
+    else
+        warn "Client DNS registration could not be fully validated."
+        degraded=$((degraded+1))
+    fi
+
     printf '
 ROUTING / PORTS
 '
@@ -2836,6 +3009,8 @@ SAFE FOLLOW-UP
 '
     printf '  [3] Attempt resolver convergence repair
 '
+    printf '  [4] Repair/publish secure AD DNS registration
+'
     printf '  [0] Return without changes
 '
     local action=""
@@ -2856,6 +3031,19 @@ SAFE FOLLOW-UP
                 fi
             else
                 warn "A valid AD DNS list is required before resolver repair can run."
+            fi
+            ;;
+        4)
+            if validate_dns_list "$dns_csv"; then
+                if confirm "Enable persistent SSSD dynamic DNS refresh and publish this host A record now?" Y; then
+                    ensure_sssd_dynamic_dns "$domain" "" ||                         warn "Persistent SSSD dynamic DNS settings could not be applied."
+                    if systemctl is-active --quiet sssd.service 2>/dev/null; then
+                        run_probe 20 "SSSD restart after dynamic DNS repair" systemctl restart sssd.service ||                             warn "SSSD could not be restarted after dynamic DNS repair."
+                    fi
+                    register_client_ad_dns "$domain" "$dns_csv" || true
+                fi
+            else
+                warn "A valid AD DNS list is required before secure DNS registration can run."
             fi
             ;;
         *) : ;;

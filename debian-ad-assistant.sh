@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 5.2.6-ui-lang-cli-fix
+# Version 5.2.8-remote-linux-dns-fallback
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -45,7 +45,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.2.7-linux-endpoint-dns-awareness"
+SCRIPT_VERSION="5.2.8-remote-linux-dns-fallback"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -172,6 +172,7 @@ REMOTE_TARGET_IP=""
 REMOTE_TARGET_OS=""
 REMOTE_SSH_USER=""
 REMOTE_TARGET_HOST_OVERRIDE=""
+REMOTE_TARGET_KIND_OVERRIDE=""
 
 KRB5_CACHE=""
 # Preserve the caller's cache hint for read-only diagnostics. The assistant still
@@ -431,7 +432,7 @@ ui_context_panel() {
     iface="${AD_IFACE:-n/a}"
     admin="${ADMIN_USER:-not-selected}"
     session="local"
-    current_date="$(date +'%Y-%m-%d %H:%M')"
+    current_date="$(date +'%Y-%m-%d')"
     [[ $REMOTE_SESSION -eq 1 ]] && session="SSH ${SSH_CLIENT_IP:-unknown}"
 
     printf '  %b%-24s%b  %-28s  %s\n' \
@@ -12159,11 +12160,11 @@ remote_target_context() {
 }
 
 remote_select_target() {
-    local account="" row="" override=""
+    local account="" row="" override="" detected=""
     account="$(select_domain_computer)" || return 1
     row="$(remote_target_context "$account")"
 
-    IFS=$'	' read -r \
+    IFS=$'\t' read -r \
         REMOTE_TARGET_ACCOUNT \
         REMOTE_TARGET_DNS \
         REMOTE_TARGET_IP \
@@ -12172,11 +12173,13 @@ remote_select_target() {
     [[ "$REMOTE_TARGET_IP" == "-" ]] && REMOTE_TARGET_IP=""
     REMOTE_SSH_USER=""
     REMOTE_TARGET_HOST_OVERRIDE=""
+    REMOTE_TARGET_KIND_OVERRIDE=""
 
     if [[ -z "$REMOTE_TARGET_IP" ]]; then
         msg_warn "No A record resolves for ${REMOTE_TARGET_DNS:-$REMOTE_TARGET_ACCOUNT}."
-        msg_info "Linux realmd/adcli clients may join AD successfully without automatically creating an A record."
-        msg_info "Remote operations can continue with an IPv4 address or another resolvable hostname."
+        msg_info "AD membership is independent from host DNS registration; this does not mean the join failed."
+        msg_info "Linux realmd/adcli clients may join successfully without publishing an A record unless secure dynamic DNS is configured."
+        msg_info "Remote Linux operations use SSH and need either a resolvable hostname or an IPv4 override."
         override="$(ask 'Endpoint IPv4 / resolvable hostname override (blank to keep unresolved)' '')"
         if [[ -n "$override" ]]; then
             REMOTE_TARGET_HOST_OVERRIDE="$override"
@@ -12185,20 +12188,35 @@ remote_select_target() {
             else
                 REMOTE_TARGET_IP="$(ad_resolve_ipv4 "$override" || true)"
             fi
+        else
+            msg_warn "No transport address is available. Remote commands will remain unavailable until DNS is repaired or an override is selected."
         fi
     fi
 
-    msg_success "Remote target: ${REMOTE_TARGET_DNS:-$REMOTE_TARGET_ACCOUNT} (${REMOTE_TARGET_OS:-unknown})"
-    remote_ops_audit "target-select" "OK" "os=${REMOTE_TARGET_OS:-unknown}; ip=${REMOTE_TARGET_IP:-unresolved}; override=${REMOTE_TARGET_HOST_OVERRIDE:-none}"
+    remote_prompt_endpoint_family
+    detected="$(remote_target_kind)"
+
+    msg_success "Remote target: ${REMOTE_TARGET_DNS:-$REMOTE_TARGET_ACCOUNT} (family=${detected}; AD hint=${REMOTE_TARGET_OS:-unknown})"
+    remote_ops_audit "target-select" "OK" "family=$detected; os=${REMOTE_TARGET_OS:-unknown}; ip=${REMOTE_TARGET_IP:-unresolved}; override=${REMOTE_TARGET_HOST_OVERRIDE:-none}"
 }
 
 remote_ensure_target() {
-    [[ -n "$REMOTE_TARGET_ACCOUNT" ]] && return 0
-    remote_select_target
+    if [[ -z "$REMOTE_TARGET_ACCOUNT" ]]; then
+        remote_select_target || return 1
+    fi
+    remote_prompt_endpoint_family
 }
 
 remote_target_kind() {
     local os="${REMOTE_TARGET_OS,,}" host="" p22=0 p445=0 p5985=0 p5986=0
+
+    case "${REMOTE_TARGET_KIND_OVERRIDE:-}" in
+        linux|windows)
+            printf '%s' "$REMOTE_TARGET_KIND_OVERRIDE"
+            return 0
+            ;;
+    esac
+
     if [[ "$os" == *windows* ]]; then
         printf 'windows'
         return 0
@@ -12219,17 +12237,38 @@ remote_target_kind() {
 
     if (( p5985 == 1 || p5986 == 1 )); then
         printf 'windows'
-    elif (( p22 == 1 && p445 == 0 )); then
+    elif (( p22 == 1 )); then
         printf 'linux'
-    elif (( p445 == 1 && p22 == 0 )); then
+    elif (( p445 == 1 )); then
         printf 'windows'
-    elif (( p22 == 1 && p445 == 1 )); then
-        # With no AD OS metadata, SSH + no WinRM is more commonly a Linux
-        # endpoint running Samba than a Windows host with OpenSSH enabled.
-        printf 'linux'
     else
         printf 'unknown'
     fi
+}
+
+remote_prompt_endpoint_family() {
+    local detected="" choice=""
+    detected="$(remote_target_kind)"
+    [[ "$detected" != "unknown" ]] && return 0
+
+    msg_warn "Endpoint family could not be inferred from AD metadata or reachable management ports."
+    msg_info "Linux computer objects created by realmd/adcli often do not publish operatingSystem metadata."
+    printf '  [1] Linux / Unix endpoint\n'
+    printf '  [2] Windows endpoint\n'
+    printf '  [0] Keep unknown\n'
+    choice="$(ask 'Endpoint family' '0')"
+
+    case "$choice" in
+        1|l|L|linux|Linux)
+            REMOTE_TARGET_KIND_OVERRIDE="linux"
+            ;;
+        2|w|W|windows|Windows)
+            REMOTE_TARGET_KIND_OVERRIDE="windows"
+            ;;
+        *)
+            REMOTE_TARGET_KIND_OVERRIDE=""
+            ;;
+    esac
 }
 
 remote_target_host() {
@@ -12342,7 +12381,9 @@ remote_show_readiness() {
             && result PASS "Linux control path" "SSH available" "remote operations" \
             || result WARN "Linux control path" "SSH closed" "enable sshd with delegated sudo policy"
     else
-        result WARN "Endpoint family" "unknown" "review AD operatingSystem and transport"
+        result WARN "Endpoint family" "unknown" "select the target again and set Linux/Windows explicitly"
+        [[ "$port22" == "open" ]] || msg_info "Linux remote operations require OpenSSH server on the endpoint and TCP/22 reachable from this DC."
+        [[ -n "${REMOTE_TARGET_IP:-}" || -n "${REMOTE_TARGET_HOST_OVERRIDE:-}" ]] ||             msg_info "The endpoint has no usable A record/address; DNS registration or a manual IPv4 override is required."
     fi
 
     remote_ops_audit "readiness" "OK" "ssh=$port22 smb=$port445 winrm=$port5985/$port5986"
@@ -12752,9 +12793,11 @@ remote_ops_menu() {
     while true; do
         (( MENU_MAIN_REQUESTED )) && return 0
 
-        local target="none selected"
-        [[ -n "$REMOTE_TARGET_ACCOUNT" ]] &&
-            target="${REMOTE_TARGET_DNS:-$REMOTE_TARGET_ACCOUNT} · ${REMOTE_TARGET_OS:-unknown}"
+        local target="none selected" family_hint=""
+        if [[ -n "$REMOTE_TARGET_ACCOUNT" ]]; then
+            family_hint="${REMOTE_TARGET_KIND_OVERRIDE:-${REMOTE_TARGET_OS:-unknown}}"
+            target="${REMOTE_TARGET_DNS:-$REMOTE_TARGET_ACCOUNT} · ${family_hint}"
+        fi
 
         ui_menu_screen "REMOTE OPERATIONS CENTER" "Target: $target"
         ui_workspace_pair "T" "Target / readiness" "$C_CYAN" "S" "Active sessions" "$C_BLUE"
