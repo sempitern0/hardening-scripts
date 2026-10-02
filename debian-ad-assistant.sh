@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 5.2.5-managed-rules
+# Version 5.2.6-ui-lang-cli-fix
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -45,10 +45,11 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.2.5-managed-rules"
+SCRIPT_VERSION="5.2.6-ui-lang-cli-fix"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
+UI_LANG="${DEBIAN_AD_LANG:-en}"
 
 STATE_DIR="/var/lib/debian-ad-assistant"
 LOG_DIR="/var/log/debian-ad-assistant"
@@ -200,6 +201,177 @@ command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 
 # ---------------------------------------------------------------------------
+# UI language
+# ---------------------------------------------------------------------------
+
+set_ui_language() {
+    case "${1,,}" in
+        en|es) UI_LANG="${1,,}" ;;
+        *)
+            printf 'Unsupported language: %s (expected en or es)\n' "$1" >&2
+            return 1
+            ;;
+    esac
+}
+
+toggle_ui_language() {
+    if [[ "$UI_LANG" == "en" ]]; then
+        UI_LANG="es"
+    else
+        UI_LANG="en"
+    fi
+}
+
+ui_t() {
+    local text="$1"
+    [[ "$UI_LANG" == "es" ]] || { printf '%s' "$text"; return 0; }
+
+    case "$text" in
+        "AD/DC CONSOLE") printf 'CONSOLA AD/DC' ;;
+        "Daily operations") printf 'Operaciones diarias' ;;
+        "Directory") printf 'Directorio' ;;
+        "Policy / GPO") printf 'Políticas / GPO' ;;
+        "Security") printf 'Seguridad' ;;
+        "Remote operations") printf 'Operaciones remotas' ;;
+        "Insights / events+IDS") printf 'Análisis / eventos+IDS' ;;
+        "Maintenance") printf 'Mantenimiento' ;;
+        "All modules") printf 'Todos los módulos' ;;
+        "Language / Idioma") printf 'Idioma / Language' ;;
+        "Exit / Back") printf 'Salir / Atrás' ;;
+        "Back") printf 'Atrás' ;;
+        "Main menu") printf 'Menú principal' ;;
+        "Workspace") printf 'Área de trabajo' ;;
+        "Select operation") printf 'Selecciona una operación' ;;
+        "Select module") printf 'Selecciona un módulo' ;;
+        "Select migration module") printf 'Selecciona un módulo de migración' ;;
+        "Select security operation") printf 'Selecciona una operación de seguridad' ;;
+        "Select dependency operation") printf 'Selecciona una operación de dependencias' ;;
+        "Select user") printf 'Selecciona un usuario' ;;
+        "Select group") printf 'Selecciona un grupo' ;;
+        "Select computer") printf 'Selecciona un equipo' ;;
+        "Select policy") printf 'Selecciona una política' ;;
+        "Select report") printf 'Selecciona un informe' ;;
+        "Select trust") printf 'Selecciona una relación de confianza' ;;
+        "Select interface") printf 'Selecciona una interfaz' ;;
+        "Operation") printf 'Operación' ;;
+        "AD admin account") printf 'Cuenta administradora de AD' ;;
+        "AD DNS domain") printf 'Dominio DNS de AD' ;;
+        "Target AD DNS domain (example newcorp.example)") printf 'Dominio DNS de AD destino (ejemplo newcorp.example)' ;;
+        "Target NetBIOS domain") printf 'Dominio NetBIOS destino' ;;
+        "NetBIOS domain") printf 'Dominio NetBIOS' ;;
+        "Short DNS hostname for the DC") printf 'Hostname DNS corto para el DC' ;;
+        "DC IPv4 address already assigned to AD interface") printf 'Dirección IPv4 del DC ya asignada a la interfaz AD' ;;
+        "Interface dedicated/preferred for Active Directory") printf 'Interfaz dedicada/preferida para Active Directory' ;;
+        "AD/NTP client network (CIDR)") printf 'Red de clientes AD/NTP (CIDR)' ;;
+        "SSH management source (CIDR)") printf 'Origen de administración SSH (CIDR)' ;;
+        "Upstream DNS forwarder") printf 'Forwarder DNS upstream' ;;
+        "Timezone") printf 'Zona horaria' ;;
+        "NTP pool/server") printf 'Pool/servidor NTP' ;;
+        "First delegated AD administrator account") printf 'Primera cuenta de administrador AD delegada' ;;
+        "User filter") printf 'Filtro de usuarios' ;;
+        "Computer filter") printf 'Filtro de equipos' ;;
+        "Group name") printf 'Nombre del grupo' ;;
+        "Display name") printf 'Nombre para mostrar' ;;
+        "Given name") printf 'Nombre' ;;
+        "Surname") printf 'Apellidos' ;;
+        "Mail address") printf 'Dirección de correo' ;;
+        "Unix home directory") printf 'Directorio home Unix' ;;
+        "Login shell") printf 'Shell de inicio de sesión' ;;
+        "GECOS/comment") printf 'GECOS/comentario' ;;
+        "RFC2307 UID number") printf 'Número UID RFC2307' ;;
+        "RFC2307 GID number (blank=Domain Users gidNumber)") printf 'Número GID RFC2307 (vacío=gidNumber de Domain Users)' ;;
+        "Service/unit name") printf 'Nombre del servicio/unidad' ;;
+        "Interface name") printf 'Nombre de interfaz' ;;
+        "Hours") printf 'Horas' ;;
+        "Value") printf 'Valor' ;;
+        "Time window") printf 'Ventana temporal' ;;
+        "User-visible maintenance reason") printf 'Motivo de mantenimiento visible para el usuario' ;;
+        "Message to interactive users") printf 'Mensaje para usuarios interactivos' ;;
+
+        "USER DIRECTORY") printf 'DIRECTORIO DE USUARIOS' ;;
+        "GROUP DIRECTORY") printf 'DIRECTORIO DE GRUPOS' ;;
+        "DOMAIN COMPUTERS") printf 'EQUIPOS DEL DOMINIO' ;;
+        "ACCESS & DELEGATION") printf 'ACCESO Y DELEGACIÓN' ;;
+        "GROUP POLICY CONTROL") printf 'CONTROL DE POLÍTICAS DE GRUPO' ;;
+        "DOMAIN MIGRATION CENTER") printf 'CENTRO DE MIGRACIÓN DE DOMINIO' ;;
+        "MIGRATION ASSESSMENT") printf 'EVALUACIÓN DE MIGRACIÓN' ;;
+        "DOMAIN TRUSTS") printf 'RELACIONES DE CONFIANZA' ;;
+        "DOMAIN DECOMMISSION / RESET") printf 'DESMANTELADO / RESET DEL DOMINIO' ;;
+        "SECURITY & BOOT RESILIENCE") printf 'SEGURIDAD Y RESILIENCIA DE ARRANQUE' ;;
+        "SAMBA & KERBEROS SECURITY") printf 'SEGURIDAD SAMBA Y KERBEROS' ;;
+        "DEPENDENCIES & PACKAGE LIFECYCLE") printf 'DEPENDENCIAS Y CICLO DE PAQUETES' ;;
+        "NETWORK IDS / SURICATA") printf 'IDS DE RED / SURICATA' ;;
+        "AD EVENT CENTER") printf 'CENTRO DE EVENTOS AD' ;;
+        "ALL MODULES / CLASSIC MAP") printf 'TODOS LOS MÓDULOS / MAPA CLÁSICO' ;;
+        "DAILY OPERATIONS") printf 'OPERACIONES DIARIAS' ;;
+        "DIRECTORY WORKSPACE") printf 'DIRECTORIO' ;;
+        "INSIGHTS & HEALTH") printf 'ANÁLISIS Y SALUD' ;;
+        "MAINTENANCE & LIFECYCLE") printf 'MANTENIMIENTO Y CICLO DE VIDA' ;;
+        "REMOTE OPERATIONS CENTER") printf 'OPERACIONES REMOTAS' ;;
+        "INSTALLED TERMINAL COMMANDS") printf 'COMANDOS DE TERMINAL INSTALADOS' ;;
+
+        "List users") printf 'Listar usuarios' ;;
+        "Inspect user") printf 'Inspeccionar usuario' ;;
+        "Create user") printf 'Crear usuario' ;;
+        "Edit user") printf 'Editar usuario' ;;
+        "Delete user") printf 'Eliminar usuario' ;;
+        "Reset password") printf 'Restablecer contraseña' ;;
+        "Enable user") printf 'Habilitar usuario' ;;
+        "Disable user") printf 'Deshabilitar usuario' ;;
+        "Unlock user") printf 'Desbloquear usuario' ;;
+        "List groups") printf 'Listar grupos' ;;
+        "Inspect group") printf 'Inspeccionar grupo' ;;
+        "Create group") printf 'Crear grupo' ;;
+        "Edit group") printf 'Editar grupo' ;;
+        "Delete group") printf 'Eliminar grupo' ;;
+        "List members") printf 'Listar miembros' ;;
+        "Add member") printf 'Añadir miembro' ;;
+        "Remove member") printf 'Eliminar miembro' ;;
+        "List accounts") printf 'Listar cuentas' ;;
+        "Inspect computer") printf 'Inspeccionar equipo' ;;
+        "Edit computer") printf 'Editar equipo' ;;
+        "Delete stale account") printf 'Eliminar cuenta obsoleta' ;;
+        "Domain backup") printf 'Backup del dominio' ;;
+        "Migration assessment") printf 'Evaluación de migración' ;;
+        "Show migration plan") printf 'Mostrar plan de migración' ;;
+        "Export source inventory") printf 'Exportar inventario de origen' ;;
+        "Computer readiness") printf 'Preparación de equipos' ;;
+        "Windows migration package") printf 'Paquete de migración Windows' ;;
+        "Linux migration package") printf 'Paquete de migración Linux' ;;
+        "Full security audit") printf 'Auditoría completa de seguridad' ;;
+        "Full AD/DC validation") printf 'Validación completa AD/DC' ;;
+        "Repair local resolver") printf 'Reparar resolver local' ;;
+        "Firewall policy") printf 'Política de firewall' ;;
+        "Time synchronization") printf 'Sincronización horaria' ;;
+        "Dependencies & packages") printf 'Dependencias y paquetes' ;;
+        "Install CLI commands") printf 'Instalar comandos CLI' ;;
+        "Installed CLI commands") printf 'Comandos CLI instalados' ;;
+        "Validate AD/DC health") printf 'Validar salud AD/DC' ;;
+        "Repair boot ordering") printf 'Reparar orden de arranque' ;;
+        "Boot persistence audit") printf 'Auditoría de persistencia de arranque' ;;
+        "Samba & Kerberos security") printf 'Seguridad Samba y Kerberos' ;;
+        "Network IDS / Suricata") printf 'IDS de red / Suricata' ;;
+        "AD Event Center") printf 'Centro de eventos AD' ;;
+        "Remote operations") printf 'Operaciones remotas' ;;
+        "Current findings") printf 'Hallazgos actuales' ;;
+        "Export evidence") printf 'Exportar evidencias' ;;
+        "Validate controller") printf 'Validar controlador' ;;
+        "Security audit") printf 'Auditoría de seguridad' ;;
+        "CLI commands") printf 'Comandos CLI' ;;
+        "Dependencies") printf 'Dependencias' ;;
+        "Events / activity") printf 'Eventos / actividad' ;;
+        "Suricata IDS") printf 'IDS Suricata' ;;
+        "Groups") printf 'Grupos' ;;
+        "Users") printf 'Usuarios' ;;
+        "Computers") printf 'Equipos' ;;
+        "Group Policy") printf 'Políticas de grupo' ;;
+        "Migration") printf 'Migración' ;;
+        "Domain reset") printf 'Reset del dominio' ;;
+        *) printf '%s' "$text" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
 # Professional console UI
 # ---------------------------------------------------------------------------
 
@@ -258,7 +430,7 @@ ui_context_panel() {
     iface="${AD_IFACE:-n/a}"
     admin="${ADMIN_USER:-not-selected}"
     session="local"
-    current_date="$(date +'%Y-%m-%d')"
+    current_date="$(date +'%Y-%m-%d' %H:%M)"
     [[ $REMOTE_SESSION -eq 1 ]] && session="SSH ${SSH_CLIENT_IP:-unknown}"
 
     printf '  %b%-24s%b  %-28s  %s\n' \
@@ -312,7 +484,8 @@ ui_context_panel() {
 }
 
 ui_menu_screen() {
-    local title="$1" subtitle="${2:-}"
+    local title subtitle="${2:-}"
+    title="$(ui_t "$1")"
     ui_clear
     ui_brand_compact
     ui_rule
@@ -325,8 +498,10 @@ ui_menu_screen() {
 
 
 ui_workspace_pair() {
-    local k1="$1" t1="$2" c1="${3:-$C_CYAN}"
-    local k2="${4:-}" t2="${5:-}" c2="${6:-$C_CYAN}"
+    local k1="$1" t1 c1="${3:-$C_CYAN}"
+    local k2="${4:-}" t2 c2="${6:-$C_CYAN}"
+    t1="$(ui_t "$2")"
+    t2="$(ui_t "${5:-}")"
 
     printf '  %b[%s]%b %b%-27s%b' \
         "$c1" "$k1" "$C_RESET" "$C_BOLD" "$t1" "$C_RESET"
@@ -348,7 +523,8 @@ ui_listener_badge() {
 }
 
 ui_menu_item() {
-    local key="$1" title="$2" description="$3" colour="${4:-$C_CYAN}"
+    local key="$1" title description="$3" colour="${4:-$C_CYAN}"
+    title="$(ui_t "$2")"
     printf '  %b[%2s]%b  %b%-29s%b %b%s%b\n' \
         "$C_DIM" "$key" "$C_RESET" \
         "$colour" "$title" "$C_RESET" \
@@ -368,7 +544,11 @@ ui_pause() {
     [[ $TTY_MODE -eq 1 ]] || return 0
     printf '\n'
     ui_rule
-    read -r -p "Press [ENTER] to continue..." _ <"$INPUT_FD" || true
+    if [[ "$UI_LANG" == "es" ]]; then
+        read -r -p "Pulsa [ENTER] para continuar..." _ <"$INPUT_FD" || true
+    else
+        read -r -p "Press [ENTER] to continue..." _ <"$INPUT_FD" || true
+    fi
 }
 
 msg_info()    { printf '%b[INFO]%b %s\n' "$C_CYAN" "$C_RESET" "$*" >&2; }
@@ -454,14 +634,23 @@ step() {
 }
 
 confirm() {
-    local prompt="$1" default="${2:-N}" answer
+    local prompt default="${2:-N}" answer
+    prompt="$(ui_t "$1")"
     while true; do
         if [[ "$default" == "Y" ]]; then
-            printf '%b?%b %s %b[Y/n]%b: ' "$C_CYAN" "$C_RESET" "$prompt" "$C_DIM" "$C_RESET" >&2
+            if [[ "$UI_LANG" == "es" ]]; then
+                printf '%b?%b %s %b[S/n]%b: ' "$C_CYAN" "$C_RESET" "$prompt" "$C_DIM" "$C_RESET" >&2
+            else
+                printf '%b?%b %s %b[Y/n]%b: ' "$C_CYAN" "$C_RESET" "$prompt" "$C_DIM" "$C_RESET" >&2
+            fi
             read -r answer <"$INPUT_FD" || return 1
             answer="${answer:-Y}"
         else
-            printf '%b?%b %s %b[y/N]%b: ' "$C_CYAN" "$C_RESET" "$prompt" "$C_DIM" "$C_RESET" >&2
+            if [[ "$UI_LANG" == "es" ]]; then
+                printf '%b?%b %s %b[s/N]%b: ' "$C_CYAN" "$C_RESET" "$prompt" "$C_DIM" "$C_RESET" >&2
+            else
+                printf '%b?%b %s %b[y/N]%b: ' "$C_CYAN" "$C_RESET" "$prompt" "$C_DIM" "$C_RESET" >&2
+            fi
             read -r answer <"$INPUT_FD" || return 1
             answer="${answer:-N}"
         fi
@@ -469,7 +658,11 @@ confirm() {
             Y|YES|S|SI|SÍ) return 0 ;;
             N|NO) return 1 ;;
         esac
-        msg_warn "Please answer yes or no."
+        if [[ "$UI_LANG" == "es" ]]; then
+            msg_warn "Responde sí o no."
+        else
+            msg_warn "Please answer yes or no."
+        fi
     done
 }
 
@@ -489,7 +682,8 @@ confirm_high_risk() {
 }
 
 ask() {
-    local prompt="$1" default="${2:-}" answer
+    local prompt default="${2:-}" answer
+    prompt="$(ui_t "$1")"
     if [[ -n "$default" ]]; then
         printf '%b›%b %s %b[%s]%b: ' "$C_CYAN" "$C_RESET" "$prompt" "$C_DIM" "$default" "$C_RESET" >&2
         read -r answer <"$INPUT_FD" || return 1
@@ -530,6 +724,7 @@ Usage:
   sudo bash $0 --events
   sudo bash $0 --install-cli
   sudo bash $0 --cli-info
+  sudo bash $0 --lang en|es
   sudo bash $0 --no-color
   sudo bash $0 --help
 
@@ -602,6 +797,12 @@ parse_args() {
             --ids-rules-update) MODE="ids-rules-update" ;;
             --install-cli) MODE="install-cli" ;;
             --cli-info|--tools) MODE="cli-info" ;;
+            --lang)
+                shift
+                (($#)) || { printf 'Missing value for --lang (en|es).\n' >&2; exit 2; }
+                set_ui_language "$1" || exit 2
+                ;;
+            --lang=*) set_ui_language "${1#*=}" || exit 2 ;;
             --no-color) FORCE_NO_COLOR=1 ;;
             --help|-h) usage; exit 0 ;;
             *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
@@ -12668,6 +12869,7 @@ manage_menu() {
         ui_workspace_pair "P" "Policy / GPO" "$C_MAGENTA" "S" "Security" "$C_RED"
         ui_workspace_pair "R" "Remote operations" "$C_BLUE" "I" "Insights / events+IDS" "$C_YELLOW"
         ui_workspace_pair "M" "Maintenance" "$C_CYAN" "A" "All modules" "$C_DIM"
+        ui_menu_item "L" "Language / Idioma" "English / Español · current=${UI_LANG^^}" "$C_MAGENTA"
         ui_menu_root_exit
         ui_rule
 
@@ -12682,6 +12884,7 @@ manage_menu() {
             I|6) insights_workspace_menu ;;
             M|7) maintenance_workspace_menu ;;
             A|8) manage_all_modules_menu ;;
+            L) toggle_ui_language ;;
             0) return 0 ;;
             *) msg_warn "Invalid workspace."; ui_pause ;;
         esac
