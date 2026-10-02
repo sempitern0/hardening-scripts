@@ -45,7 +45,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.3.3-managed-linux-remote-access"
+SCRIPT_VERSION="5.4.0-operations-quality-polish"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -100,6 +100,11 @@ EVENT_MAX_ROWS=200
 EVENT_EXPORT_MAX_ROWS=5000
 EVENT_MAX_BYTES=$((5 * 1024 * 1024))
 EVENT_KEEP_FILES=5
+
+DOMAIN_REPORT_DIR="${STATE_DIR}/reports/domain"
+DOMAIN_REPORT_SERVICE="/etc/systemd/system/debian-ad-domain-daily.service"
+DOMAIN_REPORT_TIMER="/etc/systemd/system/debian-ad-domain-daily.timer"
+DOMAIN_REPORT_KEEP_DAYS=90
 
 RUN_ROOT=""
 LOG_FILE=""
@@ -808,6 +813,7 @@ parse_args() {
             --remote|--remote-ops|--remote-control) MODE="remote" ;;
             --events|--event-center|--activity) MODE="events" ;;
             --ids-daily) MODE="ids-daily" ;;
+            --domain-daily) MODE="domain-daily" ;;
             --ids-rules-update) MODE="ids-rules-update" ;;
             --install-cli) MODE="install-cli" ;;
             --cli-info|--tools) MODE="cli-info" ;;
@@ -881,8 +887,8 @@ init_runtime() {
     BACKUP_DIR="${RUN_ROOT}/backup"
     DOMAIN_BACKUP_DIR="${RUN_ROOT}/domain-backup"
 
-    mkdir -p "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR" "$MIGRATION_DIR" "$REMOTE_OPS_DIR" "$REMOTE_OPS_EVIDENCE_DIR" "$EVENT_STATE_DIR" "$EVENT_REPORT_DIR" "$EVENT_LOG_DIR"
-    chmod 700 "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_BUILTIN_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR" "$MIGRATION_DIR" "$REMOTE_OPS_DIR" "$REMOTE_OPS_EVIDENCE_DIR" "$EVENT_STATE_DIR" "$EVENT_REPORT_DIR" "$EVENT_LOG_DIR"
+    mkdir -p "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR" "$MIGRATION_DIR" "$REMOTE_OPS_DIR" "$REMOTE_OPS_EVIDENCE_DIR" "$EVENT_STATE_DIR" "$EVENT_REPORT_DIR" "$EVENT_LOG_DIR" "$DOMAIN_REPORT_DIR"
+    chmod 700 "$STATE_DIR" "$LOG_DIR" "$RUN_ROOT" "$BACKUP_DIR" "$DOMAIN_BACKUP_DIR" "$GPO_DIR" "$GPO_BUILTIN_DIR" "$GPO_WINDOWS_DIR" "$GPO_CUSTOM_DIR" "$MIGRATION_DIR" "$REMOTE_OPS_DIR" "$REMOTE_OPS_EVIDENCE_DIR" "$EVENT_STATE_DIR" "$EVENT_REPORT_DIR" "$EVENT_LOG_DIR" "$DOMAIN_REPORT_DIR"
     touch "$LOG_FILE" "$REPORT_FILE"
     chmod 600 "$LOG_FILE" "$REPORT_FILE"
 
@@ -10478,10 +10484,37 @@ def alert_action(signature, trusted):
         return "Check the source host, SMB client activity and whether a scanner/inventory job was running."
     return "Correlate with Operator overview, Event Center and endpoint logs before escalating."
 
+def classify_threat(signature, category=""):
+    low = f"{signature or ''} {category or ''}".lower()
+    if any(x in low for x in ("malware", "trojan", "command and control", "c2", "botnet", "ransom")):
+        return "Malware / command-and-control"
+    if any(x in low for x in ("exploit", "shellcode", "remote code", "code execution", "vulnerability")):
+        return "Exploit / vulnerability attempt"
+    if any(x in low for x in ("brute", "password", "credential", "logon", "authentication", "ntlm", "kerberos")):
+        return "Credential / authentication abuse"
+    if any(x in low for x in ("scan", "nmap", "probe", "recon", "sweep", "high-rate")):
+        return "Reconnaissance / scanning"
+    if any(x in low for x in ("external access", "inbound", "policy")):
+        return "Unexpected / policy-relevant access"
+    if any(x in low for x in ("applayer", "app-layer", "decode", "protocol-command")):
+        return "Protocol anomaly / malformed traffic"
+    return "Other signature match"
+
+def threat_priority(signature, category="", severity=3):
+    cls = classify_threat(signature, category)
+    try: sev = int(severity)
+    except Exception: sev = 3
+    if cls in {"Malware / command-and-control", "Exploit / vulnerability attempt"} or sev == 1:
+        return "HIGH"
+    if cls in {"Credential / authentication abuse", "Reconnaissance / scanning", "Unexpected / policy-relevant access"} or sev == 2:
+        return "REVIEW"
+    return "CONTEXT"
+
 files = [p for p in glob.glob(pattern) if os.path.isfile(p)]
 files.sort(key=lambda p: os.path.getmtime(p))
 
-events = Counter(); alert_sigs = Counter(); alert_src = Counter(); alert_sev = Counter()
+events = Counter(); alert_sigs = Counter(); alert_src = Counter(); alert_sev = Counter(); alert_actions = Counter()
+threat_classes = Counter(); threat_sources = Counter(); threat_src_class = defaultdict(Counter)
 dns_queries = 0; dns_nxdomain = 0; dns_query_names = Counter(); dns_sources = Counter()
 krb_encryption = Counter(); krb_msg_types = Counter(); krb_sources = Counter(); krb_clients = Counter()
 krb_errors = Counter(); krb_error_sources = Counter(); krb_weak = []; recent_krb_errors = deque(maxlen=80)
@@ -10552,12 +10585,14 @@ for path in files:
 
             if et == "alert":
                 a = ev.get("alert") or {}
-                inc(alert_sigs, a.get("signature")); inc(alert_src, ev.get("src_ip")); inc(alert_sev, a.get("severity"))
+                inc(alert_sigs, a.get("signature")); inc(alert_src, ev.get("src_ip")); inc(alert_sev, a.get("severity")); inc(alert_actions, a.get("action") or "unknown")
+                tclass = classify_threat(a.get("signature"), a.get("category", ""))
+                inc(threat_classes, tclass); inc(threat_sources, ev.get("src_ip")); threat_src_class[str(ev.get("src_ip") or "-")][tclass] += 1
                 recent_alerts.append({
                     "ts": ev.get("timestamp", ""), "src": ev.get("src_ip", "-"), "src_port": ev.get("src_port", "-"),
                     "dst": ev.get("dest_ip", "-"), "dst_port": ev.get("dest_port", "-"), "proto": ev.get("proto", "-"),
-                    "app": ev.get("app_proto", ""), "severity": a.get("severity", 3),
-                    "signature": a.get("signature", "Suricata alert"), "category": a.get("category", ""),
+                    "app": ev.get("app_proto", ""), "severity": a.get("severity", 3), "action": a.get("action", "unknown"),
+                    "signature": a.get("signature", "Suricata alert"), "category": a.get("category", ""), "threat_class": tclass,
                 })
 
             if et == "flow":
@@ -10715,6 +10750,47 @@ if view == "activity":
     print("\nTip: flow records are commonly emitted when a flow closes or times out, so a just-sent ping may not appear instantaneously.")
     sys.exit(0)
 
+if view == "threats":
+    print(f"INTRUSION ATTEMPT REVIEW — LAST {hours:g}H"); print("=" * 96)
+    total = sum(threat_classes.values())
+    blocked = sum(v for k, v in alert_actions.items() if str(k).lower() in {"blocked", "drop", "dropped", "reject", "rejected"})
+    print(f"Signature matches : {total}")
+    print(f"Prevented/blocked : {blocked}  (based on Suricata EVE action field)")
+    print(f"Observed/allowed  : {max(total-blocked, 0)}")
+    print("Note: a signature match is evidence to triage, not proof that an intrusion succeeded.")
+    print("\nATTEMPT CATEGORIES")
+    if threat_classes:
+        for name, count in threat_classes.most_common():
+            print(f"  {count:8d}  {name}")
+    else:
+        print("  No signature-based intrusion attempts were recorded in this window.")
+    print("\nTOP SOURCES")
+    if threat_sources:
+        for src, count in threat_sources.most_common(15):
+            classes = ", ".join(f"{k}={v}" for k,v in threat_src_class[src].most_common(3))
+            trust = "trusted" if is_trusted(src) else "external/untrusted"
+            print(f"  {count:8d}  {src:<39} {trust:<18} {classes}")
+    else:
+        print("  none")
+    print("\nRECENT ATTEMPTS — HUMAN TRIAGE")
+    rows = list(recent_alerts)[-40:]
+    if not rows:
+        print("  none")
+    else:
+        for row in reversed(rows):
+            prio = threat_priority(row['signature'], row.get('category',''), row.get('severity',3))
+            action = str(row.get('action') or 'unknown').upper()
+            trust = "trusted" if is_trusted(row['src']) else "external/untrusted"
+            service = service_name(row['proto'], row['dst_port'], row['app'])
+            print(f"[{prio}] {fmt_ts(row['ts'])}  {row['src']} -> {row['dst']}:{row['dst_port']}  {service}")
+            print(f"       Type    : {row.get('threat_class') or classify_threat(row['signature'], row.get('category',''))}")
+            print(f"       Action  : {action} | Source scope: {trust}")
+            print(f"       Evidence: {row['signature']}")
+            print(f"       Meaning : {explain_alert(row['signature'], row.get('category',''))}")
+            print(f"       Next    : {alert_action(row['signature'], is_trusted(row['src']))}")
+            print()
+    sys.exit(0)
+
 if view == "alerts-human":
     print(f"SURICATA ALERTS — OPERATOR VIEW — LAST {hours:g}H"); print("=" * 96); print_operator_alerts(40); sys.exit(0)
 
@@ -10794,6 +10870,30 @@ ids_recent_alerts() {
 ids_ad_intelligence() {
     local hours="${1:-24}"
     ids_eve_parser "$hours" ad
+}
+
+ids_threat_review() {
+    local hours="${1:-24}"
+    ids_eve_parser "$hours" threats
+}
+
+ids_prevention_posture() {
+    local exec="" mode="passive"
+    section "SURICATA IDS / IPS POSTURE"
+    exec="$(ids_vendor_execstart 2>/dev/null || true)"
+    if grep -Eq '(^|[[:space:]])(-q|--nfq|--nfqueue)([=[:space:]]|$)' <<<"$exec"; then
+        mode="inline / IPS-capable"
+        result WARN "Traffic enforcement" "$mode" "verify NFQUEUE path, fail-open/fail-closed policy and AD availability"
+    else
+        result PASS "Traffic enforcement" "passive IDS" "no assistant-managed packet blocking"
+    fi
+    printf '  %-26s %s\n' "Current posture" "$mode"
+    printf '  %-26s %s\n' "Managed policy" "Detection first; prevention is explicit and topology-dependent"
+    printf '\n'
+    printf 'The assistant deliberately does not turn this domain controller into an inline IPS with one click.\n'
+    printf 'For production blocking, place Suricata on a reviewed inline/NFQUEUE path or dedicated sensor, test\n'
+    printf 'fail-open behavior, and promote only well-understood signatures to drop/reject after observing them.\n'
+    printf '\nUse Threat review to see which attempts were observed and whether EVE records them as allowed/blocked.\n'
 }
 
 ids_choose_window() {
@@ -11100,45 +11200,46 @@ ids_menu() {
     while true; do
         (( MENU_MAIN_REQUESTED )) && return 0
 
-        ui_menu_screen "NETWORK IDS / SURICATA" \
-            "Optional passive network detection, multi-CIDR trusted scope, AD protocol telemetry and local daily reporting"
-        ui_menu_item "1" "IDS readiness assessment" "Packages, capture scope, interface and passive/inline posture"
-        ui_menu_item "2" "Install / repair Suricata" "Distribution packages only: suricata + suricata-update" "$C_GREEN"
-        ui_menu_item "3" "Configure passive IDS" "AF_PACKET on a selected interface; no packet blocking" "$C_GREEN"
-        ui_menu_item "4" "Sensor health" "Service, config test, rules, EVE freshness and packet-drop telemetry"
-        ui_menu_item "5" "Operator overview" "Plain-language activity, who contacted the DC, services and explained alerts"
-        ui_menu_item "6" "Recent alerts explained" "Plain-language signature meaning, endpoints, trust scope and next action"
-        ui_menu_item "7" "AD protocol intelligence" "Kerberos attempts/errors/sources, DNS activity, SMB dialects and NTLMSSP"
-        ui_menu_item "8" "Rule management" "Professional profile, managed feeds, custom sources/rules and automatic updates" "$C_GREEN"
-        ui_menu_item "9" "Daily local reports" "Generate/view reports or enable a systemd timer"
-        ui_menu_item "10" "Export evidence" "Config/health/summary bundle without raw EVE payload"
-        ui_menu_item "11" "Disable IDS integration" "Remove assistant config/timer; retain packages" "$C_RED"
-        ui_menu_item "12" "Trusted network scope" "Manage multiple legitimate HOME_NET CIDRs (LAN/VLAN/VPN)" "$C_CYAN"
-        ui_menu_item "13" "Connection activity" "Who connected to this DC, destination service, protocol and ICMP/ping telemetry" "$C_CYAN"
+        ui_menu_screen "NETWORK DETECTION / SURICATA" \
+            "Stable shortcuts: O overview · T threats · P IDS/IPS posture · S sensor · R rules · G reports"
+        ui_menu_item "O" "Operator overview" "Plain-language traffic, contacts, services and explained alerts" "$C_CYAN"
+        ui_menu_item "T" "Intrusion attempt review" "Filtered attack/recon/credential/exploit view with sources, actions and next steps" "$C_RED"
+        ui_menu_item "A" "Recent alerts explained" "Signature meaning, endpoints, trust scope and recommended triage"
+        ui_menu_item "P" "IDS / IPS posture" "Show passive vs inline enforcement posture and prevention guardrails" "$C_YELLOW"
+        ui_menu_item "S" "Sensor health" "Service, config, rules, EVE freshness and packet-drop telemetry" "$C_GREEN"
+        ui_menu_item "N" "Connection activity" "Who connected to the DC and which service/protocol was used" "$C_CYAN"
+        ui_menu_item "D" "AD protocol intelligence" "Kerberos, DNS, LDAP, SMB/NTLM and protocol errors"
+        ui_menu_item "R" "Rule management" "Professional feeds, custom rules and automatic updates" "$C_GREEN"
+        ui_menu_item "C" "Configure / repair IDS" "Install packages, configure passive capture or trusted networks" "$C_GREEN"
+        ui_menu_item "G" "Daily IDS reports" "Generate/view Suricata reports and configure timer"
+        ui_menu_item "E" "Export evidence" "Config/health/summary bundle without raw EVE payload"
+        ui_menu_item "X" "Disable IDS integration" "Remove assistant config/timer; retain packages" "$C_RED"
         ui_menu_exit
         ui_rule
 
         local choice hours report
-        choice="$(ask 'Select IDS operation' '1')"
-        case "$choice" in
-            1) ids_readiness; ui_pause ;;
-            2) ids_install_optional; ui_pause ;;
-            3) ids_configure_passive; ui_pause ;;
-            4) ids_sensor_health; ui_pause ;;
-            5)
-                hours="$(ids_choose_window)" || { ui_pause; continue; }
-                ids_operator_overview "$hours"; ui_pause
-                ;;
-            6)
-                hours="$(ids_choose_window)" || { ui_pause; continue; }
-                ids_operator_alerts "$hours"; ui_pause
-                ;;
-            7)
-                hours="$(ids_choose_window)" || { ui_pause; continue; }
-                ids_ad_intelligence "$hours"; ui_pause
-                ;;
-            8) ids_rule_management_menu ;;
-            9)
+        choice="$(ask 'Select IDS operation' 'O')"
+        case "${choice^^}" in
+            O|5) hours="$(ids_choose_window)" || { ui_pause; continue; }; ids_operator_overview "$hours"; ui_pause ;;
+            T) hours="$(ids_choose_window)" || { ui_pause; continue; }; ids_threat_review "$hours"; ui_pause ;;
+            A|6) hours="$(ids_choose_window)" || { ui_pause; continue; }; ids_operator_alerts "$hours"; ui_pause ;;
+            P|1) ids_prevention_posture; ui_pause ;;
+            S|4) ids_sensor_health; ui_pause ;;
+            N|13) hours="$(ids_choose_window)" || { ui_pause; continue; }; ids_connection_activity "$hours"; ui_pause ;;
+            D|7) hours="$(ids_choose_window)" || { ui_pause; continue; }; ids_ad_intelligence "$hours"; ui_pause ;;
+            R|8) ids_rule_management_menu ;;
+            C)
+                printf '\n  [1] Readiness assessment\n  [2] Install / repair Suricata\n  [3] Configure passive IDS\n  [4] Trusted network scope\n  [0] Cancel\n'
+                local config_choice
+                config_choice="$(ask 'Configuration operation' '1')"
+                case "$config_choice" in
+                    1) ids_readiness ;;
+                    2) ids_install_optional ;;
+                    3) ids_configure_passive ;;
+                    4) ids_manage_trusted_networks ;;
+                esac
+                ui_pause ;;
+            G|9)
                 printf '\n  [1] Generate report now\n  [2] View generated reports\n  [3] Enable/refresh daily timer\n  [4] Disable daily timer\n  [0] Cancel\n'
                 local daily_choice
                 daily_choice="$(ask 'Select report operation' '1')"
@@ -11146,20 +11247,15 @@ ids_menu() {
                     1) report="$(ids_generate_daily_report 24)"; printf '\nReport: %s\n' "$report" ;;
                     2) ids_show_reports ;;
                     3) ids_install_daily_timer ;;
-                    4)
-                        systemctl disable --now debian-ad-ids-daily.timer >/dev/null 2>&1 || true
-                        rm -f "$IDS_DAILY_TIMER" "$IDS_DAILY_SERVICE"
-                        systemctl daemon-reload
-                        result PASS "Daily IDS timer" "disabled" "manual reporting only"
-                        ;;
+                    4) systemctl disable --now debian-ad-ids-daily.timer >/dev/null 2>&1 || true; rm -f "$IDS_DAILY_TIMER" "$IDS_DAILY_SERVICE"; systemctl daemon-reload; result PASS "Daily IDS timer" "disabled" "manual reporting only" ;;
                 esac
-                ui_pause
-                ;;
-            10) ids_export_evidence; ui_pause ;;
-            11) ids_disable_integration; ui_pause ;;
+                ui_pause ;;
+            E|10) ids_export_evidence; ui_pause ;;
+            X|11) ids_disable_integration; ui_pause ;;
+            2) ids_install_optional; ui_pause ;;
+            3) ids_configure_passive; ui_pause ;;
             12) ids_manage_trusted_networks; ui_pause ;;
-            13) hours="$(ids_choose_window)" || { ui_pause; continue; }; ids_connection_activity "$hours"; ui_pause ;;
-            H|h) MENU_MAIN_REQUESTED=1; return 0 ;;
+            H) MENU_MAIN_REQUESTED=1; return 0 ;;
             0) return 0 ;;
             *) msg_warn "Invalid IDS operation."; ui_pause ;;
         esac
@@ -11197,6 +11293,192 @@ ids_daily_mode() {
         return 0
     fi
     ids_generate_daily_report 24 >/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# Daily domain health / security reporting
+# ---------------------------------------------------------------------------
+
+domain_report_prepare() {
+    mkdir -p "$DOMAIN_REPORT_DIR"
+    chmod 700 "$DOMAIN_REPORT_DIR"
+}
+
+domain_report_auth_failures_24h() {
+    journalctl --since '24 hours ago' -u samba-ad-dc.service --no-pager -o short-iso 2>/dev/null |
+        grep -Ei 'NT_STATUS_LOGON_FAILURE|authentication[^[:alnum:]]+fail|logon[^[:alnum:]]+fail|wrong password|KDC_ERR_[A-Z_]*(BAD|REVOKED|EXPIRED|LOCKED)|preauth[^[:alnum:]]+fail' || true
+}
+
+domain_generate_daily_report() {
+    domain_report_prepare
+    load_config || true
+    detect_samba_role
+    discover_network_topology || true
+    [[ "$SAMBA_ROLE" == "ad-dc" || "$SAMBA_ROLE" == "ad-dc-config" ]] && discover_existing_identity || true
+
+    local report="${DOMAIN_REPORT_DIR}/domain-report-$(date +%Y%m%d-%H%M%S).txt"
+    local samba_state chrony_state suricata_state failed_units auth_count srv_ldap srv_kerb
+    samba_state="$(safe_systemctl_state samba-ad-dc.service)"
+    chrony_state="$(safe_systemctl_state chrony.service)"
+    suricata_state="$(safe_systemctl_state suricata.service)"
+    failed_units="$(systemctl --failed --no-legend --plain 2>/dev/null || true)"
+    auth_count="$(domain_report_auth_failures_24h | wc -l | tr -d ' ')"
+    [[ "$auth_count" =~ ^[0-9]+$ ]] || auth_count=0
+    srv_ldap="$(dig +short SRV "_ldap._tcp.${DOMAIN:-invalid}" 2>/dev/null | head -n 5 || true)"
+    srv_kerb="$(dig +short SRV "_kerberos._tcp.${DOMAIN:-invalid}" 2>/dev/null | head -n 5 || true)"
+
+    {
+        printf 'DEBIAN AD ASSISTANT — DAILY DOMAIN HEALTH & SECURITY REPORT\n'
+        printf 'Generated : %s\n' "$(date -Is)"
+        printf 'Assistant : %s\n' "$SCRIPT_VERSION"
+        printf 'Host      : %s\n' "$(hostname -f 2>/dev/null || hostname)"
+        printf 'Domain    : %s\n' "${DOMAIN:-unknown}"
+        printf 'Realm     : %s\n' "${REALM:-unknown}"
+        printf 'DC        : %s / %s\n' "${DC_FQDN:-unknown}" "${DC_IP:-unknown}"
+        printf '\nEXECUTIVE STATUS\n================\n'
+        printf 'Samba AD/DC       : %s\n' "$samba_state"
+        printf 'Time service      : %s\n' "$chrony_state"
+        printf 'Suricata          : %s\n' "$suricata_state"
+        printf 'Auth failure cues : %s in journal pattern scan (24h)\n' "$auth_count"
+        if [[ -n "$failed_units" ]]; then
+            printf 'Failed units      : ATTENTION\n%s\n' "$failed_units"
+        else
+            printf 'Failed units      : none\n'
+        fi
+
+        printf '\nAD / DNS DISCOVERY\n==================\n'
+        printf 'LDAP SRV:\n%s\n' "${srv_ldap:-  unavailable}"
+        printf 'Kerberos SRV:\n%s\n' "${srv_kerb:-  unavailable}"
+        printf '\nListening AD service ports:\n'
+        ss -lntup 2>/dev/null | grep -E ':(53|88|389|445|464|636|3268|3269)([[:space:]]|$)' || printf '  No matching listeners found.\n'
+
+        printf '\nTIME / NETWORK QUALITY\n======================\n'
+        command_exists chronyc && chronyc tracking 2>/dev/null || printf 'chronyc tracking unavailable\n'
+        printf '\nDefault route:\n'; ip route show default 2>/dev/null || true
+        if [[ -n "${AD_IFACE:-}" ]]; then
+            printf '\nInterface counters (%s):\n' "$AD_IFACE"
+            ip -s link show dev "$AD_IFACE" 2>/dev/null || true
+        fi
+        printf '\nResolver:\n'; resolvectl status 2>/dev/null | sed -n '1,80p' || cat /etc/resolv.conf 2>/dev/null || true
+
+        printf '\nAUTHENTICATION / ACCESS SIGNALS (24H)\n=====================================\n'
+        if (( auth_count > 0 )); then
+            domain_report_auth_failures_24h | tail -n 40
+        else
+            printf 'No matching authentication-failure cues found in the Samba journal scan.\n'
+        fi
+
+        printf '\nSERVICE WARNINGS / ERRORS (24H)\n================================\n'
+        journalctl --since '24 hours ago' -p warning..alert --no-pager -o short-iso 2>/dev/null |
+            grep -E 'samba|winbind|named|dns|krb|ldap|chrony|suricata|network|sshd' | tail -n 100 || true
+
+        printf '\nSURICATA THREAT REVIEW (24H)\n============================\n'
+        if [[ -f "${IDS_EVE_DIR}/eve.json" ]]; then
+            ids_threat_review 24 || true
+            printf '\nSURICATA SENSOR SUMMARY\n=======================\n'
+            ids_summary 24 || true
+        else
+            printf 'Suricata EVE telemetry is not available.\n'
+        fi
+
+        printf '\nHUMAN ATTENTION QUEUE\n=====================\n'
+        local attention=0
+        if [[ "$samba_state" != "active" ]]; then printf '  - HIGH: Samba AD/DC is not active.\n'; attention=1; fi
+        if [[ -n "$failed_units" ]]; then printf '  - REVIEW: systemd reports failed units.\n'; attention=1; fi
+        if (( auth_count >= 10 )); then printf '  - REVIEW: repeated authentication-failure cues (%s) in 24h.\n' "$auth_count"; attention=1; fi
+        [[ -n "$srv_ldap" && -n "$srv_kerb" ]] || { printf '  - REVIEW: AD DNS SRV discovery is incomplete.\n'; attention=1; }
+        if (( attention == 0 )); then printf '  - No automatic blocker or high-volume warning crossed the report thresholds.\n'; fi
+        printf '\nInterpretation note: this report prioritizes operator triage. A warning is a prompt to inspect evidence, not proof of compromise.\n'
+    } >"$report"
+
+    chmod 600 "$report"
+    find "$DOMAIN_REPORT_DIR" -maxdepth 1 -type f -name 'domain-report-*.txt' -mtime "+${DOMAIN_REPORT_KEEP_DAYS}" -delete 2>/dev/null || true
+    event_emit INFO reporting domain-daily PASS "" "daily domain health/security report generated: $report" || true
+    printf '%s\n' "$report"
+}
+
+domain_show_daily_reports() {
+    domain_report_prepare
+    local -a files=()
+    mapfile -t files < <(find "$DOMAIN_REPORT_DIR" -maxdepth 1 -type f -name 'domain-report-*.txt' -printf '%T@\t%p\n' 2>/dev/null | sort -t $'\t' -k1,1nr | cut -f2- | head -n 60)
+    ((${#files[@]})) || { msg_info "No daily domain reports have been generated yet."; return 0; }
+    printf '\n%bDAILY DOMAIN REPORTS%b\n' "$C_BOLD" "$C_RESET"
+    local i choice selected
+    for i in "${!files[@]}"; do printf '  [%2d] %s\n' "$((i+1))" "$(basename -- "${files[$i]}")"; done
+    printf '  [0 ] Cancel\n'
+    choice="$(ask 'Select report' '1')"
+    [[ "$choice" =~ ^[0-9]+$ ]] || return 0
+    (( choice >= 1 && choice <= ${#files[@]} )) || return 0
+    selected="${files[$((choice-1))]}"
+    [[ -r "$selected" ]] || { msg_warn "Report is not readable: $selected"; return 1; }
+    if command_exists less; then less -R -- "$selected"; else cat -- "$selected"; fi
+}
+
+domain_install_daily_timer() {
+    domain_report_prepare
+    local target="/usr/local/libexec/debian-ad-assistant" when
+    if [[ ! -x "$target" ]]; then
+        msg_info "Daily reporting needs the stable installed assistant path."
+        confirm "Install/refresh ad-* CLI commands first?" Y || return 1
+        install_cli_commands
+    fi
+    when="$(ask 'Daily domain report time (HH:MM)' '07:15')"
+    [[ "$when" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || { msg_warn "Invalid time. Expected HH:MM."; return 1; }
+    cat >"$DOMAIN_REPORT_SERVICE" <<EOF
+[Unit]
+Description=Debian AD Assistant daily domain health and security report
+After=network-online.target samba-ad-dc.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${target} --domain-daily --no-color
+EOF
+    cat >"$DOMAIN_REPORT_TIMER" <<EOF
+[Unit]
+Description=Schedule Debian AD Assistant daily domain report
+
+[Timer]
+OnCalendar=*-*-* ${when}:00
+Persistent=true
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target
+EOF
+    chmod 644 "$DOMAIN_REPORT_SERVICE" "$DOMAIN_REPORT_TIMER"
+    systemctl daemon-reload
+    systemctl enable --now debian-ad-domain-daily.timer
+    result PASS "Daily domain report" "enabled at about $when; reports in $DOMAIN_REPORT_DIR" "persistent timer"
+}
+
+domain_daily_report_menu() {
+    while true; do
+        ui_menu_screen "DAILY DOMAIN REPORTING" "Readable daily AD health, security, authentication, network and operator-attention reports"
+        ui_menu_item "G" "Generate now" "Create a fresh 24-hour domain report" "$C_GREEN"
+        ui_menu_item "V" "View reports" "Browse saved reports (90-day local retention)" "$C_CYAN"
+        ui_menu_item "T" "Enable / refresh timer" "Schedule one report every day" "$C_GREEN"
+        ui_menu_item "X" "Disable timer" "Keep reports but stop automatic generation" "$C_YELLOW"
+        ui_menu_item "P" "Report path" "$DOMAIN_REPORT_DIR" "$C_DIM"
+        ui_menu_exit
+        ui_rule
+        local choice report
+        choice="$(ask 'Report operation' 'V')"
+        case "${choice^^}" in
+            G|1) report="$(domain_generate_daily_report)"; printf '\nReport: %s\n' "$report"; ui_pause ;;
+            V|2) domain_show_daily_reports; ui_pause ;;
+            T|3) domain_install_daily_timer; ui_pause ;;
+            X|4) systemctl disable --now debian-ad-domain-daily.timer >/dev/null 2>&1 || true; rm -f "$DOMAIN_REPORT_TIMER" "$DOMAIN_REPORT_SERVICE"; systemctl daemon-reload; result PASS "Daily domain report" "timer disabled; reports retained" "manual generation remains available"; ui_pause ;;
+            P) printf '\n%s\n' "$DOMAIN_REPORT_DIR"; ui_pause ;;
+            H) MENU_MAIN_REQUESTED=1; return 0 ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid report operation."; ui_pause ;;
+        esac
+    done
+}
+
+domain_daily_mode() {
+    domain_generate_daily_report >/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -11945,8 +12227,9 @@ security_hardening_menu() {
         ui_menu_item "7" "Full AD/DC validation" "Run DNS, Kerberos, LDAP, SMB, database and SYSVOL checks"
         ui_menu_item "8" "Repair local resolver" "Replace broken resolved stub with persistent Samba DNS /etc/resolv.conf" "$C_GREEN"
         ui_menu_item "9" "Samba & Kerberos security" "Protocol hardening, crypto readiness and signed domain time" "$C_GREEN"
-        ui_menu_item "10" "Network IDS / Suricata" "Passive network detection and AD protocol telemetry" "$C_GREEN"
+        ui_menu_item "10" "Network IDS / Suricata" "Detection, intrusion triage, IDS/IPS posture and AD protocol telemetry" "$C_GREEN"
         ui_menu_item "11" "AD Event Center" "Operational/audit timeline across assistant, AD/DC, auth and IDS" "$C_YELLOW"
+        ui_menu_item "12" "Daily domain reports" "Readable daily health/security report and attention queue" "$C_CYAN"
         ui_menu_exit
         ui_rule
         local choice
@@ -11963,6 +12246,7 @@ security_hardening_menu() {
             9) samba_kerberos_security_menu ;;
             10) ids_menu ;;
             11) event_center_menu ;;
+            12) domain_daily_report_menu ;;
             H|h) MENU_MAIN_REQUESTED=1; break ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
@@ -11978,6 +12262,7 @@ domain_admin_console() {
         ui_workspace_pair "C" "Computers" "$C_BLUE" "A" "Access / delegation" "$C_MAGENTA"
         ui_workspace_pair "P" "Group Policy" "$C_MAGENTA" "R" "Remote operations" "$C_BLUE"
         ui_workspace_pair "S" "Security" "$C_RED" "E" "Events / activity" "$C_YELLOW"
+        ui_workspace_pair "H" "Health / daily report" "$C_CYAN" "I" "Insights / threats" "$C_YELLOW"
         ui_workspace_pair "V" "Validate controller" "$C_GREEN" "B" "Domain backup" "$C_GREEN"
         ui_workspace_pair "M" "Migration" "$C_YELLOW"
         ui_menu_root_exit
@@ -11997,6 +12282,8 @@ domain_admin_console() {
             M|11) domain_migration_menu ;;
             R) remote_ops_menu ;;
             E) event_center_menu ;;
+            H) domain_daily_report_menu ;;
+            I) insights_workspace_menu ;;
             0) return 0 ;;
             *) msg_warn "Invalid daily operation."; ui_pause ;;
         esac
@@ -13536,21 +13823,23 @@ directory_workspace_menu() {
 insights_workspace_menu() {
     while true; do
         (( MENU_MAIN_REQUESTED )) && return 0
-        ui_menu_screen "INSIGHTS & HEALTH" "Current health, evidence and network detection"
-        ui_workspace_pair "V" "Validate AD/DC" "$C_GREEN" "A" "Security audit" "$C_CYAN"
-        ui_workspace_pair "I" "Suricata IDS" "$C_MAGENTA" "E" "Event Center" "$C_YELLOW"
+        ui_menu_screen "INSIGHTS & HEALTH" "Stable paths: I>V health · I>T threats · I>D daily report · I>E events · I>S Suricata"
+        ui_workspace_pair "V" "AD/DC health" "$C_GREEN" "T" "Threat review" "$C_RED"
+        ui_workspace_pair "D" "Daily reports" "$C_CYAN" "E" "Event Center" "$C_YELLOW"
+        ui_workspace_pair "S" "Suricata / network" "$C_MAGENTA" "A" "Security audit" "$C_CYAN"
         ui_workspace_pair "F" "Current findings" "$C_YELLOW"
         ui_menu_exit
         ui_rule
-        local choice
+        local choice hours
         choice="$(ask 'Insights module' 'V')"
         case "${choice^^}" in
             V|1) set_progress_plan 1; validate_ad || true; ui_pause ;;
-            A|2) set_progress_plan 2; audit_existing; audit_security_baseline; ui_pause ;;
-            I|3) ids_menu ;;
+            T) hours="$(ids_choose_window)" || { ui_pause; continue; }; ids_threat_review "$hours"; ui_pause ;;
+            D) domain_daily_report_menu ;;
             E) event_center_menu ;;
+            S|I|3) ids_menu ;;
+            A|2) set_progress_plan 2; audit_existing; audit_security_baseline; ui_pause ;;
             F|4) summary; ui_pause ;;
-            H) MENU_MAIN_REQUESTED=1; return 0 ;;
             0) return 0 ;;
             *) msg_warn "Invalid insights module."; ui_pause ;;
         esac
@@ -13615,6 +13904,7 @@ manage_all_modules_menu() {
         ui_menu_item "20" "Network IDS / Suricata" "Optional passive IDS, AD protocol telemetry and daily security summaries" "$C_GREEN"
         ui_menu_item "21" "Remote operations" "Cross-platform endpoint sessions, diagnostics and controlled power actions" "$C_BLUE"
         ui_menu_item "22" "AD Event Center" "Unified assistant, AD/DC, system, auth, Remote Ops and IDS timeline" "$C_YELLOW"
+        ui_menu_item "23" "Daily domain reports" "Daily AD health, security, authentication, network quality and attention queue" "$C_CYAN"
         ui_menu_root_exit
         ui_rule
         local choice
@@ -13652,6 +13942,7 @@ manage_all_modules_menu() {
             20) ids_menu ;;
             21) remote_ops_menu ;;
             22) event_center_menu ;;
+            23) domain_daily_report_menu ;;
             0) break ;;
             *) msg_warn "Invalid menu option."; ui_pause ;;
         esac
@@ -13662,7 +13953,7 @@ manage_all_modules_menu() {
 manage_menu() {
     while true; do
         MENU_MAIN_REQUESTED=0
-        ui_menu_screen "AD/DC CONSOLE" "Workspace navigation · letters are stable muscle-memory shortcuts"
+        ui_menu_screen "AD/DC CONSOLE" "Stable paths · O daily · D directory · P policy · S security · R remote · I insights · M maintenance"
         ui_workspace_pair "O" "Daily operations" "$C_GREEN" "D" "Directory" "$C_CYAN"
         ui_workspace_pair "P" "Policy / GPO" "$C_MAGENTA" "S" "Security" "$C_RED"
         ui_workspace_pair "R" "Remote operations" "$C_BLUE" "I" "Insights / events+IDS" "$C_YELLOW"
@@ -13816,6 +14107,7 @@ main() {
         remote) prepare_existing_ad_context; remote_ops_menu; save_config ;;
         events) prepare_event_context; event_center_menu ;;
         ids-daily) load_config || true; ids_daily_mode ;;
+        domain-daily) load_config || true; domain_daily_mode ;;
         ids-rules-update) load_config || true; ids_rule_update_mode ;;
         install-cli) install_cli_commands ;;
         cli-info) show_cli_commands ;;
