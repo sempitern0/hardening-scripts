@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.4.1-bounded-leave-diagnostics"
+SCRIPT_VERSION="1.4.2-ad-dns-registration"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -2026,6 +2026,119 @@ validate_sssd_identity_lookup() {
 }
 
 
+client_primary_ipv4() {
+    local iface="${1:-$ACTIVE_IFACE}" ip=""
+    [[ -n "$iface" ]] || return 1
+    ip="$(ip -4 -o addr show dev "$iface" scope global 2>/dev/null |
+        awk 'NR==1{split($4,a,"/"); print a[1]}')"
+    [[ -n "$ip" ]] || return 1
+    printf '%s' "$ip"
+}
+
+client_ad_fqdn() {
+    local domain="$1" host=""
+    host="$(hostnamectl --static 2>/dev/null || hostname)"
+    host="${host,,}"
+    if [[ "$host" == *.* ]]; then
+        printf '%s' "$host"
+    else
+        printf '%s.%s' "$host" "${domain,,}"
+    fi
+}
+
+update_ad_computer_metadata() {
+    local domain="$1" os_name="" os_version="" help=""
+    command_exists adcli || return 0
+    help="$(adcli update --help 2>&1 || true)"
+    grep -Fq -- '--os-name' <<<"$help" || return 0
+
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        os_name="${PRETTY_NAME:-${NAME:-Linux}}"
+        os_version="${VERSION_ID:-}"
+    else
+        os_name="Linux"
+    fi
+
+    local -a args=(update -D "$domain" "--os-name=$os_name")
+    [[ -n "$os_version" ]] && args+=("--os-version=$os_version")
+    if run_probe 60 "AD computer OS metadata update" adcli "${args[@]}" >/dev/null 2>&1; then
+        ok "AD computer object OS metadata updated: $os_name${os_version:+ $os_version}."
+    else
+        warn "Could not publish Linux OS metadata to the AD computer object; membership remains valid."
+    fi
+}
+
+register_client_ad_dns() {
+    local domain="$1" dns_csv="$2" fqdn="" ip="" dns_server="" realm="" machine_principal=""
+    fqdn="$(client_ad_fqdn "$domain")"
+    ip="$(client_primary_ipv4 "$ACTIVE_IFACE" || true)"
+    dns_server="$(dns_first "$dns_csv")"
+    realm="${JOIN_REALM_NAME:-${domain^^}}"
+
+    [[ -n "$ip" && -n "$fqdn" && -n "$dns_server" ]] || {
+        warn "Secure AD DNS registration skipped: client FQDN/IP/DNS server could not be determined."
+        return 0
+    }
+
+    if command_exists dig; then
+        local existing=""
+        existing="$(dig +time=2 +tries=1 @"$dns_server" "$fqdn" A +short 2>/dev/null | awk 'NR==1{print}')"
+        if [[ "$existing" == "$ip" ]]; then
+            ok "AD DNS A record already matches: $fqdn -> $ip."
+            return 0
+        fi
+    fi
+
+    if ! command_exists nsupdate; then
+        warn "nsupdate is unavailable; membership is valid but the Linux host A record was not registered automatically."
+        info "Install the distribution BIND DNS utilities or create ${fqdn} -> ${ip} in AD DNS."
+        return 0
+    fi
+
+    machine_principal="$(klist -k /etc/krb5.keytab 2>/dev/null |
+        awk -v r="$realm" 'toupper($0) ~ /\$@/ && toupper($0) ~ toupper("@" r) {print $NF; exit}')"
+    if [[ -z "$machine_principal" ]]; then
+        machine_principal="${JOIN_COMPUTER_NAME:-$(hostname -s | tr '[:lower:]' '[:upper:]')}\$@${realm}"
+    fi
+
+    local dns_ccache="${STATE_ROOT}/dns-register-${RUN_ID}"
+    rm -f -- "$dns_ccache"
+    if ! run_probe 60 "machine Kerberos ticket for secure DNS" \
+        kinit -k -t /etc/krb5.keytab -c "FILE:${dns_ccache}" "$machine_principal"; then
+        warn "Could not obtain a machine Kerberos ticket for secure DNS registration."
+        rm -f -- "$dns_ccache"
+        return 0
+    fi
+
+    local nslog="${LOG_ROOT}/${RUN_ID}-dns-register.log" rc=0
+    {
+        printf 'server %s\n' "$dns_server"
+        printf 'zone %s\n' "$domain"
+        printf 'update delete %s A\n' "$fqdn"
+        printf 'update add %s 300 A %s\n' "$fqdn" "$ip"
+        printf 'send\n'
+    } | KRB5CCNAME="FILE:${dns_ccache}" \
+        timeout --foreground --signal=TERM --kill-after=3s 60s nsupdate -g >"$nslog" 2>&1
+    rc=$?
+
+    command_exists kdestroy && kdestroy -c "FILE:${dns_ccache}" >/dev/null 2>&1 || true
+    rm -f -- "$dns_ccache"
+
+    if (( rc != 0 )); then
+        warn "Secure AD DNS update did not complete (rc=$rc). Membership is kept; see $nslog."
+        info "Linux clients do not always self-register DNS like Windows DHCP/DNS clients do."
+        return 0
+    fi
+
+    if command_exists dig && dig +time=3 +tries=2 @"$dns_server" "$fqdn" A +short 2>/dev/null | grep -Fxq "$ip"; then
+        ok "Secure AD DNS registration verified: $fqdn -> $ip."
+    else
+        warn "AD DNS update was submitted but the A record is not visible yet; verify DNS policy/replication."
+    fi
+}
+
 postjoin_acceptance() {
     local domain="$1" test_user="${2:-}" failures=0 rc=0 output=""
     printf '
@@ -2297,6 +2410,11 @@ join_domain_guided() {
     fi
 
     cleanup_private_ccache
+
+    # Best-effort publication after the machine account/keytab exist. Failure
+    # here never rolls back a valid AD membership.
+    update_ad_computer_metadata "$domain" || true
+    register_client_ad_dns "$domain" "$dns_csv" || true
 
     JOIN_TRANSACTION_COMMITTED=1
     JOIN_TRANSACTION_ACTIVE=0

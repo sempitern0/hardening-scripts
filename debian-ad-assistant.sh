@@ -45,7 +45,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.2.6-ui-lang-cli-fix"
+SCRIPT_VERSION="5.2.7-linux-endpoint-dns-awareness"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -171,6 +171,7 @@ REMOTE_TARGET_DNS=""
 REMOTE_TARGET_IP=""
 REMOTE_TARGET_OS=""
 REMOTE_SSH_USER=""
+REMOTE_TARGET_HOST_OVERRIDE=""
 
 KRB5_CACHE=""
 # Preserve the caller's cache hint for read-only diagnostics. The assistant still
@@ -5306,26 +5307,63 @@ select_domain_user() {
     done
 }
 
+ad_resolve_ipv4() {
+    local name="$1" ip=""
+    [[ -n "$name" ]] || return 1
+
+    ip="$(getent ahostsv4 "$name" 2>/dev/null | awk 'NR==1{print $1}' || true)"
+    if [[ -z "$ip" ]] && command_exists dig; then
+        ip="$(dig +time=2 +tries=1 @127.0.0.1 "$name" A +short 2>/dev/null |
+            awk '/^[0-9]+(\.[0-9]+){3}$/{print; exit}' || true)"
+    fi
+
+    [[ -n "$ip" ]] || return 1
+    printf '%s' "$ip"
+}
+
+normalize_ad_computer_dns_name() {
+    local short="$1" dns="$2"
+    if [[ -z "$dns" ]]; then
+        printf '%s.%s' "${short,,}" "$DOMAIN"
+    elif [[ "$dns" == *.* ]]; then
+        printf '%s' "${dns,,}"
+    else
+        printf '%s.%s' "${dns,,}" "$DOMAIN"
+    fi
+}
+
 domain_computer_inventory_tsv() {
-    local account short dns ip hint
+    local account short dns raw_dns ip hint ssh_ok smb_ok
     while IFS= read -r account; do
         [[ -n "$account" ]] || continue
         short="${account%\$}"
-        dns="$(
+        raw_dns="$(
             samba-tool computer show "$account" --attributes=dNSHostName 2>/dev/null |
             awk -F': ' '/dNSHostName:/{print $2;exit}' |
-            tr -d '\r' || true
+            tr -d '
+' || true
         )"
-        [[ -n "$dns" ]] || dns="${short,,}.${DOMAIN}"
-        ip="$(getent ahostsv4 "$dns" 2>/dev/null | awk 'NR==1{print $1}' || true)"
-        hint="NO_DNS"
+        dns="$(normalize_ad_computer_dns_name "$short" "$raw_dns")"
+        ip="$(ad_resolve_ipv4 "$dns" || true)"
+
+        hint="NO_A_RECORD"
         if [[ -n "$ip" ]]; then
-            hint="NO_445"
-            if command_exists timeout && timeout 1 bash -c "</dev/tcp/${ip}/445" >/dev/null 2>&1; then
+            ssh_ok=0
+            smb_ok=0
+            command_exists timeout && timeout 3 bash -c "</dev/tcp/${ip}/22" >/dev/null 2>&1 && ssh_ok=1
+            command_exists timeout && timeout 3 bash -c "</dev/tcp/${ip}/445" >/dev/null 2>&1 && smb_ok=1
+            if (( ssh_ok == 1 && smb_ok == 1 )); then
+                hint="SSH+SMB"
+            elif (( ssh_ok == 1 )); then
+                hint="SSH_OK"
+            elif (( smb_ok == 1 )); then
                 hint="SMB_OK"
+            else
+                hint="IP_ONLY"
             fi
         fi
-        printf '%s\t%s\t%s\t%s\n' "$account" "$dns" "${ip:--}" "$hint"
+        printf '%s	%s	%s	%s
+' "$account" "$dns" "${ip:--}" "$hint"
     done < <(samba-tool computer list 2>/dev/null | sort)
 }
 
@@ -12102,30 +12140,30 @@ remote_port_open() {
 }
 
 remote_target_context() {
-    local account="$1" output="" dns="" os="" short="" resolved="" ip=""
+    local account="$1" output="" dns="" raw_dns="" os="" short="" ip=""
     output="$(samba-tool computer show "$account" 2>/dev/null || true)"
     short="${account%\$}"
 
-    dns="$(awk -F': ' '
+    raw_dns="$(awk -F': ' '
         /^dNSHostName:/ && !seen { print $2; seen=1 }
     ' <<<"$output")"
     os="$(awk -F': ' '
         /^operatingSystem:/ && !seen { print $2; seen=1 }
     ' <<<"$output")"
 
-    [[ -n "$dns" ]] || dns="${short,,}.${DOMAIN}"
-    resolved="$(getent ahostsv4 "$dns" 2>/dev/null || true)"
-    ip="$(awk 'NR==1{print $1}' <<<"$resolved")"
+    dns="$(normalize_ad_computer_dns_name "$short" "$raw_dns")"
+    ip="$(ad_resolve_ipv4 "$dns" || true)"
 
-    printf '%s\t%s\t%s\t%s\n' "$account" "$dns" "${ip:--}" "${os:-unknown}"
+    printf '%s	%s	%s	%s
+' "$account" "$dns" "${ip:--}" "${os:-unknown}"
 }
 
 remote_select_target() {
-    local account="" row=""
+    local account="" row="" override=""
     account="$(select_domain_computer)" || return 1
     row="$(remote_target_context "$account")"
 
-    IFS=$'\t' read -r \
+    IFS=$'	' read -r \
         REMOTE_TARGET_ACCOUNT \
         REMOTE_TARGET_DNS \
         REMOTE_TARGET_IP \
@@ -12133,9 +12171,25 @@ remote_select_target() {
 
     [[ "$REMOTE_TARGET_IP" == "-" ]] && REMOTE_TARGET_IP=""
     REMOTE_SSH_USER=""
+    REMOTE_TARGET_HOST_OVERRIDE=""
+
+    if [[ -z "$REMOTE_TARGET_IP" ]]; then
+        msg_warn "No A record resolves for ${REMOTE_TARGET_DNS:-$REMOTE_TARGET_ACCOUNT}."
+        msg_info "Linux realmd/adcli clients may join AD successfully without automatically creating an A record."
+        msg_info "Remote operations can continue with an IPv4 address or another resolvable hostname."
+        override="$(ask 'Endpoint IPv4 / resolvable hostname override (blank to keep unresolved)' '')"
+        if [[ -n "$override" ]]; then
+            REMOTE_TARGET_HOST_OVERRIDE="$override"
+            if [[ "$override" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
+                REMOTE_TARGET_IP="$override"
+            else
+                REMOTE_TARGET_IP="$(ad_resolve_ipv4 "$override" || true)"
+            fi
+        fi
+    fi
 
     msg_success "Remote target: ${REMOTE_TARGET_DNS:-$REMOTE_TARGET_ACCOUNT} (${REMOTE_TARGET_OS:-unknown})"
-    remote_ops_audit "target-select" "OK" "${REMOTE_TARGET_OS:-unknown}"
+    remote_ops_audit "target-select" "OK" "os=${REMOTE_TARGET_OS:-unknown}; ip=${REMOTE_TARGET_IP:-unresolved}; override=${REMOTE_TARGET_HOST_OVERRIDE:-none}"
 }
 
 remote_ensure_target() {
@@ -12144,16 +12198,34 @@ remote_ensure_target() {
 }
 
 remote_target_kind() {
-    local os="${REMOTE_TARGET_OS,,}"
+    local os="${REMOTE_TARGET_OS,,}" host="" p22=0 p445=0 p5985=0 p5986=0
     if [[ "$os" == *windows* ]]; then
         printf 'windows'
+        return 0
     elif [[ "$os" == *linux* || "$os" == *ubuntu* || "$os" == *debian* ||
             "$os" == *red\ hat* || "$os" == *fedora* || "$os" == *rocky* ||
-            "$os" == *alma* || "$os" == *centos* ]]; then
+            "$os" == *alma* || "$os" == *centos* || "$os" == *suse* ]]; then
         printf 'linux'
-    elif remote_port_open "${REMOTE_TARGET_DNS:-$REMOTE_TARGET_IP}" 445; then
+        return 0
+    fi
+
+    host="$(remote_target_host)"
+    [[ -n "$host" ]] || { printf 'unknown'; return 0; }
+
+    remote_port_open "$host" 22   && p22=1
+    remote_port_open "$host" 445  && p445=1
+    remote_port_open "$host" 5985 && p5985=1
+    remote_port_open "$host" 5986 && p5986=1
+
+    if (( p5985 == 1 || p5986 == 1 )); then
         printf 'windows'
-    elif remote_port_open "${REMOTE_TARGET_DNS:-$REMOTE_TARGET_IP}" 22; then
+    elif (( p22 == 1 && p445 == 0 )); then
+        printf 'linux'
+    elif (( p445 == 1 && p22 == 0 )); then
+        printf 'windows'
+    elif (( p22 == 1 && p445 == 1 )); then
+        # With no AD OS metadata, SSH + no WinRM is more commonly a Linux
+        # endpoint running Samba than a Windows host with OpenSSH enabled.
         printf 'linux'
     else
         printf 'unknown'
@@ -12161,7 +12233,13 @@ remote_target_kind() {
 }
 
 remote_target_host() {
-    printf '%s' "${REMOTE_TARGET_DNS:-$REMOTE_TARGET_IP}"
+    if [[ -n "${REMOTE_TARGET_HOST_OVERRIDE:-}" ]]; then
+        printf '%s' "$REMOTE_TARGET_HOST_OVERRIDE"
+    elif [[ -n "${REMOTE_TARGET_IP:-}" ]]; then
+        printf '%s' "$REMOTE_TARGET_IP"
+    else
+        printf '%s' "${REMOTE_TARGET_DNS:-}"
+    fi
 }
 
 remote_ensure_ssh_user() {
