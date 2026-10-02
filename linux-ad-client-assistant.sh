@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # linux-ad-client-assistant.sh
-# Version 1.3.3-sssd-compat-identity-lookup
+# Version 1.4.0-diagnostics-timeout-hardening
 #
 # Reversible Active Directory client join assistant for Linux.
 #
@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.3.3-sssd-compat-identity-lookup"
+SCRIPT_VERSION="1.4.0-diagnostics-timeout-hardening"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -246,6 +246,51 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Bound non-interactive probes so a broken NSS/SSSD/DNS path never leaves the
+# operator staring at a frozen terminal.  Mutating membership operations are
+# intentionally NOT wrapped here because killing them mid-commit can create an
+# ambiguous AD state.
+run_probe() {
+    local seconds="$1" label="$2"
+    shift 2
+    local rc=0
+
+    if command_exists timeout; then
+        timeout --foreground --signal=TERM --kill-after=3s "${seconds}s" "$@"
+        rc=$?
+    else
+        "$@"
+        rc=$?
+    fi
+
+    if (( rc == 124 || rc == 137 )); then
+        warn "$label timed out after ${seconds}s; continuing diagnostics instead of blocking the console."
+        return 124
+    fi
+    return "$rc"
+}
+
+capture_probe() {
+    local seconds="$1" label="$2"
+    shift 2
+    local output="" rc=0
+
+    if command_exists timeout; then
+        output="$(timeout --foreground --signal=TERM --kill-after=3s "${seconds}s" "$@" 2>&1)"
+        rc=$?
+    else
+        output="$("$@" 2>&1)"
+        rc=$?
+    fi
+
+    printf '%s' "$output"
+    if (( rc == 124 || rc == 137 )); then
+        log "WARN $label timed out after ${seconds}s"
+        return 124
+    fi
+    return "$rc"
+}
+
 
 valid_dns_domain() {
     local name="$1" label=""
@@ -358,7 +403,7 @@ incomplete_sssd_residue_present() {
     # itself is not an error condition.
     local realms=""
     if command_exists realm; then
-        realms="$(realm list --name-only 2>/dev/null || true)"
+        realms="$(capture_probe 10 "realm membership query" realm list --name-only || true)"
         [[ -z "$realms" ]] || return 1
     fi
 
@@ -375,7 +420,7 @@ previous_join_evidence() {
     local snap="${1:-}" domain="${2:-}"
     local realms="" trust="unknown" keytab="no" sssd_conf="no" confdb="no" kerberos_realm=""
 
-    command_exists realm && realms="$(realm list --name-only 2>/dev/null || true)"
+    command_exists realm && realms="$(capture_probe 10 "realm membership query" realm list --name-only || true)"
 
     if command_exists klist && [[ -s /etc/krb5.keytab ]]; then
         kerberos_realm="$(klist -k /etc/krb5.keytab 2>/dev/null | awk '''/^[[:space:]]*[0-9]+[[:space:]]+[^[:space:]]+@/{p=$NF; sub(/^.*@/,"",p); if(p!=""){print p; exit}}''')"
@@ -388,7 +433,7 @@ previous_join_evidence() {
     kerberos_machine_identity_present && keytab="yes"
 
     if command_exists adcli && [[ -n "$domain" ]]; then
-        if adcli testjoin -D "$domain" >/dev/null 2>&1; then
+        if run_probe 20 "adcli machine trust validation" adcli testjoin -D "$domain" >/dev/null 2>&1; then
             trust="valid"
         else
             trust="not-validated"
@@ -1664,7 +1709,7 @@ validate_domain_dns() {
     fi
 
     local discovery=""
-    discovery="$(realm discover --server-software=active-directory "$domain" 2>&1 || true)"
+    discovery="$(capture_probe 20 "realmd discovery for $domain" realm discover --server-software=active-directory "$domain" || true)"
     if grep -Fiq 'server-software: active-directory' <<<"$discovery"; then
         ok "realmd discovered Active Directory."
         JOIN_REALM_NAME="$(awk -F': *' 'tolower($1) ~ /^[[:space:]]*realm-name$/ {print $2; exit}' <<<"$discovery")"
@@ -1795,7 +1840,7 @@ repair_sssd_config_compatibility() {
     [[ -s "$conf" ]] || return 0
 
     local check=""
-    check="$(sssctl config-check 2>&1 || true)"
+    check="$(capture_probe 10 "SSSD configuration validation" sssctl config-check || true)"
     if ! grep -Fq "Attribute 'config_file_version' is not allowed in section 'sssd'" <<<"$check"; then
         return 0
     fi
@@ -1822,39 +1867,51 @@ repair_sssd_config_compatibility() {
     chown --reference="$conf" "$tmp" 2>/dev/null || true
     mv -f -- "$tmp" "$conf" || return 1
 
-    if sssctl config-check >/dev/null 2>&1; then
+    if run_probe 10 "SSSD configuration validation" sssctl config-check >/dev/null 2>&1; then
         ok "SSSD compatibility repair succeeded; configuration validation now passes."
         return 0
     fi
 
     err "SSSD still reports configuration errors after removing config_file_version."
-    sssctl config-check 2>&1 | sed 's/^/  /' || true
+    capture_probe 10 "SSSD configuration validation" sssctl config-check 2>&1 | sed 's/^/  /' || true
     return 1
 }
 
 validate_sssd_identity_lookup() {
     local input="$1" domain="$2"
     local -a candidates=()
-    local candidate=""
+    local candidate="" rc=0
 
     [[ -n "$input" ]] || return 0
     candidates+=("$input")
 
-    # A bare account name is an identity lookup, not a Kerberos login.  Try a
-    # fully-qualified AD identity too because SSSD deployments can require it.
-    if [[ "$input" != *@* && "$input" != *\\* && -n "$domain" ]]; then
+    # This is an NSS/SSSD identity-resolution test, not Kerberos
+    # authentication. A normal domain account is sufficient.
+    if [[ "$input" != *@* && "$input" != *\* && -n "$domain" ]]; then
         candidates+=("${input}@${domain}")
     fi
 
     for candidate in "${candidates[@]}"; do
-        if getent passwd "$candidate" >/dev/null 2>&1 || id "$candidate" >/dev/null 2>&1; then
+        info "Identity lookup probe: $candidate (12s maximum)."
+        if run_probe 12 "getent identity lookup for $candidate" getent passwd "$candidate" >/dev/null 2>&1; then
             ok "SSSD/NSS identity lookup succeeded for $candidate."
             return 0
+        else
+            rc=$?
+            (( rc == 124 )) && warn "getent did not return in time; this usually points to SSSD/DC reachability or name-service latency."
+        fi
+
+        if run_probe 12 "id identity lookup for $candidate" id "$candidate" >/dev/null 2>&1; then
+            ok "SSSD/NSS identity lookup succeeded for $candidate."
+            return 0
+        else
+            rc=$?
+            (( rc == 124 )) && warn "id did not return in time; continuing without blocking post-join acceptance."
         fi
     done
 
     warn "SSSD/NSS identity lookup did not resolve '$input'."
-    if [[ "$input" != *@* && "$input" != *\\* ]]; then
+    if [[ "$input" != *@* && "$input" != *\* ]]; then
         info "The test also tried '${input}@${domain}' because fully-qualified names may be required by SSSD."
     fi
     return 1
@@ -1862,11 +1919,14 @@ validate_sssd_identity_lookup() {
 
 
 postjoin_acceptance() {
-    local domain="$1" test_user="${2:-}" failures=0
-    printf '\nPOST-JOIN ACCEPTANCE\n'
+    local domain="$1" test_user="${2:-}" failures=0 rc=0 output=""
+    printf '
+POST-JOIN ACCEPTANCE
+'
+    info "Acceptance probes are time-bounded; a slow/broken dependency will be reported instead of freezing the terminal."
 
     local realm_names=""
-    realm_names="$(realm list --name-only 2>/dev/null || true)"
+    realm_names="$(capture_probe 10 'realm membership query' realm list --name-only || true)"
     if grep -Fiqx "$domain" <<<"$realm_names"; then
         ok "Realm membership is present."
     else
@@ -1875,12 +1935,18 @@ postjoin_acceptance() {
     fi
 
     if command_exists sssctl; then
-        if sssctl config-check >/dev/null 2>&1; then
+        output="$(capture_probe 10 'SSSD configuration validation' sssctl config-check || true)"
+        if [[ -z "$output" ]] || grep -Fqi 'Issues identified by validators: 0' <<<"$output"; then
             ok "SSSD configuration check passed."
         else
-            err "SSSD configuration check failed."
-            sssctl config-check 2>&1 | sed 's/^/  /' || true
-            failures=1
+            # Some sssctl releases are silent on success and verbose on failure.
+            if run_probe 10 'SSSD configuration validation' sssctl config-check >/dev/null 2>&1; then
+                ok "SSSD configuration check passed."
+            else
+                err "SSSD configuration check failed or timed out."
+                [[ -n "$output" ]] && sed 's/^/  /' <<<"$output"
+                failures=1
+            fi
         fi
     fi
 
@@ -1888,19 +1954,25 @@ postjoin_acceptance() {
         ok "SSSD service is active."
     else
         err "SSSD service is not active."
-        journalctl -u sssd.service -n 40 --no-pager 2>/dev/null | sed 's/^/  /' || true
+        run_probe 6 'SSSD journal read' journalctl -u sssd.service -n 40 --no-pager 2>/dev/null | sed 's/^/  /' || true
         failures=1
     fi
 
-    if adcli testjoin -D "$domain" >/dev/null 2>&1; then
+    info "Validating the machine trust with adcli (20s maximum)."
+    if run_probe 20 'adcli machine trust validation' adcli testjoin -D "$domain" >/dev/null 2>&1; then
         ok "adcli secure machine join passed."
     else
-        err "adcli testjoin failed."
+        rc=$?
+        if (( rc == 124 )); then
+            err "adcli testjoin timed out; membership exists locally but DC communication is not healthy enough to validate the secure channel."
+        else
+            err "adcli testjoin failed."
+        fi
         failures=1
     fi
 
     local keytab_listing=""
-    keytab_listing="$(klist -k /etc/krb5.keytab 2>/dev/null || true)"
+    keytab_listing="$(capture_probe 5 'Kerberos keytab listing' klist -k /etc/krb5.keytab || true)"
     if [[ -s /etc/krb5.keytab ]] && grep -Eqi '(^|[[:space:]])host/' <<<"$keytab_listing"; then
         ok "Machine keytab contains a host principal."
     else
@@ -1932,7 +2004,7 @@ join_domain_guided() {
     fi
 
     local existing_realms=""
-    existing_realms="$(realm list --name-only 2>/dev/null || true)"
+    existing_realms="$(capture_probe 10 "realm membership query" realm list --name-only || true)"
     if [[ -n "$existing_realms" ]]; then
         warn "This machine already reports realm membership:"
         printf '%s\n' "$existing_realms"
@@ -2133,7 +2205,7 @@ join_domain_guided() {
         return 1
     fi
 
-    if ! systemctl enable --now sssd.service; then
+    if ! run_probe 45 "SSSD enable/start" systemctl enable --now sssd.service; then
         set_current_phase "JOINED_DEGRADED" || true
         err "Domain join succeeded, but SSSD failed to start. AD DNS and snapshot are retained for repair/clean leave."
         journalctl -u sssd.service -n 60 --no-pager 2>/dev/null |
@@ -2211,7 +2283,7 @@ switch_domain_guided() {
     header
     printf '%bDOMAIN SWITCH%b\n\n' "$C_BOLD" "$C_RESET"
 
-    local source="$(realm list --name-only 2>/dev/null | awk 'NR==1{print}')"
+    local source="$(capture_probe 10 'realm membership query' realm list --name-only | awk 'NR==1{print}')"
     if [[ -z "$source" ]]; then
         info "No current domain membership was detected; starting a normal join."
         join_domain_guided
@@ -2291,10 +2363,10 @@ ad_connectivity_test() {
     fi
 
     printf '\nMEMBERSHIP\n'
-    local memberships="$(realm list --name-only 2>/dev/null || true)"
+    local memberships="$(capture_probe 10 "realm membership query" realm list --name-only || true)"
     if [[ -n "$memberships" ]]; then
         ok "Realm membership: $memberships"
-        if command_exists adcli && adcli testjoin -D "$domain" >/dev/null 2>&1; then
+        if command_exists adcli && run_probe 20 "adcli machine trust validation" adcli testjoin -D "$domain" >/dev/null 2>&1; then
             ok "Secure machine channel validates with adcli."
         else
             warn "Secure machine channel did not validate for $domain."
@@ -2314,46 +2386,240 @@ ad_connectivity_test() {
 
 troubleshoot_ad() {
     header
-    printf '%bAD TROUBLESHOOTER%b\n\n' "$C_BOLD" "$C_RESET"
+    printf '%bDEEP AD CLIENT DIAGNOSTICS%b
+
+' "$C_BOLD" "$C_RESET"
+    info "Read-only diagnostics are time-bounded. No DNS, SSSD or domain membership change is made unless you explicitly approve a repair."
+
     detect_active_interface
     detect_dns_backend
     detect_system_resolver
 
-    printf '  Interface : %s\n  DNS owner : %s\n  Resolver  : %s\n  resolv.conf: %s\n\n' \
-        "${ACTIVE_IFACE:-unknown}" "$DNS_BACKEND" "$SYSTEM_RESOLVER_BACKEND" "$RESOLV_CONF_TARGET"
-
-    local domain=""
+    local domain="" dns_csv="" phase="" computer_name=""
     if [[ -f "$CURRENT_STATE" ]]; then
-        local DOMAIN=""
+        local DOMAIN="" AD_DNS_SERVERS="" PHASE="" COMPUTER_NAME=""
         load_state_file "$CURRENT_STATE" || true
         domain="${DOMAIN:-}"
+        dns_csv="${AD_DNS_SERVERS:-}"
+        phase="${PHASE:-}"
+        computer_name="${COMPUTER_NAME:-}"
     fi
+
+    local realm_guess=""
+    realm_guess="$(capture_probe 8 'realm membership query' realm list --name-only || true)"
+    [[ -n "$domain" ]] || domain="$(awk 'NR==1{print}' <<<"$realm_guess")"
     domain="$(ask 'AD DNS domain (for example corp.example.com)' "$domain")"
-    [[ -n "$domain" ]] && resolver_diagnostics "$domain"
+    valid_dns_domain "$domain" || { err "A valid AD DNS domain is required for deep diagnostics."; return 1; }
 
-    printf '\nSERVICES\n'
-    systemctl --no-pager --full status sssd.service 2>/dev/null | sed -n '1,12p' || true
-    printf '\nRECENT SSSD LOGS\n'
-    journalctl -u sssd.service -n 50 --no-pager 2>/dev/null | sed 's/^/  /' || true
+    if [[ -z "$dns_csv" ]]; then
+        local discovered_dns=""
+        discovered_dns="$(current_dns_summary | awk 'NF{print $NF}' | grep -E '^[0-9]+(\.[0-9]+){3}$' | paste -sd, - || true)"
+        dns_csv="$discovered_dns"
+    fi
+    dns_csv="$(ask 'AD DNS server IPv4 addresses (comma separated)' "$dns_csv")"
 
-    if [[ -s /etc/sssd/sssd.conf ]] && command_exists sssctl; then
-        sssctl config-check 2>&1 | sed 's/^/  /' || true
+    local critical=0 degraded=0
+    printf '
+HOST / LIFECYCLE
+'
+    printf '  Hostname       : %s
+' "$(hostname -f 2>/dev/null || hostname)"
+    printf '  Interface      : %s
+' "${ACTIVE_IFACE:-unknown}"
+    printf '  DNS owner      : %s
+' "${DNS_BACKEND:-unknown}"
+    printf '  Resolver       : %s
+' "${SYSTEM_RESOLVER_BACKEND:-unknown}"
+    printf '  resolv.conf    : %s
+' "${RESOLV_CONF_TARGET:-unknown}"
+    printf '  Lifecycle      : %s
+' "${phase:-none}"
+    printf '  AD computer    : %s
+' "${computer_name:-unknown}"
+    printf '  Realm reported : %s
+' "${realm_guess:-none}"
+
+    printf '
+DNS DISCOVERY
+'
+    if validate_dns_list "$dns_csv"; then
+        local dns_rc=0
+        preflight_ad_dns_servers "$domain" "$dns_csv" || dns_rc=$?
+        if (( dns_rc != 0 )); then
+            critical=$((critical+1))
+        fi
+    else
+        warn "No valid AD DNS list is available; direct DNS-server validation is skipped."
+        degraded=$((degraded+1))
     fi
 
-    if incomplete_sssd_residue_present; then
-        warn "Incomplete SSSD residue detected. Guided join can restore the previous snapshot before retrying."
+    if domain_srv_query "$domain" "" >/dev/null 2>&1; then
+        ok "System resolver resolves _ldap._tcp.dc._msdcs.${domain}."
+    else
+        err "System resolver cannot discover AD domain controllers."
+        resolver_diagnostics "$domain"
+        critical=$((critical+1))
     fi
 
-    if [[ -n "$domain" && -f "$CURRENT_STATE" ]]; then
-        local AD_DNS_SERVERS=""
-        load_state_file "$CURRENT_STATE" || true
-        if [[ -n "${AD_DNS_SERVERS:-}" ]] && ! domain_srv_query "$domain" "" >/dev/null 2>&1; then
-            warn "Direct configuration exists but system AD discovery is failing."
-            if confirm "Attempt safe resolver convergence repair using the assistant-managed AD DNS?" N; then
-                repair_resolver_convergence "$domain" "$AD_DNS_SERVERS" "$ACTIVE_IFACE" || warn "Resolver repair did not fully converge."
+    local kerberos_srv=""
+    kerberos_srv="$(dig +time=3 +tries=1 "_kerberos._tcp.${domain}" SRV +short 2>/dev/null || true)"
+    if [[ -n "$kerberos_srv" ]]; then
+        ok "System resolver returns Kerberos SRV records."
+    else
+        warn "No _kerberos._tcp.${domain} SRV answer through the system resolver."
+        degraded=$((degraded+1))
+    fi
+
+    printf '
+ROUTING / PORTS
+'
+    if validate_dns_list "$dns_csv"; then
+        local first_dns="" route_iface=""
+        first_dns="$(dns_first "$dns_csv")"
+        route_iface="$(route_interface_for_target "$first_dns" || true)"
+        if [[ -n "$route_iface" ]]; then
+            ok "Kernel route to AD DNS $first_dns uses interface $route_iface."
+            [[ -z "$ACTIVE_IFACE" || "$route_iface" == "$ACTIVE_IFACE" ]] || {
+                warn "Selected/active interface '$ACTIVE_IFACE' differs from route-to-AD interface '$route_iface'."
+                degraded=$((degraded+1))
+            }
+        else
+            err "No IPv4 route to AD DNS $first_dns."
+            critical=$((critical+1))
+        fi
+        validate_ad_network_ports "$domain" "$dns_csv" || critical=$((critical+1))
+    fi
+
+    printf '
+TIME / KERBEROS PREREQUISITES
+'
+    audit_time_sync || degraded=$((degraded+1))
+    if [[ -s /etc/krb5.keytab ]]; then
+        local kt=""
+        kt="$(capture_probe 5 'Kerberos keytab listing' klist -k /etc/krb5.keytab || true)"
+        if grep -Eqi '(^|[[:space:]])host/' <<<"$kt"; then
+            ok "Machine keytab has a host principal."
+        else
+            warn "Keytab exists but no host principal was detected."
+            degraded=$((degraded+1))
+        fi
+    else
+        warn "No /etc/krb5.keytab is present."
+        degraded=$((degraded+1))
+    fi
+
+    printf '
+SSSD / NSS
+'
+    if [[ -s /etc/sssd/sssd.conf ]]; then
+        if command_exists sssctl && run_probe 10 'SSSD configuration validation' sssctl config-check >/dev/null 2>&1; then
+            ok "SSSD configuration validates."
+        else
+            err "SSSD configuration validation failed or timed out."
+            command_exists sssctl && capture_probe 10 'SSSD configuration validation' sssctl config-check | sed 's/^/  /' || true
+            critical=$((critical+1))
+        fi
+    else
+        err "SSSD configuration file is missing or empty."
+        critical=$((critical+1))
+    fi
+
+    if systemctl is-active --quiet sssd.service 2>/dev/null; then
+        ok "SSSD service is active."
+    else
+        err "SSSD service is not active."
+        critical=$((critical+1))
+    fi
+
+    printf '
+MEMBERSHIP / MACHINE TRUST
+'
+    if grep -Fiqx "$domain" <<<"$realm_guess"; then
+        ok "realmd reports membership in $domain."
+        if command_exists adcli; then
+            if run_probe 20 'adcli machine trust validation' adcli testjoin -D "$domain" >/dev/null 2>&1; then
+                ok "Machine trust validates against AD."
+            else
+                local trc=$?
+                if (( trc == 124 )); then
+                    err "Machine-trust validation timed out. Check DC routing, DNS and firewall before touching membership."
+                else
+                    err "Machine-trust validation failed. The host can report membership while its secure channel is broken."
+                fi
+                critical=$((critical+1))
             fi
         fi
+    else
+        warn "realmd does not currently report membership in $domain."
+        degraded=$((degraded+1))
     fi
+
+    printf '
+RECENT SSSD SIGNALS
+'
+    local journal=""
+    journal="$(capture_probe 8 'SSSD journal read' journalctl -u sssd.service -n 120 --no-pager || true)"
+    if [[ -n "$journal" ]]; then
+        if grep -Eqi 'offline|timed out|timeout|cannot contact|failed to resolve|network is unreachable' <<<"$journal"; then
+            warn "Recent SSSD logs contain offline/network/timeout indicators."
+            degraded=$((degraded+1))
+        fi
+        if grep -Eqi 'krb5|preauth|clock skew|credentials|keytab' <<<"$journal"; then
+            warn "Recent SSSD logs contain Kerberos/credential/keytab indicators."
+            degraded=$((degraded+1))
+        fi
+        grep -Ei 'offline|timed out|timeout|cannot contact|failed to resolve|network is unreachable|krb5|preauth|clock skew|keytab|permission denied' <<<"$journal" | tail -n 12 | sed 's/^/  /' || true
+    else
+        info "No recent SSSD journal messages were returned."
+    fi
+
+    printf '
+DIAGNOSTIC VERDICT
+'
+    if (( critical == 0 && degraded == 0 )); then
+        ok "HEALTHY: no blocking AD client issue was detected."
+    elif (( critical == 0 )); then
+        warn "DEGRADED: no hard blocker detected, but ${degraded} warning condition(s) should be reviewed."
+    else
+        err "ACTION REQUIRED: ${critical} blocking condition(s) and ${degraded} warning condition(s) detected."
+        info "Recommended order: DNS discovery -> route/ports -> time -> SSSD config/service -> machine trust -> user identity lookup."
+    fi
+
+    printf '
+SAFE FOLLOW-UP
+'
+    printf '  [1] Test one domain user through SSSD/NSS (12s timeout)
+'
+    printf '  [2] Show recent SSSD journal (last 80 lines)
+'
+    printf '  [3] Attempt resolver convergence repair
+'
+    printf '  [0] Return without changes
+'
+    local action=""
+    action="$(ask 'Select operation' '0')"
+    case "$action" in
+        1)
+            local test_user=""
+            test_user="$(ask 'Optional AD user for SSSD identity lookup (not Kerberos authentication; blank to skip)' '')"
+            [[ -n "$test_user" ]] && validate_sssd_identity_lookup "$test_user" "$domain" || true
+            ;;
+        2)
+            capture_probe 8 'SSSD journal read' journalctl -u sssd.service -n 80 --no-pager | sed 's/^/  /' || true
+            ;;
+        3)
+            if validate_dns_list "$dns_csv"; then
+                if confirm "Attempt safe resolver convergence repair using the supplied AD DNS?" N; then
+                    repair_resolver_convergence "$domain" "$dns_csv" "$ACTIVE_IFACE" || warn "Resolver repair did not fully converge."
+                fi
+            else
+                warn "A valid AD DNS list is required before resolver repair can run."
+            fi
+            ;;
+        *) : ;;
+    esac
+
+    (( critical == 0 ))
 }
 
 export_diagnostic_bundle() {
@@ -2366,14 +2632,28 @@ export_diagnostic_bundle() {
         printf 'Host: %s\n' "$(hostname -f 2>/dev/null || hostname)"
         printf 'OS: %s\n' "$DISTRO_ID"
         printf 'Interface: %s\nDNS backend: %s\nResolver: %s\n' "$ACTIVE_IFACE" "$DNS_BACKEND" "$SYSTEM_RESOLVER_BACKEND"
-        printf '\nRealm:\n'; realm list 2>&1 || true
+        printf '\nRealm:\n'; capture_probe 10 'realm diagnostic query' realm list 2>&1 || true
         printf '\nRoutes:\n'; ip -4 route 2>&1 || true
         printf '\nAddresses:\n'; ip -4 addr 2>&1 || true
         printf '\nResolver:\n'; cat /etc/resolv.conf 2>&1 || true
     } >"$tmp/summary.txt"
     cp -a "$CURRENT_STATE" "$tmp/current.env" 2>/dev/null || true
-    journalctl -u sssd.service -n 200 --no-pager >"$tmp/sssd-journal.txt" 2>&1 || true
-    command_exists sssctl && sssctl config-check >"$tmp/sssd-config-check.txt" 2>&1 || true
+    capture_probe 10 "SSSD journal export" journalctl -u sssd.service -n 200 --no-pager >"$tmp/sssd-journal.txt" 2>&1 || true
+    command_exists sssctl && capture_probe 10 "SSSD config export" sssctl config-check >"$tmp/sssd-config-check.txt" 2>&1 || true
+    {
+        printf '=== resolvectl status ===\n'
+        command_exists resolvectl && capture_probe 8 "resolvectl diagnostic" resolvectl status || true
+        printf '\n=== NetworkManager DNS ===\n'
+        command_exists nmcli && capture_probe 8 "NetworkManager diagnostic" nmcli -f GENERAL.DEVICE,GENERAL.CONNECTION,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS device show || true
+        printf '\n=== time ===\n'
+        command_exists timedatectl && timedatectl status || true
+        command_exists chronyc && capture_probe 8 "chrony diagnostic" chronyc tracking || true
+        printf '\n=== keytab principals ===\n'
+        command_exists klist && capture_probe 5 "keytab diagnostic" klist -k /etc/krb5.keytab || true
+        printf '\n=== package versions ===\n'
+        if [[ "$PKG_FAMILY" == apt ]]; then dpkg-query -W realmd sssd-ad sssd-tools adcli krb5-user 2>/dev/null || true; fi
+        if [[ "$PKG_FAMILY" == dnf ]]; then rpm -q realmd sssd adcli krb5-workstation 2>/dev/null || true; fi
+    } >"$tmp/platform-diagnostics.txt" 2>&1
     tar -C "$tmp" -czf "$out" . || { err "Could not create diagnostic bundle."; rm -rf "$tmp"; return 1; }
     rm -rf "$tmp"
     chmod 0600 "$out" 2>/dev/null || true
@@ -2416,7 +2696,7 @@ audit_readiness() {
     audit_time_sync || true
 
     local realms=""
-    realms="$(realm list --name-only 2>/dev/null || true)"
+    realms="$(capture_probe 10 "realm membership query" realm list --name-only || true)"
     if [[ -n "$realms" ]]; then ok "Realm membership detected: $realms"; else info "No realm membership detected."; fi
 
     [[ -s /etc/krb5.keytab ]] && info "Existing Kerberos keytab detected: /etc/krb5.keytab"
@@ -2465,9 +2745,9 @@ status_domain() {
         fi
 
         if [[ -n "${DOMAIN:-}" ]] && command_exists adcli; then
-            adcli testjoin -D "$DOMAIN" >/dev/null 2>&1 \
+            run_probe 20 "adcli machine trust validation" adcli testjoin -D "$DOMAIN" >/dev/null 2>&1 \
                 && ok "Secure machine join validated by adcli." \
-                || warn "adcli testjoin failed."
+                || warn "adcli testjoin failed or timed out."
         fi
     fi
 
@@ -2579,7 +2859,7 @@ leave_domain_cleanly() {
     printf '%bLEAVE DOMAIN CLEANLY%b\n\n' "$C_BOLD" "$C_RESET"
 
     local realm_names=""
-    realm_names="$(realm list --name-only 2>/dev/null || true)"
+    realm_names="$(capture_probe 10 "realm membership query" realm list --name-only || true)"
     [[ -n "$realm_names" ]] || {
         info "This machine is not reporting realm membership."
         return 0
@@ -2639,7 +2919,7 @@ restore_prejoin_state() {
     [[ -n "${SNAPSHOT_PATH:-}" && -d "$SNAPSHOT_PATH" ]] || { err "Recorded snapshot is unavailable."; return 1; }
 
     local memberships=""
-    memberships="$(realm list --name-only 2>/dev/null || true)"
+    memberships="$(capture_probe 10 "realm membership query" realm list --name-only || true)"
     if [[ -n "$memberships" ]]; then
         warn "The machine still reports domain membership: $memberships"
         warn "Preferred path: use Leave domain cleanly so the AD computer account is handled properly."
