@@ -45,7 +45,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.3.2-linux-remote-transport-repair"
+SCRIPT_VERSION="5.3.3-managed-linux-remote-access"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -178,6 +178,9 @@ REMOTE_DISCOVERY_PORT_TIMEOUT="${REMOTE_DISCOVERY_PORT_TIMEOUT:-2}"
 REMOTE_SSH_CONNECT_TIMEOUT="${REMOTE_SSH_CONNECT_TIMEOUT:-30}"
 REMOTE_SSH_CONNECTION_ATTEMPTS="${REMOTE_SSH_CONNECTION_ATTEMPTS:-2}"
 REMOTE_SSH_CONTROL_PERSIST="${REMOTE_SSH_CONTROL_PERSIST:-180}"
+REMOTE_LINUX_SERVICE_USER="${REMOTE_LINUX_SERVICE_USER:-adremote}"
+REMOTE_SSH_KEY="${REMOTE_OPS_DIR}/id_ed25519"
+REMOTE_SSH_CONTROL_DIR="${REMOTE_SSH_CONTROL_DIR:-/run/dadssh}"
 REMOTE_INVENTORY_CACHE_TTL="${REMOTE_INVENTORY_CACHE_TTL:-60}"
 REMOTE_INVENTORY_CACHE="${REMOTE_OPS_DIR}/computer-inventory.tsv"
 REMOTE_INVENTORY_CACHE_META="${REMOTE_OPS_DIR}/computer-inventory.meta"
@@ -5392,6 +5395,7 @@ remote_inventory_cache_invalidate() {
 remote_inventory_cache_refresh() {
     local tmp age
     mkdir -p "$REMOTE_OPS_DIR"
+    rm -rf -- "${REMOTE_OPS_DIR}/ssh-control" 2>/dev/null || true
     tmp="${REMOTE_INVENTORY_CACHE}.tmp.$$"
 
     msg_info "Refreshing domain computer inventory. Network hints can take a few seconds on slow or virtual links."
@@ -12234,10 +12238,142 @@ remote_wait_ssh_port() {
 }
 
 remote_ssh_control_path() {
-    local dir="${REMOTE_OPS_DIR}/ssh-control"
-    mkdir -p "$dir"
+    local dir="$REMOTE_SSH_CONTROL_DIR"
+    if ! mkdir -p "$dir" 2>/dev/null; then
+        dir="/tmp/dadssh-${UID}"
+        mkdir -p "$dir" || return 1
+    fi
     chmod 700 "$dir" 2>/dev/null || true
+    # %C is OpenSSH's fixed-length hash of connection parameters. Keeping the
+    # directory short avoids the AF_UNIX path-length limit on Linux.
     printf '%s/%%C' "$dir"
+}
+
+remote_ensure_ssh_key() {
+    command_exists ssh-keygen || {
+        msg_warn "ssh-keygen is required for managed Linux remote access."
+        return 1
+    }
+    mkdir -p "$REMOTE_OPS_DIR"
+    chmod 700 "$REMOTE_OPS_DIR" 2>/dev/null || true
+    if [[ ! -s "$REMOTE_SSH_KEY" || ! -s "${REMOTE_SSH_KEY}.pub" ]]; then
+        msg_info "Creating the controller key used for managed Linux remote operations."
+        rm -f -- "$REMOTE_SSH_KEY" "${REMOTE_SSH_KEY}.pub"
+        ssh-keygen -q -t ed25519 -N '' -C 'debian-ad-assistant-remote-ops' -f "$REMOTE_SSH_KEY" || return 1
+        chmod 600 "$REMOTE_SSH_KEY"
+        chmod 644 "${REMOTE_SSH_KEY}.pub"
+    fi
+}
+
+remote_ssh_base() {
+    local user="$1" host="$2" control_path="$3"; shift 3
+    ssh \
+        -o ConnectTimeout="$REMOTE_SSH_CONNECT_TIMEOUT" \
+        -o ConnectionAttempts="$REMOTE_SSH_CONNECTION_ATTEMPTS" \
+        -o ServerAliveInterval=15 \
+        -o ServerAliveCountMax=4 \
+        -o TCPKeepAlive=yes \
+        -o ControlMaster=auto \
+        -o ControlPersist="${REMOTE_SSH_CONTROL_PERSIST}s" \
+        -o ControlPath="$control_path" \
+        -o StrictHostKeyChecking=accept-new \
+        -l "$user" \
+        "$@" "$host"
+}
+
+remote_linux_key_ready() {
+    local host="${1:-$(remote_target_host)}" control_path=""
+    [[ -n "$host" ]] || return 1
+    remote_ensure_ssh_key || return 1
+    control_path="$(remote_ssh_control_path)" || return 1
+    ssh -T \
+        -o BatchMode=yes \
+        -o PasswordAuthentication=no \
+        -o KbdInteractiveAuthentication=no \
+        -o ConnectTimeout="$REMOTE_SSH_CONNECT_TIMEOUT" \
+        -o ConnectionAttempts=1 \
+        -o ControlMaster=auto \
+        -o ControlPersist="${REMOTE_SSH_CONTROL_PERSIST}s" \
+        -o ControlPath="$control_path" \
+        -o StrictHostKeyChecking=accept-new \
+        -i "$REMOTE_SSH_KEY" \
+        -l "$REMOTE_LINUX_SERVICE_USER" \
+        "$host" 'true' >/dev/null 2>&1
+}
+
+remote_linux_bootstrap_managed_access() {
+    local host="" bootstrap_user="" pub64="" script64="" control_path=""
+    host="$(remote_target_host)"
+    [[ -n "$host" ]] || return 1
+    remote_ensure_ssh_key || return 1
+
+    if remote_linux_key_ready "$host"; then
+        REMOTE_SSH_USER="$REMOTE_LINUX_SERVICE_USER"
+        return 0
+    fi
+
+    section "LINUX REMOTE ACCESS BOOTSTRAP"
+    msg_info "The managed SSH identity '$REMOTE_LINUX_SERVICE_USER' is not ready on this endpoint yet."
+    msg_info "One interactive administrator login is required to install the controller key. Subsequent operations use key authentication automatically."
+    msg_info "If the bootstrap identity is an AD account authenticated through SSSD/PAM, SSH normally uses that account's AD password."
+
+    local default_user="${ADMIN_USER:-Administrator}"
+    [[ -n "${DOMAIN:-}" ]] && default_user="${default_user}@${DOMAIN}"
+    bootstrap_user="$(ask 'Bootstrap SSH administrator identity' "$default_user")"
+    [[ -n "$bootstrap_user" ]] || return 1
+
+    pub64="$(base64 -w0 <"${REMOTE_SSH_KEY}.pub")"
+    script64="$(cat <<EOF | base64 -w0
+set -eu
+u='$REMOTE_LINUX_SERVICE_USER'
+pub=\$(printf '%s' '$pub64' | base64 -d)
+if ! id "\$u" >/dev/null 2>&1; then
+    useradd -m -s /bin/bash "\$u"
+fi
+passwd -l "\$u" >/dev/null 2>&1 || true
+h=\$(getent passwd "\$u" | cut -d: -f6)
+[ -n "\$h" ] || h="/home/\$u"
+install -d -m 700 -o "\$u" -g "\$u" "\$h/.ssh"
+touch "\$h/.ssh/authorized_keys"
+grep -qxF "\$pub" "\$h/.ssh/authorized_keys" || printf '%s\n' "\$pub" >>"\$h/.ssh/authorized_keys"
+chown "\$u:\$u" "\$h/.ssh/authorized_keys"
+chmod 600 "\$h/.ssh/authorized_keys"
+cat >/etc/sudoers.d/debian-ad-remote-ops <<'SUDOEOF'
+$REMOTE_LINUX_SERVICE_USER ALL=(root) NOPASSWD: /usr/bin/systemctl, /bin/systemctl, /usr/bin/systemd-run, /bin/systemd-run, /usr/bin/loginctl, /bin/loginctl, /usr/bin/wall, /bin/wall, /usr/sbin/shutdown, /sbin/shutdown, /usr/bin/journalctl, /bin/journalctl, /usr/bin/hostnamectl, /bin/hostnamectl, /usr/bin/ss, /bin/ss, /usr/bin/df, /bin/df, /usr/bin/free, /bin/free, /usr/bin/ip, /sbin/ip, /usr/bin/uptime, /bin/uptime
+SUDOEOF
+chmod 0440 /etc/sudoers.d/debian-ad-remote-ops
+if command -v visudo >/dev/null 2>&1; then
+    visudo -cf /etc/sudoers.d/debian-ad-remote-ops >/dev/null
+fi
+EOF
+)"
+
+    control_path="$(remote_ssh_control_path)" || return 1
+    msg_info "Authenticate once with the bootstrap administrator. sudo may ask for that administrator password again."
+    ssh -tt \
+        -o ConnectTimeout="$REMOTE_SSH_CONNECT_TIMEOUT" \
+        -o ConnectionAttempts="$REMOTE_SSH_CONNECTION_ATTEMPTS" \
+        -o ServerAliveInterval=15 \
+        -o ServerAliveCountMax=4 \
+        -o TCPKeepAlive=yes \
+        -o ControlPath="$control_path" \
+        -o StrictHostKeyChecking=accept-new \
+        -l "$bootstrap_user" \
+        "$host" "printf '%s' '$script64' | base64 -d | sudo sh" || {
+            msg_warn "Managed Linux SSH bootstrap did not complete."
+            return 1
+        }
+
+    if remote_linux_key_ready "$host"; then
+        REMOTE_SSH_USER="$REMOTE_LINUX_SERVICE_USER"
+        msg_success "Managed Linux remote access is ready for $host."
+        remote_ops_audit "linux-ssh-bootstrap" "OK" "user=$REMOTE_LINUX_SERVICE_USER"
+        return 0
+    fi
+
+    msg_warn "The bootstrap command completed, but key authentication still did not validate."
+    remote_ops_audit "linux-ssh-bootstrap" "FAIL" "post-check failed"
+    return 1
 }
 
 remote_target_context() {
@@ -12473,10 +12609,14 @@ remote_batch_power() {
         case "$kind" in
             linux)
                 if [[ -n "$host" ]] && remote_wait_ssh_port "$host"; then
-                    if [[ "$action" == restart ]]; then
-                        remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); if [ \"\$(id -u)\" -eq 0 ]; then shutdown -r +$minutes \"\$m\"; else sudo shutdown -r +$minutes \"\$m\"; fi" && ((okc+=1)) || ((failc+=1))
+                    if (( delay <= 5 )); then
+                        local verb="poweroff"
+                        [[ "$action" == restart ]] && verb="reboot"
+                        remote_ssh_exec "sudo -n systemd-run --quiet --unit=debian-ad-remote-${verb}-\$(date +%s) --on-active=3s /usr/bin/systemctl $verb" && ((okc+=1)) || ((failc+=1))
+                    elif [[ "$action" == restart ]]; then
+                        remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); sudo -n shutdown -r +$minutes \"\$m\"" && ((okc+=1)) || ((failc+=1))
                     else
-                        remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); if [ \"\$(id -u)\" -eq 0 ]; then shutdown -h +$minutes \"\$m\"; else sudo shutdown -h +$minutes \"\$m\"; fi" && ((okc+=1)) || ((failc+=1))
+                        remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); sudo -n shutdown -h +$minutes \"\$m\"" && ((okc+=1)) || ((failc+=1))
                     fi
                 else ((failc+=1)); fi
                 ;;
@@ -12661,25 +12801,38 @@ remote_target_host() {
 
 remote_ensure_ssh_user() {
     [[ -n "$REMOTE_SSH_USER" ]] && return 0
-    local default_user="${ADMIN_USER:-Administrator}"
+    local kind="" default_user="${ADMIN_USER:-Administrator}"
+    kind="$(remote_target_kind)"
+    if [[ "$kind" == linux ]]; then
+        remote_linux_bootstrap_managed_access || return 1
+        REMOTE_SSH_USER="$REMOTE_LINUX_SERVICE_USER"
+        return 0
+    fi
     [[ -n "${DOMAIN:-}" ]] && default_user="${default_user}@${DOMAIN}"
     REMOTE_SSH_USER="$(ask 'Remote SSH login identity' "$default_user")"
     [[ -n "$REMOTE_SSH_USER" ]]
 }
 
 remote_ssh_exec() {
-    local command="$1" host="" control_path=""
+    local command="$1" host="" control_path="" kind=""
     host="$(remote_target_host)"
+    kind="$(remote_target_kind)"
     remote_ensure_ssh_user || return 1
     command_exists ssh || {
         msg_warn "OpenSSH client is not installed on this controller."
         return 1
     }
     remote_wait_ssh_port "$host" || return 1
-    control_path="$(remote_ssh_control_path)"
+    control_path="$(remote_ssh_control_path)" || return 1
 
-    ssh \
-        -tt \
+    local -a key_args=()
+    if [[ "$kind" == linux && "$REMOTE_SSH_USER" == "$REMOTE_LINUX_SERVICE_USER" ]]; then
+        remote_ensure_ssh_key || return 1
+        key_args=(-o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -i "$REMOTE_SSH_KEY")
+    fi
+
+    ssh -T \
+        "${key_args[@]}" \
         -o ConnectTimeout="$REMOTE_SSH_CONNECT_TIMEOUT" \
         -o ConnectionAttempts="$REMOTE_SSH_CONNECTION_ATTEMPTS" \
         -o ServerAliveInterval=15 \
@@ -12695,14 +12848,22 @@ remote_ssh_exec() {
 }
 
 remote_ssh_capture() {
-    local command="$1" host="" control_path=""
+    local command="$1" host="" control_path="" kind=""
     host="$(remote_target_host)"
+    kind="$(remote_target_kind)"
     remote_ensure_ssh_user || return 1
     command_exists ssh || return 1
     remote_wait_ssh_port "$host" || return 1
-    control_path="$(remote_ssh_control_path)"
+    control_path="$(remote_ssh_control_path)" || return 1
 
-    ssh \
+    local -a key_args=()
+    if [[ "$kind" == linux && "$REMOTE_SSH_USER" == "$REMOTE_LINUX_SERVICE_USER" ]]; then
+        remote_ensure_ssh_key || return 1
+        key_args=(-o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -i "$REMOTE_SSH_KEY")
+    fi
+
+    ssh -T \
+        "${key_args[@]}" \
         -o ConnectTimeout="$REMOTE_SSH_CONNECT_TIMEOUT" \
         -o ConnectionAttempts="$REMOTE_SSH_CONNECTION_ATTEMPTS" \
         -o ServerAliveInterval=15 \
@@ -12806,7 +12967,7 @@ remote_linux_transport_repair() {
 
     cfg64="$(printf '%s\n' '# Managed by Debian AD Assistant remote repair.' 'UsePAM yes' 'KbdInteractiveAuthentication yes' | base64 -w0)"
     local cmd=""
-    cmd="set -e; svc=''; if systemctl list-unit-files ssh.service >/dev/null 2>&1; then svc=ssh.service; elif systemctl list-unit-files sshd.service >/dev/null 2>&1; then svc=sshd.service; fi; [ -n \"\$svc\" ] || { echo 'OpenSSH server service is not installed'; exit 20; }; d=/etc/ssh/sshd_config.d; if [ \"\$(id -u)\" -eq 0 ]; then mkdir -p \"\$d\"; printf '%s' '$cfg64' | base64 -d >\"\$d/10-ad-client-assistant.conf\"; sshd -t; systemctl enable \"\$svc\" >/dev/null 2>&1 || true; systemctl restart \"\$svc\"; else printf '%s' '$cfg64' | base64 -d | sudo tee \"\$d/10-ad-client-assistant.conf\" >/dev/null; sudo sshd -t; sudo systemctl enable \"\$svc\" >/dev/null 2>&1 || true; sudo systemctl restart \"\$svc\"; fi; if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active' && [ -n '$src_ip' ]; then if [ \"\$(id -u)\" -eq 0 ]; then ufw allow from '$src_ip' to any port 22 proto tcp comment 'AD remote operations' >/dev/null; else sudo ufw allow from '$src_ip' to any port 22 proto tcp comment 'AD remote operations' >/dev/null; fi; fi; systemctl is-active \"\$svc\"; ss -lnt 2>/dev/null | awk '\''\$4 ~ /:22$/ {print}'\'' | head -n5"
+    cmd="set -e; svc=''; if systemctl list-unit-files ssh.service >/dev/null 2>&1; then svc=ssh.service; elif systemctl list-unit-files sshd.service >/dev/null 2>&1; then svc=sshd.service; fi; [ -n \"\$svc\" ] || { echo 'OpenSSH server service is not installed'; exit 20; }; d=/etc/ssh/sshd_config.d; if [ \"\$(id -u)\" -eq 0 ]; then mkdir -p \"\$d\"; printf '%s' '$cfg64' | base64 -d >\"\$d/10-ad-client-assistant.conf\"; sshd -t; systemctl enable \"\$svc\" >/dev/null 2>&1 || true; systemctl restart \"\$svc\"; else printf '%s' '$cfg64' | base64 -d | sudo tee \"\$d/10-ad-client-assistant.conf\" >/dev/null; sudo sshd -t; sudo systemctl enable \"\$svc\" >/dev/null 2>&1 || true; sudo systemctl restart \"\$svc\"; fi; if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active' && [ -n '$src_ip' ]; then if [ \"\$(id -u)\" -eq 0 ]; then ufw allow from '$src_ip' to any port 22 proto tcp comment 'AD remote operations' >/dev/null; else sudo -n ufw allow from '$src_ip' to any port 22 proto tcp comment 'AD remote operations' >/dev/null; fi; fi; systemctl is-active \"\$svc\"; ss -lnt 2>/dev/null | awk '\''\$4 ~ /:22$/ {print}'\'' | head -n5"
 
     if remote_ssh_exec "$cmd"; then
         remote_ops_audit "linux-transport-repair" "OK" "controller-source=${src_ip:-unknown}"
@@ -12988,7 +13149,7 @@ remote_logoff_session() {
             fi
             ;;
         linux)
-            if remote_ssh_exec "if [ \"\$(id -u)\" -eq 0 ]; then loginctl terminate-session '$session'; else sudo loginctl terminate-session '$session'; fi"; then
+            if remote_ssh_exec "if [ \"\$(id -u)\" -eq 0 ]; then loginctl terminate-session '$session'; else sudo -n loginctl terminate-session '$session'; fi"; then
                 remote_ops_audit "logoff" "OK" "session=$session"
             else
                 remote_ops_audit "logoff" "FAIL" "session=$session"
@@ -13073,7 +13234,7 @@ remote_service_control() {
             remote_ssh_exec "systemctl status --no-pager --full '$service' 2>&1 || true"
             if confirm "Restart '$service' on the remote Linux endpoint?" N; then
                 confirm_high_risk "Restart remote Linux unit '$service'" || return 0
-                remote_ssh_exec "if [ \"\$(id -u)\" -eq 0 ]; then systemctl restart '$service'; else sudo systemctl restart '$service'; fi; systemctl is-active '$service'"
+                remote_ssh_exec "if [ \"\$(id -u)\" -eq 0 ]; then systemctl restart '$service'; else sudo -n systemctl restart '$service'; fi; systemctl is-active '$service'"
                 remote_ops_audit "service-restart" "OK" "$service"
             fi
             ;;
@@ -13146,12 +13307,18 @@ remote_power_action() {
         linux)
             remote_wait_ssh_port "$host" || return 1
             msg64="$(printf '%s' "$message" | base64 -w0)"
-            local minutes=$(( (delay + 59) / 60 ))
-            (( minutes < 1 )) && minutes=1
-            if [[ "$action" == restart ]]; then
-                remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); if [ \"\$(id -u)\" -eq 0 ]; then shutdown -r +$minutes \"\$m\"; else sudo shutdown -r +$minutes \"\$m\"; fi"
+            if (( delay <= 5 )); then
+                local verb="poweroff"
+                [[ "$action" == restart ]] && verb="reboot"
+                remote_ssh_exec "sudo -n systemd-run --quiet --unit=debian-ad-remote-${verb}-\$(date +%s) --on-active=3s /usr/bin/systemctl $verb"
             else
-                remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); if [ \"\$(id -u)\" -eq 0 ]; then shutdown -h +$minutes \"\$m\"; else sudo shutdown -h +$minutes \"\$m\"; fi"
+                local minutes=$(( (delay + 59) / 60 ))
+                (( minutes < 1 )) && minutes=1
+                if [[ "$action" == restart ]]; then
+                    remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); sudo -n shutdown -r +$minutes \"\$m\""
+                else
+                    remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); sudo -n shutdown -h +$minutes \"\$m\""
+                fi
             fi
             ;;
         *) msg_warn "Unknown endpoint family."; return 1 ;;
@@ -13186,7 +13353,7 @@ remote_cancel_power_action() {
             ;;
         linux)
             remote_wait_ssh_port "$host" || return 1
-            remote_ssh_exec "if [ \"\$(id -u)\" -eq 0 ]; then shutdown -c; else sudo shutdown -c; fi"
+            remote_ssh_exec "if [ \"\$(id -u)\" -eq 0 ]; then shutdown -c; else sudo -n shutdown -c; fi"
             ;;
         *) return 1 ;;
     esac

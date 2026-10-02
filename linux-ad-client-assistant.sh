@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.5.4-remote-management-repair"
+SCRIPT_VERSION="1.5.5-managed-remote-identity"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -36,6 +36,7 @@ AD_CLIENT_NETWORK_TIMEOUT="${AD_CLIENT_NETWORK_TIMEOUT:-60}"
 AD_CLIENT_MEMBERSHIP_TIMEOUT="${AD_CLIENT_MEMBERSHIP_TIMEOUT:-180}"
 AD_CLIENT_SLOW_NETWORK_TIMEOUT="${AD_CLIENT_SLOW_NETWORK_TIMEOUT:-180}"
 AD_CLIENT_SSH_SETUP="${AD_CLIENT_SSH_SETUP:-yes}"
+AD_CLIENT_REMOTE_USER="${AD_CLIENT_REMOTE_USER:-adremote}"
 
 USE_COLOR=1
 [[ -t 1 && -z "${NO_COLOR:-}" ]] || USE_COLOR=0
@@ -2260,6 +2261,44 @@ remote_management_controller_ips() {
     done < <(ad_dc_targets_from_dns "$domain" "$dns_csv" 2>/dev/null || true)
 }
 
+configure_managed_remote_identity() {
+    local user="$AD_CLIENT_REMOTE_USER" home="" sudoers="/etc/sudoers.d/debian-ad-remote-ops"
+    [[ "$user" =~ ^[a-z_][a-z0-9_-]*$ ]] || {
+        warn "Managed remote username '$user' is not a safe local account name."
+        return 1
+    }
+
+    if ! id "$user" >/dev/null 2>&1; then
+        info "Creating the locked local service identity used by Debian AD remote operations: $user"
+        useradd -m -s /bin/bash "$user" || return 1
+    fi
+    passwd -l "$user" >/dev/null 2>&1 || true
+    home="$(getent passwd "$user" | cut -d: -f6)"
+    [[ -n "$home" ]] || home="/home/$user"
+    install -d -m 700 -o "$user" -g "$user" "$home/.ssh" || return 1
+    touch "$home/.ssh/authorized_keys"
+    chown "$user:$user" "$home/.ssh/authorized_keys"
+    chmod 600 "$home/.ssh/authorized_keys"
+
+    mkdir -p /etc/sudoers.d
+    cat >"$sudoers" <<EOF
+# Managed by Linux AD Client Assistant ${SCRIPT_VERSION}.
+# This passwordless policy is intentionally limited to the operations exposed by
+# the Debian AD remote-operations console. The account itself has no password.
+${user} ALL=(root) NOPASSWD: /usr/bin/systemctl, /bin/systemctl, /usr/bin/systemd-run, /bin/systemd-run, /usr/bin/loginctl, /bin/loginctl, /usr/bin/wall, /bin/wall, /usr/sbin/shutdown, /sbin/shutdown, /usr/bin/journalctl, /bin/journalctl, /usr/bin/hostnamectl, /bin/hostnamectl, /usr/bin/ss, /bin/ss, /usr/bin/df, /bin/df, /usr/bin/free, /bin/free, /usr/bin/ip, /sbin/ip, /usr/bin/uptime, /bin/uptime
+EOF
+    chmod 0440 "$sudoers"
+    if command_exists visudo && ! visudo -cf "$sudoers" >/dev/null 2>&1; then
+        rm -f -- "$sudoers"
+        warn "The managed sudo policy did not validate and was removed."
+        return 1
+    fi
+
+    ok "Managed remote identity is prepared: $user (locked password, SSH-key bootstrap only)."
+    info "The Debian AD controller can install its public key on the first remote operation using one interactive administrator login."
+    return 0
+}
+
 configure_remote_management() {
     local ssh_service="" ssh_pkg="" setup_choice="" domain="" dns_csv="" ip=""
 
@@ -2350,6 +2389,11 @@ EOF
         return 1
     }
 
+    configure_managed_remote_identity || {
+        warn "OpenSSH is active, but the managed remote identity could not be prepared."
+        return 1
+    }
+
     # Keep the firewall scope narrow: AD DNS/DC addresses only. This covers the
     # controller even when the DNS server and the selected DC are not identical.
     if command_exists ufw && ufw status 2>/dev/null | grep -Fq 'Status: active'; then
@@ -2367,7 +2411,8 @@ EOF
 
     ok "Remote administration readiness enabled via $ssh_service (TCP/22)."
     info "The firewall is restricted to discovered AD controller/DNS addresses when a supported host firewall is active."
-    info "Privileged remote actions still require an account with appropriate sudo policy; no broad sudo grant was created."
+    info "New clients are prepared with the locked service identity ${AD_CLIENT_REMOTE_USER}; the controller installs its SSH key on first use."
+    info "No reusable password is assigned to that service identity."
     return 0
 }
 
@@ -2456,6 +2501,20 @@ audit_remote_management_readiness() {
                 warnings=$((warnings+1))
             fi
         done < <(remote_management_controller_ips "$domain" "$dns_csv")
+    fi
+
+    if id "$AD_CLIENT_REMOTE_USER" >/dev/null 2>&1; then
+        ok "Managed remote identity exists: $AD_CLIENT_REMOTE_USER."
+        local managed_home=""
+        managed_home="$(getent passwd "$AD_CLIENT_REMOTE_USER" | cut -d: -f6)"
+        if [[ -s "${managed_home}/.ssh/authorized_keys" ]]; then
+            ok "A controller SSH key is installed for $AD_CLIENT_REMOTE_USER."
+        else
+            info "No controller SSH key is installed yet; first-use bootstrap from Debian AD is still pending."
+        fi
+    else
+        warn "Managed remote identity $AD_CLIENT_REMOTE_USER is missing."
+        warnings=$((warnings+1))
     fi
 
     if command_exists ufw && ufw status 2>/dev/null | grep -Fq 'Status: active'; then
