@@ -212,8 +212,8 @@ ui_rule() {
 }
 
 ui_brand_compact() {
-    printf '%b%b DEBIAN AD CONTROL PLANE%b  %bv%s%b\n' \
-        "$C_BOLD" "$C_CYAN" "$C_RESET" "$C_DIM" "$SCRIPT_VERSION" "$C_RESET"
+    printf '%b%b Debian AD console%b\n' \
+        "$C_BOLD" "$C_CYAN" "$C_RESET"
 }
 
 ui_service_badge() {
@@ -250,7 +250,7 @@ ui_firewall_badge() {
 }
 
 ui_context_panel() {
-    local host domain dc ip iface admin session listeners leap
+    local host domain dc ip iface admin session listeners leap current_date
     host="$(hostname -s 2>/dev/null || hostname)"
     domain="${DOMAIN:-unconfigured}"
     dc="${DC_FQDN:-$host}"
@@ -258,12 +258,15 @@ ui_context_panel() {
     iface="${AD_IFACE:-n/a}"
     admin="${ADMIN_USER:-not-selected}"
     session="local"
+    current_date="$(date +'%Y-%m-%d')"
     [[ $REMOTE_SESSION -eq 1 ]] && session="SSH ${SSH_CLIENT_IP:-unknown}"
 
     printf '  %b%-24s%b  %-28s  %s\n' \
         "$C_WHITE" "$domain" "$C_RESET" "$dc" "$ip / $iface"
     printf '  %-11s %-26s %-11s %s\n' \
-        "Operator" "$admin" "Session" "$session"
+        "Date" "$current_date" "Operator" "$admin"
+    printf '  %-11s %-26s %-11s %s\n' \
+        "Session" "$session" "Host" "$host"
 
     if [[ "$SAMBA_ROLE" == "ad-dc" || "$SAMBA_ROLE" == "ad-dc-config" ]]; then
         listeners="$(samba_listener_snapshot 2>/dev/null || true)"
@@ -354,11 +357,11 @@ ui_menu_item() {
 
 ui_menu_exit() {
     ui_menu_item "0" "Back" "Return to previous console" "$C_RED"
-    ui_menu_item "H" "Main menu" "Jump to the full AD/DC Main Control Plane" "$C_MAGENTA"
+    ui_menu_item "H" "Main menu" "Jump to the full AD/DC main console" "$C_MAGENTA"
 }
 
 ui_menu_root_exit() {
-    ui_menu_item "0" "Exit / Back" "Leave this control plane" "$C_RED"
+    ui_menu_item "0" "Exit / Back" "Leave this console" "$C_RED"
 }
 
 ui_pause() {
@@ -717,10 +720,9 @@ banner() {
       ╚═╝  ╚═╝╚═════╝        ╚═════╝  ╚═════╝
 EOF
     printf '%b' "$C_RESET"
-    printf '%b%b                 DEBIAN ACTIVE DIRECTORY CONTROL PLANE%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET"
+    printf '%b%b                 Debian AD console%b\n' "$C_BOLD" "$C_WHITE" "$C_RESET"
     printf '%b                 Secure provisioning · operations · recovery%b\n' "$C_DIM" "$C_RESET"
     ui_rule
-    printf '  Version       %b%s%b\n' "$C_CYAN" "$SCRIPT_VERSION" "$C_RESET"
     printf '  Execution     mode=%b%s%b | session=%b%s%b\n' \
         "$C_CYAN" "$MODE" "$C_RESET" \
         "$C_CYAN" "$([[ $REMOTE_SESSION -eq 1 ]] && echo "remote/SSH" || echo "local")" "$C_RESET"
@@ -1298,7 +1300,7 @@ ensure_existing_dependency_preflight() {
     ((${#missing[@]} == 0)) && return 0
 
     printf '\n'
-    msg_warn "This existing AD/DC is missing one or more tools used by the control plane:"
+    msg_warn "This existing AD/DC is missing one or more tools used by the console:"
     printf '  - %s\n' "${missing[@]}"
 
     if [[ "$INPUT_FD" != "/dev/null" ]]; then
@@ -8632,7 +8634,7 @@ domain_factory_reset() {
     result INFO "Recovery bundle" "$RESET_RECOVERY_DIR" "retain until reset/rebuild is verified"
     result WARN "Reboot required" "kernel/sysctl/runtime caches may retain previous values until reboot" "reboot before reuse"
 
-    # Last operation: remove the assistant's installed control plane and state.
+    # Last operation: remove the assistant's installed console and state.
     # The currently running shell already has the script parsed in memory.
     remove_assistant_cli_and_state
 
@@ -11465,7 +11467,7 @@ event_center_menu() {
                     if [[ "$SAMBA_ROLE" == "ad-dc" || "$SAMBA_ROLE" == "ad-dc-config" ]]; then
                         prepare_existing_ad_context
                     else
-                        msg_warn "No Samba AD/DC is available for the main control plane."
+                        msg_warn "No Samba AD/DC is available for the main console."
                         ui_pause
                         continue
                     fi
@@ -11481,7 +11483,7 @@ event_center_menu() {
 
 cli_command_catalog() {
     cat <<'EOF'
-adctl|Main control plane|Open the full AD/DC Main Control Plane: maintenance, operations, security, backup and migration.
+adctl|Main console|Open the full AD/DC main console: maintenance, operations, security, backup and migration.
 ad-ops|Directory operations|Open the reduced daily users/groups/computers/permissions/GPO operations console.
 ad-users|Users|Create, inspect, edit, enable/disable, reset passwords and manage group memberships.
 ad-groups|Groups|Create, inspect and manage domain groups and their members.
@@ -11493,7 +11495,7 @@ ad-samba|Samba security|Samba transport/authentication hardening, signed time an
 ad-kerberos|Kerberos security|Kerberos config integrity, encryption readiness, AES-only enforcement and rollback.
 ad-migrate|Domain migration|Assess domain changes, inventory scope and generate client migration packages.
 ad-reset|Domain reset|Destructive local Samba AD/DC decommission/reset with external recovery bundle.
-ad-deps|Dependencies|Audit/install/update the minimal official distribution package set used by the control plane.
+ad-deps|Dependencies|Audit/install/update the minimal official distribution package set used by the console.
 ad-ids|Network IDS|Optional passive Suricata IDS, AD protocol telemetry, daily summaries and evidence export.
 ad-events|Event center|Unified operational/audit timeline across assistant actions, AD/DC, journald, Remote Ops and IDS alerts.
 ad-remote|Remote operations|Select domain computers, inspect sessions, message users, collect diagnostics and perform controlled restarts/logoffs.
@@ -11565,7 +11567,7 @@ show_cli_commands() {
         "$C_GREEN" "$C_RESET" "$installed" "$C_YELLOW" "$C_RESET" "$missing"
     printf '\n'
     printf '  Examples:\n'
-    printf '    sudo adctl        %b# full main control plane%b\n' "$C_DIM" "$C_RESET"
+    printf '    sudo adctl        %b# full main console%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-ops       %b# reduced daily directory operations console%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-users     %b# user administration%b\n' "$C_DIM" "$C_RESET"
     printf '    sudo ad-gpo       %b# Group Policy console%b\n' "$C_DIM" "$C_RESET"
@@ -11588,7 +11590,18 @@ install_cli_commands() {
 
     [[ -f "$source_path" ]] || die "Cannot resolve current assistant path."
     mkdir -p "$target_dir" "$bindir"
-    install -m 0755 "$source_path" "$target"
+
+    # When invoked through an installed shortcut (for example adctl), readlink -f
+    # resolves $0 to $target. GNU install rejects copying a file onto itself, so
+    # refresh permissions in place instead. For a repository/local copy, install
+    # normally and atomically refresh the managed target.
+    if [[ "$source_path" == "$target" ]] || [[ -e "$target" && "$source_path" -ef "$target" ]]; then
+        chmod 0755 "$target"
+    else
+        local install_tmp="${target}.tmp.$$"
+        install -m 0755 "$source_path" "$install_tmp"
+        mv -f "$install_tmp" "$target"
+    fi
 
     local name title description
     while IFS='|' read -r name title description; do
@@ -12074,7 +12087,7 @@ remote_show_sessions() {
                 fi
             else
                 msg_warn "Windows session enumeration from the Debian controller requires OpenSSH on the endpoint."
-                msg_info "Use the Windows Server control plane for native WinRM/RDS session management."
+                msg_info "Use the Windows Server console for native WinRM/RDS session management."
                 return 1
             fi
             ;;
@@ -12447,7 +12460,7 @@ remote_ops_guidance() {
 
   Guardrails
 
-    - No credential is stored by this control plane.
+    - No credential is stored by this console.
     - Remote actions are appended to remote-ops/operations.tsv.
     - Destructive session/power actions require HIGH-risk confirmation.
     - Arbitrary remote shell/script deployment is intentionally not exposed.
@@ -12650,7 +12663,7 @@ manage_all_modules_menu() {
 manage_menu() {
     while true; do
         MENU_MAIN_REQUESTED=0
-        ui_menu_screen "AD/DC CONTROL PLANE" "Workspace navigation · letters are stable muscle-memory shortcuts"
+        ui_menu_screen "AD/DC CONSOLE" "Workspace navigation · letters are stable muscle-memory shortcuts"
         ui_workspace_pair "O" "Daily operations" "$C_GREEN" "D" "Directory" "$C_CYAN"
         ui_workspace_pair "P" "Policy / GPO" "$C_MAGENTA" "S" "Security" "$C_RED"
         ui_workspace_pair "R" "Remote operations" "$C_BLUE" "I" "Insights / events+IDS" "$C_YELLOW"
