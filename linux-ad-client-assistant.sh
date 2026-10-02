@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # linux-ad-client-assistant.sh
-# Version 1.3.0-it-admin-toolkit
+# Version 1.3.1-recovery-hardening
 #
 # Reversible Active Directory client join assistant for Linux.
 #
@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.3.0-it-admin-toolkit"
+SCRIPT_VERSION="1.3.1-recovery-hardening"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -216,7 +216,14 @@ ask() {
 }
 
 confirm() {
-    local prompt="$(ui_text "$1")" default="${2:-N}" answer="" shown="$default"
+    # Keep declarations separate under `set -u`: Bash expands assignments in a
+    # single `local` command before sibling variables are guaranteed to exist.
+    local prompt=""
+    local default="${2:-N}"
+    local answer=""
+    local shown=""
+    prompt="$(ui_text "$1")"
+    shown="$default"
     [[ "$UI_LANG" == "es" && "${default^^}" == "Y" ]] && shown="S"
     printf '%s [%s]: ' "$prompt" "$shown" >&${INPUT_FD}
     IFS= read -r -u "$INPUT_FD" answer || return 1
@@ -345,16 +352,85 @@ snapshot_domain() {
 
 incomplete_sssd_residue_present() {
     command_exists sss_cache || return 1
-    [[ ! -s /etc/sssd/sssd.conf ]] || return 1
-    [[ ! -s /var/lib/sss/db/config.ldb ]] || return 1
 
+    # A previous attempt is considered incomplete only when realmd has no
+    # membership and SSSD is not fully initialized. Installed SSSD tooling by
+    # itself is not an error condition.
     local realms=""
     if command_exists realm; then
         realms="$(realm list --name-only 2>/dev/null || true)"
         [[ -z "$realms" ]] || return 1
     fi
 
-    return 0
+    [[ ! -s /etc/sssd/sssd.conf || ! -s /var/lib/sss/db/config.ldb ]]
+}
+
+kerberos_machine_identity_present() {
+    [[ -s /etc/krb5.keytab ]] || return 1
+    command_exists klist || return 1
+    klist -k /etc/krb5.keytab 2>/dev/null | grep -Eqi '(^|[[:space:]])(host|restrictedkrbhost)/'
+}
+
+previous_join_evidence() {
+    local snap="${1:-}" domain="${2:-}"
+    local realms="" trust="unknown" keytab="no" sssd_conf="no" confdb="no" kerberos_realm=""
+
+    command_exists realm && realms="$(realm list --name-only 2>/dev/null || true)"
+
+    if command_exists klist && [[ -s /etc/krb5.keytab ]]; then
+        kerberos_realm="$(klist -k /etc/krb5.keytab 2>/dev/null | awk '''/^[[:space:]]*[0-9]+[[:space:]]+[^[:space:]]+@/{p=$NF; sub(/^.*@/,"",p); if(p!=""){print p; exit}}''')"
+    fi
+    if [[ -z "$kerberos_realm" && -r /etc/krb5.conf ]]; then
+        kerberos_realm="$(awk -F= '''tolower($1) ~ /^[[:space:]]*default_realm[[:space:]]*$/ {gsub(/[[:space:]]/,"",$2); print $2; exit}''' /etc/krb5.conf 2>/dev/null || true)"
+    fi
+    [[ -s /etc/sssd/sssd.conf ]] && sssd_conf="yes"
+    [[ -s /var/lib/sss/db/config.ldb ]] && confdb="yes"
+    kerberos_machine_identity_present && keytab="yes"
+
+    if command_exists adcli && [[ -n "$domain" ]]; then
+        if adcli testjoin -D "$domain" >/dev/null 2>&1; then
+            trust="valid"
+        else
+            trust="not-validated"
+        fi
+    fi
+
+    printf '\nPREVIOUS JOIN EVIDENCE\n'
+    printf '  Snapshot domain : %s\n' "${domain:-unknown}"
+    printf '  realmd realms   : %s\n' "${realms:-none}"
+    printf '  Kerberos realm  : %s\n' "${kerberos_realm:-none detected}"
+    printf '  Machine trust   : %s\n' "$trust"
+    printf '  Kerberos keytab : %s\n' "$keytab"
+    printf '  sssd.conf       : %s\n' "$sssd_conf"
+    printf '  SSSD config DB  : %s\n' "$confdb"
+
+    if [[ "$trust" == "valid" && -z "$realms" ]]; then
+        warn "AD still accepts the local machine credentials, but realmd/SSSD membership is incomplete."
+        info "This is a partial local configuration, not a clean unjoined state."
+    elif [[ "$keytab" == "yes" && -z "$realms" ]]; then
+        warn "Kerberos machine principals exist locally, but realmd reports no realm membership."
+        info "The keytab may be residue from a failed or manually altered join."
+    fi
+}
+
+clean_failed_join_for_retry() {
+    local snap="$1"
+    [[ -n "$snap" && -d "$snap" ]] || {
+        err "No usable assistant snapshot is available for cleanup."
+        return 1
+    }
+
+    info "Restoring the pre-attempt local identity and resolver baseline."
+    restore_network_from_snapshot "$snap" || warn "DNS/network restoration reported a problem."
+    restore_identity_files "$snap"
+    restore_hostname_from_snapshot "$snap" || warn "Hostname restoration reported a problem."
+    restore_sssd_runtime_from_snapshot "$snap"
+    rm -f "$CURRENT_STATE" 2>/dev/null || true
+
+    # Keep AD client packages installed. They are safe and make the immediate
+    # retry faster; package cleanup remains available from the normal leave/
+    # restore workflows.
+    ok "Failed-attempt local residue cleaned. AD client packages were kept for an immediate retry."
 }
 
 recover_incomplete_previous_join() {
@@ -362,59 +438,56 @@ recover_incomplete_previous_join() {
 
     local snap="" domain=""
     snap="$(latest_assistant_snapshot || true)"
-    [[ -n "$snap" ]] || {
-        warn "SSSD tools are installed but SSSD has no configuration database."
-        warn "No assistant snapshot is available for automatic recovery."
-        return 0
-    }
 
-    domain="$(snapshot_domain "$snap" || true)"
-    if command_exists adcli && [[ -n "$domain" ]] &&
-       adcli testjoin -D "$domain" >/dev/null 2>&1; then
-        warn "The machine account still validates against AD, but local SSSD is incomplete."
-        warn "Do not remove AD client packages automatically; repair SSSD or perform a clean domain leave."
-        return 0
+    if [[ -n "$snap" ]]; then
+        domain="$(snapshot_domain "$snap" || true)"
     fi
 
     printf '\n%bINCOMPLETE PREVIOUS JOIN DETECTED%b\n' "$C_BOLD" "$C_RESET"
-    warn "SSSD client tools are installed, but /etc/sssd/sssd.conf and config.ldb are not initialized."
-    info "This matches a previous join that stopped before membership completed."
-    info "Latest assistant snapshot: $snap"
+    warn "A previous AD join did not leave a complete realmd/SSSD configuration."
+
+    if [[ -n "$snap" ]]; then
+        info "Latest assistant snapshot: $snap"
+        previous_join_evidence "$snap" "$domain"
+    else
+        warn "No assistant snapshot is available; automatic cleanup is intentionally limited."
+        previous_join_evidence "" ""
+    fi
+
     printf '\n'
-    printf '  [1] Repair local identity state from the snapshot (recommended)\n'
-    printf '  [2] Keep the current residue and continue\n'
+    printf '  [1] Clean failed-attempt local state and retry the join (recommended)\n'
+    printf '  [2] Keep current residue and retry the join\n'
+    printf '  [3] Show diagnostics again\n'
     printf '  [0] Cancel\n'
 
     local choice=""
-    choice="$(ask 'Recovery action' '1')"
-    case "$choice" in
-        1)
-            restore_identity_files "$snap"
-            restore_sssd_runtime_from_snapshot "$snap"
-
-            if [[ -s "$snap/packages-installed-by-assistant.txt" ]]; then
-                printf '\n'
-                warn "Packages added by the failed attempt are still installed."
-                info "Keeping them is useful for an immediate retry, but sss_cache may keep warning until SSSD is configured."
-                if confirm "Remove only packages added by that failed attempt and return to the pre-join package baseline?" Y; then
-                    remove_assistant_packages_now "$snap" || \
-                        warn "Some assistant-installed packages could not be removed."
-                fi
-            fi
-
-            ok "Incomplete previous join residue repaired."
-            ;;
-        2)
-            warn "Continuing with the previous SSSD residue in place."
-            ;;
-        0)
-            return 1
-            ;;
-        *)
-            warn "Invalid recovery selection."
-            return 1
-            ;;
-    esac
+    while true; do
+        choice="$(ask 'Recovery action' '1')" || return 1
+        case "$choice" in
+            1)
+                [[ -n "$snap" ]] || {
+                    err "Cleanup requires an assistant snapshot. Choose option 2 only if you intentionally want to retry over the current local state."
+                    continue
+                }
+                clean_failed_join_for_retry "$snap" || return 1
+                return 0
+                ;;
+            2)
+                warn "Continuing with the previous SSSD/Kerberos residue in place."
+                warn "The guided join will still perform DNS, Kerberos and AD connectivity validation before membership changes."
+                return 0
+                ;;
+            3)
+                previous_join_evidence "$snap" "$domain"
+                ;;
+            0)
+                return 1
+                ;;
+            *)
+                warn "Invalid recovery selection."
+                ;;
+        esac
+    done
 }
 
 
@@ -517,22 +590,30 @@ select_join_interface() {
 }
 
 identity_precheck() {
-    local findings=0
+    local conflicts=0
     printf '\nIDENTITY PRECHECK\n'
+
     if [[ -s /etc/sssd/sssd.conf ]]; then
         warn "Existing /etc/sssd/sssd.conf detected."
-        findings=1
+        conflicts=1
     fi
+
     if [[ -s /etc/krb5.keytab ]]; then
-        warn "Existing /etc/krb5.keytab detected. It will be snapshotted before join."
-        findings=1
+        if kerberos_machine_identity_present; then
+            warn "Existing Kerberos machine principals detected in /etc/krb5.keytab; they will be snapshotted before join."
+        else
+            warn "Existing /etc/krb5.keytab detected; it will be snapshotted before join."
+        fi
+        conflicts=1
     fi
+
     if grep -Eq '(^|[[:space:]])sss([[:space:]]|$)' /etc/nsswitch.conf 2>/dev/null; then
-        info "NSS already references SSSD."
-        findings=1
+        info "NSS already references SSSD. This alone does not block a new join."
     fi
-    if (( findings )); then
-        confirm "Existing identity configuration was found. Continue only after snapshot/review?" N || return 1
+
+    if (( conflicts )); then
+        warn "Existing identity material may belong to a prior or manually configured domain client."
+        confirm "Snapshot the current identity state and continue with the guided join?" Y || return 1
     else
         ok "No conflicting pre-existing identity configuration detected."
     fi
@@ -1769,7 +1850,16 @@ join_domain_guided() {
     if [[ -n "$existing_realms" ]]; then
         warn "This machine already reports realm membership:"
         printf '%s\n' "$existing_realms"
-        return 1
+        printf '\n  [1] Show current domain status\n'
+        printf '  [2] Switch to another domain\n'
+        printf '  [0] Cancel\n'
+        local joined_choice=""
+        joined_choice="$(ask 'Select operation' '1')" || return 1
+        case "$joined_choice" in
+            1) status_domain; return 0 ;;
+            2) switch_domain_guided; return $? ;;
+            *) return 0 ;;
+        esac
     fi
 
     if (( PRESET_SWITCH_MODE == 0 )); then
