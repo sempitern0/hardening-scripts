@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # linux-ad-client-assistant.sh
-# Version 1.3.1-recovery-hardening
+# Version 1.3.2-credential-prompt-fix
 #
 # Reversible Active Directory client join assistant for Linux.
 #
@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.3.1-recovery-hardening"
+SCRIPT_VERSION="1.3.2-credential-prompt-fix"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -1565,15 +1565,25 @@ validate_ad_network_ports() {
 }
 
 prompt_domain_admin_account() {
-    local purpose="${1:-join}" default_account="${2:-Administrator}" account=""
+    local purpose="${1:-join}"
+    local default_account="${2:-Administrator}"
+    local account=""
 
-    printf '\n%bDOMAIN CREDENTIAL%b\n' "$C_BOLD" "$C_RESET"
-    printf '  Default account: %s\n' "$default_account"
-    printf '  Press Enter to use the default, or type another delegated/enabled AD account.\n'
-    printf '  Accepted forms: user | user@%s | DOMAIN\\user\n\n' "${JOIN_REALM_NAME:-REALM}"
+    # This function is normally called through command substitution.  All UI
+    # output MUST go to the interactive descriptor so stdout contains only the
+    # selected account.  Otherwise labels such as DOMAIN\user become part of
+    # the Kerberos principal and corrupt kinit.
+    printf '\n%bDOMAIN CREDENTIAL%b\n' "$C_BOLD" "$C_RESET" >&${INPUT_FD}
+    printf '  This credential is used only to authorize the computer membership operation.\n' >&${INPUT_FD}
+    printf '  It is not the domain user who will later sign in to this workstation.\n' >&${INPUT_FD}
+    printf '  Prefer a delegated computer-join account; Domain Admin is not required when delegation exists.\n' >&${INPUT_FD}
+    printf '  Default account: %s\n' "$default_account" >&${INPUT_FD}
+    printf '  Accepted forms: user | user@%s | DOMAIN\\user\n\n' "${JOIN_REALM_NAME:-REALM}" >&${INPUT_FD}
 
-    account="$(ask "AD account authorized to ${purpose}" "$default_account")"
+    account="$(ask "AD account authorized to ${purpose}" "$default_account")" || return 1
     [[ -n "$account" ]] || account="$default_account"
+
+    # Only the machine-readable return value is written to stdout.
     printf '%s' "$account"
 }
 
@@ -1597,6 +1607,14 @@ analyze_realm_join_failure() {
 
 kerberos_preflight_ticket() {
     local join_user="$1" realm="$2" principal=""
+
+    # Credentials must be a single logical account token.  This catches UI or
+    # caller contamination before kinit is invoked.
+    if [[ "$join_user" == *$'\n'* || "$join_user" == *$'\r'* || "$join_user" == *$'\t'* ]]; then
+        err "Invalid AD account value: embedded whitespace/control characters detected."
+        return 1
+    fi
+
     principal="$join_user"
     if [[ "$principal" == *\\* ]]; then
         principal="${principal##*\\}"
