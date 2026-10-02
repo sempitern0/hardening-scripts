@@ -1,7 +1,7 @@
 ﻿#requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Windows AD Client Assistant - v1.2.0-transactional
+    Windows AD Client Assistant - v1.3.0-it-admin-toolkit
 
 .DESCRIPTION
     Reversible, transaction-aware assistant for joining Windows clients and
@@ -22,8 +22,11 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Audit','Join','Status','Leave','Restore','Snapshots','Recover')]
+    [ValidateSet('Interactive','Audit','Join','Status','Leave','Switch','Connectivity','Troubleshoot','Diagnostics','Restore','Snapshots','Recover')]
     [string]$Mode = 'Interactive',
+
+    [ValidateSet('en','es')]
+    [string]$Language = 'en',
 
     [string]$StateRoot = "$env:ProgramData\ADClientAssistant",
 
@@ -46,7 +49,7 @@ $ErrorActionPreference = 'Stop'
 # ---------------------------------------------------------------------------
 
 $script:ProductName = 'Windows AD Client Assistant'
-$script:Version = '1.2.0-transactional'
+$script:Version = '1.3.0-it-admin-toolkit'
 $script:StartedAt = Get-Date
 $script:SnapshotRoot = Join-Path $StateRoot 'snapshots'
 $script:CurrentState = Join-Path $StateRoot 'current.json'
@@ -60,6 +63,7 @@ $script:UseColor = (-not $NoColor) -and (-not [Console]::IsOutputRedirected)
 $script:Events = New-Object 'System.Collections.Generic.List[object]'
 $script:LockStream = $null
 $script:RunOutcome = 'COMPLETE'
+$script:UiLanguage = $Language.ToLowerInvariant()
 
 # ---------------------------------------------------------------------------
 # UI / logging / persistence
@@ -161,9 +165,50 @@ function Write-ErrorUi {
     Add-RunEvent ERROR $Text
 }
 
+$script:UiSpanish = @{
+    'Press Enter to continue' = 'Pulsa Enter para continuar'
+    'Select operation' = 'Selecciona una operación'
+    'Readiness audit' = 'Auditoría de preparación'
+    'Guided domain join' = 'Unión guiada al dominio'
+    'Domain client status' = 'Estado del cliente de dominio'
+    'Leave domain cleanly' = 'Salir limpiamente del dominio'
+    'Switch to another domain' = 'Cambiar a otro dominio'
+    'AD connectivity test' = 'Prueba de conectividad AD'
+    'Troubleshoot / repair' = 'Diagnóstico / reparación'
+    'Export diagnostic bundle' = 'Exportar paquete de diagnóstico'
+    'Restore pre-join state' = 'Restaurar estado previo a la unión'
+    'List recovery snapshots' = 'Listar snapshots de recuperación'
+    'Recover interrupted lifecycle' = 'Recuperar ciclo interrumpido'
+    'Language / Idioma' = 'Idioma / Language'
+    'Exit' = 'Salir'
+    'AD DNS domain (for example corp.example.com)' = 'Dominio DNS de AD (por ejemplo corp.example.com)'
+    'AD DNS server IPv4 addresses (comma separated)' = 'Direcciones IPv4 de los DNS de AD (separadas por comas)'
+    'Target AD DNS domain (for example corp.example.com)' = 'Dominio DNS de AD destino (por ejemplo corp.example.com)'
+    'Target AD DNS server IPv4 addresses (comma separated)' = 'Direcciones IPv4 de los DNS AD destino (separadas por comas)'
+    'Join account' = 'Cuenta autorizada para unir el equipo'
+    'Source-domain unjoin account' = 'Cuenta autorizada para salir del dominio origen'
+    'Target-domain join account' = 'Cuenta autorizada para unir al dominio destino'
+    'Computer OU DN (optional)' = 'DN de la OU del equipo (opcional)'
+    'Computer name' = 'Nombre del equipo'
+    'Workgroup after leaving the domain' = 'Grupo de trabajo tras abandonar el dominio'
+    'Restart now?' = '¿Reiniciar ahora?'
+}
+
+function Get-UiText {
+    param([Parameter(Mandatory=$true)][string]$Text)
+    if ($script:UiLanguage -eq 'es' -and $script:UiSpanish.ContainsKey($Text)) {
+        return [string]$script:UiSpanish[$Text]
+    }
+    return $Text
+}
+
+function Switch-UiLanguage {
+    $script:UiLanguage = if ($script:UiLanguage -eq 'en') { 'es' } else { 'en' }
+}
+
 function Pause-Ui {
     if (-not [Console]::IsInputRedirected) {
-        [void](Read-Host 'Press Enter to continue')
+        [void](Read-Host (Get-UiText 'Press Enter to continue'))
     }
 }
 
@@ -174,12 +219,12 @@ function Read-Value {
     )
 
     if ($Default) {
-        $value = Read-Host ("{0} [{1}]" -f $Prompt, $Default)
+        $value = Read-Host ("{0} [{1}]" -f (Get-UiText $Prompt), $Default)
         if ([string]::IsNullOrWhiteSpace($value)) { return $Default }
         return $value.Trim()
     }
 
-    return (Read-Host $Prompt).Trim()
+    return (Read-Host (Get-UiText $Prompt)).Trim()
 }
 
 function Confirm-Choice {
@@ -188,7 +233,9 @@ function Confirm-Choice {
         [ValidateSet('Y','N')][string]$Default = 'N'
     )
 
-    $answer = Read-Host ("{0} [{1}]" -f $Prompt, $Default)
+    $shownDefault = $Default
+    if ($script:UiLanguage -eq 'es' -and $Default -eq 'Y') { $shownDefault = 'S' }
+    $answer = Read-Host ("{0} [{1}]" -f (Get-UiText $Prompt), $shownDefault)
     if ([string]::IsNullOrWhiteSpace($answer)) { $answer = $Default }
     return ($answer -match '^(?i:y|yes|s|si|sí)$')
 }
@@ -199,8 +246,9 @@ function Confirm-Literal {
         [Parameter(Mandatory=$true)][string]$Literal
     )
 
-    Write-Ui $Prompt Yellow
-    $answer = Read-Host ("Type {0} to continue" -f $Literal)
+    Write-Ui (Get-UiText $Prompt) Yellow
+    $literalPrompt = if ($script:UiLanguage -eq 'es') { "Escribe {0} para continuar" -f $Literal } else { "Type {0} to continue" -f $Literal }
+    $answer = Read-Host $literalPrompt
     return ($answer -ceq $Literal)
 }
 
@@ -690,11 +738,15 @@ function New-JoinState {
         [Parameter(Mandatory=$true)]$Snapshot,
         [Parameter(Mandatory=$true)][string]$Domain,
         [Parameter(Mandatory=$true)][string[]]$DnsServers,
-        [Parameter(Mandatory=$true)][string]$RequestedComputerName
+        [Parameter(Mandatory=$true)][string]$RequestedComputerName,
+        [ValidateSet('Join','Switch')][string]$Operation = 'Join',
+        [string]$SourceDomain = ''
     )
 
     $state = [ordered]@{
-        StateVersion          = 3
+        StateVersion          = 4
+        Operation             = $Operation
+        SourceDomain          = $SourceDomain
         Phase                 = 'SNAPSHOT_CREATED'
         PhaseBootMarker       = Get-BootMarker
         TransactionStartedAt  = (Get-Date).ToString('o')
@@ -1182,6 +1234,261 @@ function Invoke-Status {
     }
 
     [void](Test-TimeState)
+}
+
+# ---------------------------------------------------------------------------
+# IT administrator diagnostics / domain transition
+# ---------------------------------------------------------------------------
+
+function Test-DomainDnsThroughServers {
+    param(
+        [Parameter(Mandatory=$true)][string]$Domain,
+        [Parameter(Mandatory=$true)][string[]]$DnsServers
+    )
+
+    $srv = '_ldap._tcp.dc._msdcs.{0}' -f $Domain
+    $ok = $true
+    foreach ($server in $DnsServers) {
+        try {
+            $answers = @(Resolve-DnsName -Name $srv -Type SRV -Server $server -DnsOnly -ErrorAction Stop |
+                Where-Object { $_.Type -eq 'SRV' -and $_.NameTarget })
+            if ($answers.Count -eq 0) { throw 'No DC locator SRV records returned.' }
+            Write-Ok ("DNS {0} resolves {1}." -f $server,$Domain)
+        }
+        catch {
+            Write-ErrorUi ("DNS {0} cannot resolve {1}: {2}" -f $server,$Domain,$_.Exception.Message)
+            $ok = $false
+        }
+    }
+    return $ok
+}
+
+function Invoke-ConnectivityTest {
+    Sync-LifecycleState
+    Write-Header
+    Write-Ui 'AD CONNECTIVITY TEST' Cyan
+    Write-Ui ''
+
+    $state = Get-CurrentState
+    $defaultDomain = if ($state -and $state.Domain) { [string]$state.Domain } else {
+        try { $c = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop; if ($c.PartOfDomain) { [string]$c.Domain } else { '' } } catch { '' }
+    }
+    $defaultDns = if ($state -and $state.DnsServers) { (@($state.DnsServers) -join ',') } else { '' }
+
+    $domain = (Read-Value -Prompt 'AD DNS domain (for example corp.example.com)' -Default $defaultDomain).ToLowerInvariant()
+    if (-not (Test-DnsDomainName -Name $domain)) { Write-ErrorUi 'A valid AD DNS domain is required.'; return }
+    $dnsServers = @(Parse-DnsInput -Text (Read-Value -Prompt 'AD DNS server IPv4 addresses (comma separated)' -Default $defaultDns))
+    if (-not (Test-IPv4AddressList -Addresses $dnsServers)) { Write-ErrorUi 'At least one valid IPv4 AD DNS server is required.'; return }
+
+    $dns = Test-AdDnsServers -Domain $domain -DnsServers $dnsServers
+    $iface = Select-NetworkInterface -RemoteIPAddress $dnsServers[0]
+    $dcName = @($dns.DomainControllers | Select-Object -First 1)
+    $portsOk = $false
+    if ($dcName.Count -gt 0) { $portsOk = Test-AdNetworkReadiness -DomainController ([string]$dcName[0]) }
+    $timeOk = Test-TimeState
+
+    Write-Ui ''
+    Write-Ui 'SYSTEM RESOLVER' Cyan
+    if (Wait-SystemAdDiscovery -Domain $domain -Attempts 2) { Write-Ok 'System resolver can discover Active Directory.' }
+    else { Write-Warn 'System resolver cannot currently discover the domain.' }
+
+    Write-Ui ''
+    Write-Ui 'MEMBERSHIP / SECURE CHANNEL' Cyan
+    try {
+        $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+        if ($cs.PartOfDomain) {
+            Write-Ok ("Current domain membership: {0}" -f $cs.Domain)
+            try {
+                if (Test-ComputerSecureChannel -ErrorAction Stop) { Write-Ok 'Windows secure channel is healthy.' }
+                else { Write-Warn 'Windows secure channel test returned false.' }
+            } catch { Write-Warn ("Secure-channel test could not complete: {0}" -f $_.Exception.Message) }
+        } else { Write-Info 'Computer is not currently domain joined.' }
+    } catch {}
+
+    Write-Ui ''
+    if ($dns.AdDiscoveryOk -and $portsOk -and $timeOk) { Write-Ok 'READY: AD DNS, required ports and local time checks passed.' }
+    else { Write-ErrorUi 'BLOCKED/DEGRADED: one or more readiness checks failed.' }
+}
+
+function Invoke-Troubleshoot {
+    Sync-LifecycleState
+    Write-Header
+    Write-Ui 'AD TROUBLESHOOTER' Cyan
+    Write-Ui ''
+
+    $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+    Write-Ui ("Computer : {0}" -f $env:COMPUTERNAME)
+    if ($cs) { Write-Ui ("Identity : {0}" -f $(if ($cs.PartOfDomain) { $cs.Domain } else { $cs.Workgroup })) }
+    Write-Ui ("Lifecycle: {0}" -f (Get-LifecycleLabel))
+
+    Write-Ui ''
+    Write-Ui 'NETWORK' Cyan
+    Get-NetIPConfiguration -ErrorAction SilentlyContinue | ForEach-Object {
+        $dns = @($_.DNSServer.ServerAddresses) -join ','
+        Write-Ui ("  {0} ifIndex={1} IPv4={2} DNS={3}" -f $_.InterfaceAlias,$_.InterfaceIndex,(@($_.IPv4Address.IPAddress) -join ','),$dns)
+    }
+
+    Write-Ui ''
+    Write-Ui 'SECURE CHANNEL' Cyan
+    if ($cs -and $cs.PartOfDomain) {
+        $secure = $false
+        try { $secure = Test-ComputerSecureChannel -ErrorAction Stop } catch { Write-Warn $_.Exception.Message }
+        if ($secure) { Write-Ok 'Secure channel is healthy.' }
+        else {
+            Write-ErrorUi 'Secure channel is unhealthy or could not be validated.'
+            if (Confirm-Choice -Prompt 'Attempt secure-channel repair with explicit domain credentials?' -Default N) {
+                $user = Read-Value -Prompt 'Join account' -Default ("Administrator@{0}" -f $cs.Domain)
+                $cred = Get-Credential -UserName $user -Message ("Credentials authorized to repair secure channel for {0}" -f $cs.Domain)
+                if ($cred) {
+                    try {
+                        if (Test-ComputerSecureChannel -Repair -Credential $cred -ErrorAction Stop) { Write-Ok 'Secure channel repaired.' }
+                        else { Write-ErrorUi 'Windows did not confirm secure-channel repair.' }
+                    } catch { Write-ErrorUi ("Secure-channel repair failed: {0}" -f $_.Exception.Message) }
+                }
+            }
+        }
+    } else { Write-Info 'Secure-channel test is not applicable while off-domain.' }
+
+    Write-Ui ''
+    Write-Ui 'NETSETUP DIAGNOSTICS' Cyan
+    $state = Get-CurrentState
+    $start = if ($state -and $state.PSObject.Properties['NetSetupStartLine']) { [int]$state.NetSetupStartLine } else { 0 }
+    Write-NetSetupDiagnosis -SnapshotPath $(if ($state) { [string]$state.SnapshotPath } else { '' }) -StartLine $start
+
+    if (Confirm-Choice -Prompt 'Flush DNS client cache and restart Netlogon now?' -Default N) {
+        try { Clear-DnsClientCache -ErrorAction Stop; Write-Ok 'DNS client cache cleared.' } catch { Write-Warn $_.Exception.Message }
+        if (Get-Service Netlogon -ErrorAction SilentlyContinue) {
+            try { Restart-Service Netlogon -Force -ErrorAction Stop; Write-Ok 'Netlogon restarted.' } catch { Write-Warn $_.Exception.Message }
+        }
+    }
+}
+
+function Export-DiagnosticBundle {
+    Sync-LifecycleState
+    Write-Header
+    Write-Ui 'EXPORT DIAGNOSTIC BUNDLE' Cyan
+    Write-Ui ''
+
+    $root = Join-Path $script:ReportRoot ("diagnostic-{0}" -f $script:RunId)
+    $zip = "{0}.zip" -f $root
+    New-Item -ItemType Directory -Force -Path $root | Out-Null
+    try {
+        Get-ComputerInfo -ErrorAction SilentlyContinue | Out-File (Join-Path $root 'computer-info.txt') -Width 240 -Encoding utf8
+        Get-NetIPConfiguration -Detailed -ErrorAction SilentlyContinue | Out-File (Join-Path $root 'network.txt') -Width 240 -Encoding utf8
+        Get-NetRoute -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Format-Table -AutoSize | Out-String -Width 240 | Set-Content (Join-Path $root 'routes.txt') -Encoding utf8
+        Get-DnsClientServerAddress -ErrorAction SilentlyContinue | Format-List * | Out-String -Width 240 | Set-Content (Join-Path $root 'dns.txt') -Encoding utf8
+        $state = Get-CurrentState
+        if ($state) { $state | ConvertTo-Json -Depth 12 | Set-Content (Join-Path $root 'lifecycle.json') -Encoding utf8 }
+        @(Get-NetSetupAttemptLines -StartLine 0 | Select-Object -Last 500) | Set-Content (Join-Path $root 'NetSetup-tail.txt') -Encoding utf8
+        try { Test-ComputerSecureChannel -Verbose 4>&1 | Out-File (Join-Path $root 'secure-channel.txt') -Encoding utf8 } catch { $_ | Out-File (Join-Path $root 'secure-channel.txt') -Encoding utf8 }
+        Compress-Archive -Path (Join-Path $root '*') -DestinationPath $zip -Force
+        Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Ok ("Diagnostic bundle created: {0}" -f $zip)
+        Write-Warn 'Review the archive before sharing; it contains host/network/domain metadata. Credentials are not collected.'
+    }
+    catch { Write-ErrorUi ("Diagnostic bundle export failed: {0}" -f $_.Exception.Message) }
+}
+
+function Invoke-DomainSwitch {
+    Sync-LifecycleState
+    Write-Header
+    Write-Ui 'GUIDED DOMAIN SWITCH' Cyan
+    Write-Ui ''
+
+    if (-not (Test-DomainJoinEdition)) { return }
+    $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+    if (-not $cs.PartOfDomain) { Write-Info 'Computer is not domain joined; starting normal guided join.'; Invoke-GuidedJoin; return }
+
+    $existing = Get-CurrentState
+    if ($existing -and [string]$existing.Phase -notin @('JOINED','JOINED_DEGRADED')) {
+        Write-ErrorUi ("Unfinished lifecycle exists: {0}. Recover it before switching domains." -f $existing.Phase); return
+    }
+
+    $sourceDomain = [string]$cs.Domain
+    $targetDomain = (Read-Value -Prompt 'Target AD DNS domain (for example corp.example.com)' -Default '').ToLowerInvariant()
+    if (-not (Test-DnsDomainName -Name $targetDomain) -or $targetDomain -ieq $sourceDomain) { Write-ErrorUi 'A different valid target domain is required.'; return }
+    $dnsServers = @(Parse-DnsInput -Text (Read-Value -Prompt 'Target AD DNS server IPv4 addresses (comma separated)' -Default ''))
+    if (-not (Test-IPv4AddressList -Addresses $dnsServers)) { Write-ErrorUi 'At least one valid target AD DNS IPv4 address is required.'; return }
+
+    $targetPreflight = Test-AdDnsServers -Domain $targetDomain -DnsServers $dnsServers
+    if (-not $targetPreflight.AdDiscoveryOk) { Write-ErrorUi 'Target AD DNS discovery failed. Nothing was changed.'; return }
+    if (-not $targetPreflight.ForwardingOk -and -not $AllowAdDnsWithoutExternalResolution) { Write-ErrorUi 'Target AD DNS external forwarding check failed.'; return }
+    if (-not (Test-DomainDnsThroughServers -Domain $sourceDomain -DnsServers $dnsServers)) {
+        Write-ErrorUi 'Target DNS cannot resolve the source domain. Configure conditional forwarding/coexistence before an automated switch.'; return
+    }
+
+    $iface = Select-NetworkInterface -RemoteIPAddress $dnsServers[0]
+    $targetDc = @($targetPreflight.DomainControllers | Select-Object -First 1)
+    if ($targetDc.Count -eq 0) { Write-ErrorUi 'No target DC FQDN was discovered.'; return }
+    $targetDcName = ([string]$targetDc[0]).TrimEnd('.')
+    if (-not (Test-AdNetworkReadiness -DomainController $targetDcName)) { Write-ErrorUi 'Target-domain required ports are not reachable.'; return }
+    [void](Test-TimeState); [void](Test-TimeAgainstDomainController -ComputerName $targetDcName)
+
+    $sourceUser = Read-Value -Prompt 'Source-domain unjoin account' -Default ("Administrator@{0}" -f $sourceDomain)
+    $targetUser = Read-Value -Prompt 'Target-domain join account' -Default ("Administrator@{0}" -f $targetDomain)
+    $ouPath = Read-Value -Prompt 'Computer OU DN (optional)' -Default ''
+    $requestedName = Read-Value -Prompt 'Computer name' -Default $env:COMPUTERNAME
+    if (-not (Test-ComputerNameValue -Name $requestedName)) { Write-ErrorUi 'Invalid computer name.'; return }
+
+    Write-Ui ''
+    Write-Ui ("  Source domain : {0}" -f $sourceDomain)
+    Write-Ui ("  Target domain : {0}" -f $targetDomain)
+    Write-Ui ("  Target DC     : {0}" -f $targetDcName)
+    Write-Ui ("  Target DNS    : {0}" -f ($dnsServers -join ', '))
+    Write-Ui ("  Computer      : {0}" -f $requestedName)
+    Write-Ui '  Transition    : direct domain-to-domain, one reboot, no stored passwords' Gray
+    if (-not (Confirm-Literal -Prompt 'The computer will move directly to the target domain after all preflight checks passed.' -Literal 'SWITCH')) { return }
+
+    $sourceCredential = Get-Credential -UserName $sourceUser -Message ("Credentials authorized to unjoin from {0}" -f $sourceDomain)
+    if (-not $sourceCredential) { return }
+    $targetCredential = Get-Credential -UserName $targetUser -Message ("Credentials authorized to join {0}" -f $targetDomain)
+    if (-not $targetCredential) { return }
+
+    $snapshot = New-PreJoinSnapshot -Interface $iface -TargetDomain $targetDomain
+    New-JoinState -Snapshot $snapshot -Domain $targetDomain -DnsServers $dnsServers -RequestedComputerName $requestedName -Operation Switch -SourceDomain $sourceDomain
+
+    try {
+        Set-DomainDns -InterfaceIndex ([uint32]$iface.InterfaceIndex) -DnsServers $dnsServers
+        [void](Set-CurrentStateValues -Values @{Phase='DNS_APPLIED';PhaseBootMarker=(Get-BootMarker)})
+        if (-not (Wait-SystemAdDiscovery -Domain $targetDomain)) { throw 'System resolver cannot discover target AD after applying target DNS.' }
+        if (-not (Wait-SystemAdDiscovery -Domain $sourceDomain)) { throw 'Target DNS stopped resolving source AD after resolver transition.' }
+
+        [void](Set-CurrentStateValues -Values @{Phase='JOIN_SUBMITTED';PhaseBootMarker=(Get-BootMarker);JoinAttempted=$true})
+        $params = @{
+            DomainName=$targetDomain; Server=$targetDcName; Credential=$targetCredential;
+            UnjoinDomainCredential=$sourceCredential; PassThru=$true; Force=$true; ErrorAction='Stop'
+        }
+        if ($ouPath) { $params.OUPath = $ouPath }
+        if ($requestedName -ine $env:COMPUTERNAME) { $params.NewName = $requestedName }
+        $result = Add-Computer @params
+        if ($result -and $result.PSObject.Properties['HasSucceeded'] -and -not $result.HasSucceeded) { throw 'Add-Computer returned HasSucceeded=False.' }
+        [void](Set-CurrentStateValues -Values @{Phase='JOIN_PENDING_REBOOT';PhaseBootMarker=(Get-BootMarker);MembershipCommitted=$true})
+        Write-Ok 'Windows accepted the direct domain-to-domain transition.'
+        Write-Warn 'Target AD DNS is retained until reboot and secure-channel validation.'
+        if (Confirm-Choice -Prompt 'Restart now?' -Default N) { $script:RunOutcome='REBOOT_REQUESTED'; Write-RunReport; Restart-Computer -Force }
+    }
+    catch {
+        Write-ErrorUi ("Domain switch stopped: {0}" -f $_.Exception.Message)
+        $state = Get-CurrentState
+        $phase = if ($state) { [string]$state.Phase } else { '' }
+        if ($phase -in @('SNAPSHOT_CREATED','DNS_APPLIED')) {
+            try { Restore-DnsFromSnapshot -Snapshot $snapshot; Remove-CurrentState; Write-Ok 'Pre-switch DNS restored; membership transition was not submitted.' } catch { Write-ErrorUi $_.Exception.Message }
+        }
+        else {
+            Write-NetSetupDiagnosis -SnapshotPath ([string]$snapshot.SnapshotPath) -StartLine ([int]$snapshot.NetSetupStartLine)
+            $evidence = Get-JoinCommitEvidence -Domain $targetDomain -NetSetupStartLine ([int]$snapshot.NetSetupStartLine)
+            if ($evidence.Outcome -eq 'Accepted') {
+                [void](Set-CurrentStateValues -Values @{Phase='JOIN_PENDING_REBOOT';PhaseBootMarker=(Get-BootMarker);MembershipCommitted=$true})
+                Write-Warn 'Target-domain acceptance evidence exists. Keep target DNS and reboot.'
+            } elseif ($evidence.Outcome -eq 'Failed') {
+                Write-ErrorUi 'Windows reported an explicit transition failure. Membership may still require operator verification before DNS rollback.'
+                Write-Warn 'Run Recover/Status and inspect NetSetup evidence before another membership operation.'
+            } else {
+                [void](Set-CurrentStateValues -Values @{Phase='JOIN_AMBIGUOUS';PhaseBootMarker=(Get-BootMarker)})
+                Write-ErrorUi 'Domain-switch membership state is ambiguous. Automatic rollback is blocked intentionally.'
+            }
+        }
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -1679,20 +1986,25 @@ function Show-MainMenu {
     while ($true) {
         Sync-LifecycleState
         Write-Header
-        Write-Ui 'CLIENT JOIN CONTROL PLANE' Cyan
+        Write-Ui 'AD CLIENT OPERATIONS' Cyan
         Write-Ui ''
-        Write-Ui '  [1] Readiness audit'
-        Write-Ui '  [2] Guided domain join'
-        Write-Ui '  [3] Domain client status'
-        Write-Ui '  [4] Leave domain cleanly'
-        Write-Ui '  [5] Restore pre-join state'
-        Write-Ui '  [6] List recovery snapshots'
-        Write-Ui '  [7] Recover interrupted lifecycle' Yellow
-        Write-Ui '  [0] Exit'
+        Write-Ui ("  [1] {0}" -f (Get-UiText 'Readiness audit'))
+        Write-Ui ("  [2] {0}" -f (Get-UiText 'Guided domain join'))
+        Write-Ui ("  [3] {0}" -f (Get-UiText 'Domain client status'))
+        Write-Ui ("  [4] {0}" -f (Get-UiText 'Leave domain cleanly'))
+        Write-Ui ("  [5] {0}" -f (Get-UiText 'Switch to another domain')) Yellow
+        Write-Ui ("  [6] {0}" -f (Get-UiText 'AD connectivity test'))
+        Write-Ui ("  [7] {0}" -f (Get-UiText 'Troubleshoot / repair'))
+        Write-Ui ("  [8] {0}" -f (Get-UiText 'Export diagnostic bundle'))
+        Write-Ui ("  [9] {0}" -f (Get-UiText 'Restore pre-join state'))
+        Write-Ui ("  [10] {0}" -f (Get-UiText 'List recovery snapshots'))
+        Write-Ui ("  [11] {0}" -f (Get-UiText 'Recover interrupted lifecycle')) Yellow
+        Write-Ui ("  [L] {0} [{1}]" -f (Get-UiText 'Language / Idioma'),$script:UiLanguage.ToUpperInvariant())
+        Write-Ui ("  [0] {0}" -f (Get-UiText 'Exit'))
         Write-Ui ''
 
         $default = if ((Get-CurrentState) -and (Get-LifecycleLabel) -in @(
-            'SNAPSHOT_CREATED','DNS_APPLIED','JOIN_SUBMITTED','JOIN_AMBIGUOUS','RESTORE_READY')) { '7' } else { '1' }
+            'SNAPSHOT_CREATED','DNS_APPLIED','JOIN_SUBMITTED','JOIN_AMBIGUOUS','RESTORE_READY')) { '11' } else { '1' }
         $choice = Read-Value -Prompt 'Select operation' -Default $default
 
         try {
@@ -1701,9 +2013,14 @@ function Show-MainMenu {
                 '2' { Invoke-GuidedJoin; Pause-Ui }
                 '3' { Invoke-Status; Pause-Ui }
                 '4' { Invoke-LeaveDomain; Pause-Ui }
-                '5' { Invoke-RestorePreJoin; Pause-Ui }
-                '6' { Show-Snapshots; Pause-Ui }
-                '7' { Invoke-Recovery; Pause-Ui }
+                '5' { Invoke-DomainSwitch; Pause-Ui }
+                '6' { Invoke-ConnectivityTest; Pause-Ui }
+                '7' { Invoke-Troubleshoot; Pause-Ui }
+                '8' { Export-DiagnosticBundle; Pause-Ui }
+                '9' { Invoke-RestorePreJoin; Pause-Ui }
+                '10' { Show-Snapshots; Pause-Ui }
+                '11' { Invoke-Recovery; Pause-Ui }
+                'L' { Switch-UiLanguage }
                 '0' { return }
                 default { Write-Warn 'Unknown option.'; Pause-Ui }
             }
@@ -1734,6 +2051,10 @@ try {
         'Join'        { Invoke-GuidedJoin }
         'Status'      { Invoke-Status }
         'Leave'       { Invoke-LeaveDomain }
+        'Switch'      { Invoke-DomainSwitch }
+        'Connectivity' { Invoke-ConnectivityTest }
+        'Troubleshoot' { Invoke-Troubleshoot }
+        'Diagnostics' { Export-DiagnosticBundle }
         'Restore'     { Invoke-RestorePreJoin }
         'Snapshots'   { Show-Snapshots }
         'Recover'     { Invoke-Recovery }

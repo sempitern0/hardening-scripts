@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # linux-ad-client-assistant.sh
-# Version 1.1.4-dns-forwarding-resilience
+# Version 1.3.0-it-admin-toolkit
 #
 # Reversible Active Directory client join assistant for Linux.
 #
@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.1.4-dns-forwarding-resilience"
+SCRIPT_VERSION="1.3.0-it-admin-toolkit"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -72,6 +72,14 @@ JOIN_TRANSACTION_ROLLBACK=0
 SYSTEM_RESOLVER_BACKEND=""
 RESOLV_CONF_TARGET=""
 AD_DNS_FORWARDING_OK=0
+UI_LANG="${AD_ASSISTANT_LANG:-en}"
+PRESET_DOMAIN=""
+PRESET_DNS=""
+PRESET_HOSTNAME=""
+PRESET_COMPUTER=""
+PRESET_OU=""
+PRESET_ID_MAPPING=""
+PRESET_SWITCH_MODE=0
 
 # ---------------------------------------------------------------------------
 # UI / logging
@@ -142,13 +150,61 @@ header() {
     printf '%s\n\n' '------------------------------------------------------------------------'
 }
 
+normalize_ui_language() {
+    case "${1,,}" in en|es) printf '%s' "${1,,}" ;; *) printf 'en' ;; esac
+}
+
+set_ui_language() {
+    case "${1,,}" in
+        en|es) UI_LANG="${1,,}" ;;
+        *) err "Unsupported language: $1 (expected en or es)."; return 1 ;;
+    esac
+}
+
+toggle_ui_language() {
+    [[ "$UI_LANG" == "en" ]] && UI_LANG="es" || UI_LANG="en"
+}
+
+ui_text() {
+    local t="$1"
+    [[ "$UI_LANG" == "es" ]] || { printf '%s' "$t"; return; }
+    case "$t" in
+        'Press Enter to continue...') printf 'Pulsa Enter para continuar...' ;;
+        'Select operation') printf 'Selecciona una operación' ;;
+        'Readiness audit') printf 'Auditoría de preparación' ;;
+        'Guided domain join') printf 'Unión guiada al dominio' ;;
+        'Domain client status') printf 'Estado del cliente de dominio' ;;
+        'Leave domain cleanly') printf 'Salir limpiamente del dominio' ;;
+        'Switch to another domain') printf 'Cambiar a otro dominio' ;;
+        'AD connectivity test') printf 'Prueba de conectividad AD' ;;
+        'Troubleshoot / repair') printf 'Diagnóstico / reparación' ;;
+        'Export diagnostic bundle') printf 'Exportar paquete de diagnóstico' ;;
+        'Restore pre-join state') printf 'Restaurar estado previo a la unión' ;;
+        'List snapshots') printf 'Listar snapshots' ;;
+        'Language / Idioma') printf 'Idioma / Language' ;;
+        'Exit') printf 'Salir' ;;
+        'AD DNS domain (for example corp.example.com)') printf 'Dominio DNS de AD (por ejemplo corp.example.com)' ;;
+        'AD DNS server IPv4 addresses (comma separated)') printf 'Direcciones IPv4 de los DNS de AD (separadas por comas)' ;;
+        'Target AD DNS domain (for example corp.example.com)') printf 'Dominio DNS de AD destino (por ejemplo corp.example.com)' ;;
+        'Target AD DNS server IPv4 addresses (comma separated)') printf 'Direcciones IPv4 de los DNS AD destino (separadas por comas)' ;;
+        'System hostname') printf 'Hostname del sistema' ;;
+        'AD computer name (NetBIOS, max 15 chars)') printf 'Nombre del equipo en AD (NetBIOS, máximo 15 caracteres)' ;;
+        'Computer OU DN (optional)') printf 'DN de la OU del equipo (opcional)' ;;
+        'Optional domain user for identity lookup validation (blank to skip)') printf 'Usuario de dominio opcional para validar identidad (vacío para omitir)' ;;
+        'Reboot now?') printf '¿Reiniciar ahora?' ;;
+        *) printf '%s' "$t" ;;
+    esac
+}
+
+UI_LANG="$(normalize_ui_language "$UI_LANG")"
+
 pause_ui() {
-    printf '\nPress Enter to continue...' >&${INPUT_FD}
+    printf '\n%s' "$(ui_text 'Press Enter to continue...')" >&${INPUT_FD}
     read -r -u "$INPUT_FD" _ || true
 }
 
 ask() {
-    local prompt="$1" default="${2:-}" value=""
+    local prompt="$(ui_text "$1")" default="${2:-}" value=""
     if [[ -n "$default" ]]; then
         printf '%s [%s]: ' "$prompt" "$default" >&${INPUT_FD}
     else
@@ -160,8 +216,9 @@ ask() {
 }
 
 confirm() {
-    local prompt="$1" default="${2:-N}" answer=""
-    printf '%s [%s]: ' "$prompt" "$default" >&${INPUT_FD}
+    local prompt="$(ui_text "$1")" default="${2:-N}" answer="" shown="$default"
+    [[ "$UI_LANG" == "es" && "${default^^}" == "Y" ]] && shown="S"
+    printf '%s [%s]: ' "$prompt" "$shown" >&${INPUT_FD}
     IFS= read -r -u "$INPUT_FD" answer || return 1
     [[ -n "$answer" ]] || answer="$default"
     [[ "${answer,,}" == "y" || "${answer,,}" == "yes" || "${answer,,}" == "s" || "${answer,,}" == "si" || "${answer,,}" == "sí" ]]
@@ -169,7 +226,11 @@ confirm() {
 
 confirm_literal() {
     local prompt="$1" literal="$2" answer=""
-    printf '%s\nType %s to continue: ' "$prompt" "$literal" >&${INPUT_FD}
+    if [[ "$UI_LANG" == "es" ]]; then
+        printf '%s\nEscribe %s para continuar: ' "$prompt" "$literal" >&${INPUT_FD}
+    else
+        printf '%s\nType %s to continue: ' "$prompt" "$literal" >&${INPUT_FD}
+    fi
     IFS= read -r -u "$INPUT_FD" answer || return 1
     [[ "$answer" == "$literal" ]]
 }
@@ -1699,7 +1760,9 @@ join_domain_guided() {
     printf '%bGUIDED DOMAIN JOIN%b\n\n' "$C_BOLD" "$C_RESET"
 
     require_supported_init || return 1
-    recover_incomplete_previous_join || return 1
+    if (( PRESET_SWITCH_MODE == 0 )); then
+        recover_incomplete_previous_join || return 1
+    fi
 
     local existing_realms=""
     existing_realms="$(realm list --name-only 2>/dev/null || true)"
@@ -1709,19 +1772,21 @@ join_domain_guided() {
         return 1
     fi
 
-    identity_precheck || return 1
+    if (( PRESET_SWITCH_MODE == 0 )); then
+        identity_precheck || return 1
+    fi
 
     local domain="" dns_csv="" join_user="Administrator" ou="" requested_hostname="" computer_name="" test_user=""
     local id_mapping="yes"
 
-    domain="$(ask 'AD DNS domain (for example corp.example.com)' '')"
+    if [[ -n "$PRESET_DOMAIN" ]]; then domain="$PRESET_DOMAIN"; else domain="$(ask 'AD DNS domain (for example corp.example.com)' '')"; fi
     domain="${domain,,}"
     valid_dns_domain "$domain" || {
         err "A valid DNS domain with RFC-style labels is required."
         return 1
     }
 
-    dns_csv="$(ask 'AD DNS server IPv4 addresses (comma separated)' '')"
+    if [[ -n "$PRESET_DNS" ]]; then dns_csv="$PRESET_DNS"; else dns_csv="$(ask 'AD DNS server IPv4 addresses (comma separated)' '')"; fi
     validate_dns_list "$dns_csv" || {
         err "At least one valid IPv4 AD DNS server is required."
         return 1
@@ -1738,18 +1803,18 @@ join_domain_guided() {
 
     preflight_ad_dns_servers "$domain" "$dns_csv" || return 1
 
-    requested_hostname="$(ask 'System hostname' "$(hostnamectl --static 2>/dev/null || hostname)")"
+    if [[ -n "$PRESET_HOSTNAME" ]]; then requested_hostname="$PRESET_HOSTNAME"; else requested_hostname="$(ask 'System hostname' "$(hostnamectl --static 2>/dev/null || hostname)")"; fi
     local short_default="${requested_hostname%%.*}"
     if ((${#short_default} > 15)); then short_default=""; fi
 
-    computer_name="$(ask 'AD computer name (NetBIOS, max 15 chars)' "$short_default")"
+    if [[ -n "$PRESET_COMPUTER" ]]; then computer_name="$PRESET_COMPUTER"; else computer_name="$(ask 'AD computer name (NetBIOS, max 15 chars)' "$short_default")"; fi
     valid_ad_computer_name "$computer_name" || {
         err "AD computer name must be 1-15 characters, start/end alphanumeric, with hyphens only inside."
         return 1
     }
     JOIN_COMPUTER_NAME="${computer_name^^}"
 
-    ou="$(ask 'Computer OU DN (optional)' '')"
+    if (( PRESET_SWITCH_MODE == 1 )); then ou="$PRESET_OU"; else ou="$(ask 'Computer OU DN (optional)' '')"; fi
     if [[ -n "$ou" && ! "$ou" =~ ^(OU|CN)= ]]; then
         warn "OU path does not look like a distinguished name beginning with OU= or CN=."
         confirm "Use this OU value anyway?" N || return 1
@@ -1759,8 +1824,12 @@ join_domain_guided() {
     printf '  [1] Automatic SSSD SID -> UID/GID mapping (recommended default)\n'
     printf '  [2] Use RFC2307/POSIX attributes already stored in AD\n'
     local map_choice=""
-    map_choice="$(ask 'Select identity model' '1')"
-    [[ "$map_choice" == "2" ]] && id_mapping="no"
+    if [[ -n "$PRESET_ID_MAPPING" ]]; then
+        id_mapping="$PRESET_ID_MAPPING"
+    else
+        map_choice="$(ask 'Select identity model' '1')"
+        [[ "$map_choice" == "2" ]] && id_mapping="no"
+    fi
 
     printf '\nPlan:\n'
     printf '  Domain       : %s\n' "$domain"
@@ -1773,7 +1842,9 @@ join_domain_guided() {
     printf '  OU           : %s\n' "${ou:-(default Computers container)}"
     printf '  ID mapping   : %s\n' "$id_mapping"
 
-    confirm "Create a reversible snapshot and continue?" Y || return 0
+    if (( PRESET_SWITCH_MODE == 0 )); then
+        confirm "Create a reversible snapshot and continue?" Y || return 0
+    fi
 
     local snap=""
     snap="$(create_prejoin_snapshot "$domain" "$ACTIVE_IFACE")"
@@ -1912,6 +1983,219 @@ join_domain_guided() {
     if confirm "Reboot now?" N; then
         systemctl reboot
     fi
+}
+
+# ---------------------------------------------------------------------------
+# IT administrator diagnostics / domain transition
+# ---------------------------------------------------------------------------
+
+collect_target_plan() {
+    PRESET_DOMAIN="$(ask 'Target AD DNS domain (for example corp.example.com)' '')"
+    PRESET_DOMAIN="${PRESET_DOMAIN,,}"
+    valid_dns_domain "$PRESET_DOMAIN" || { err "A valid target DNS domain is required."; return 1; }
+
+    PRESET_DNS="$(ask 'Target AD DNS server IPv4 addresses (comma separated)' '')"
+    validate_dns_list "$PRESET_DNS" || { err "At least one valid target AD DNS IPv4 address is required."; return 1; }
+
+    PRESET_HOSTNAME="$(ask 'System hostname' "$(hostnamectl --static 2>/dev/null || hostname)")"
+    valid_system_hostname "$PRESET_HOSTNAME" || { err "Invalid system hostname."; return 1; }
+
+    local short_default="${PRESET_HOSTNAME%%.*}"
+    ((${#short_default} <= 15)) || short_default=""
+    PRESET_COMPUTER="$(ask 'AD computer name (NetBIOS, max 15 chars)' "$short_default")"
+    valid_ad_computer_name "$PRESET_COMPUTER" || { err "Invalid AD computer name."; return 1; }
+    PRESET_COMPUTER="${PRESET_COMPUTER^^}"
+
+    PRESET_OU="$(ask 'Computer OU DN (optional)' '')"
+    if [[ -n "$PRESET_OU" && ! "$PRESET_OU" =~ ^(OU|CN)= ]]; then
+        warn "OU path does not look like a distinguished name."
+        confirm "Use this OU value anyway?" N || return 1
+    fi
+
+    printf '\nPOSIX identity model:\n  [1] Automatic SSSD SID -> UID/GID mapping\n  [2] RFC2307/POSIX attributes from AD\n'
+    local map_choice="$(ask 'Select identity model' '1')"
+    PRESET_ID_MAPPING="yes"
+    [[ "$map_choice" == "2" ]] && PRESET_ID_MAPPING="no"
+
+    local first_dns="$(dns_first "$PRESET_DNS")"
+    select_join_interface "$first_dns" || return 1
+    preflight_ad_dns_servers "$PRESET_DOMAIN" "$PRESET_DNS" || return 1
+    validate_ad_network_ports "$PRESET_DOMAIN" "$PRESET_DNS" || return 1
+    return 0
+}
+
+switch_domain_guided() {
+    header
+    printf '%bDOMAIN SWITCH%b\n\n' "$C_BOLD" "$C_RESET"
+
+    local source="$(realm list --name-only 2>/dev/null | awk 'NR==1{print}')"
+    if [[ -z "$source" ]]; then
+        info "No current domain membership was detected; starting a normal join."
+        join_domain_guided
+        return $?
+    fi
+
+    collect_target_plan || return 1
+    if [[ "${source,,}" == "${PRESET_DOMAIN,,}" ]]; then
+        err "Source and target domains are the same."
+        return 1
+    fi
+
+    printf '\nSource domain : %s\nTarget domain : %s\nTarget DNS    : %s\nComputer      : %s\n' \
+        "$source" "$PRESET_DOMAIN" "$PRESET_DNS" "$PRESET_COMPUTER"
+    confirm_literal "The source membership will be removed only after the target passed DNS/network preflight. The target join then starts immediately." "SWITCH" || return 0
+
+    local leave_user="$(prompt_domain_admin_account 'remove this computer from the source domain' 'Administrator')"
+    if ! realm leave -v -U "$leave_user" "$source"; then
+        err "Source-domain leave failed. Target join was not attempted."
+        return 1
+    fi
+
+    # Restore identity/DNS baseline when available, but preserve current hostname
+    # and packages so the target join can proceed immediately.
+    if [[ -f "$CURRENT_STATE" ]]; then
+        local SNAPSHOT_PATH=""
+        load_state_file "$CURRENT_STATE" || true
+        if [[ -n "${SNAPSHOT_PATH:-}" && -d "$SNAPSHOT_PATH" ]]; then
+            restore_network_from_snapshot "$SNAPSHOT_PATH" || warn "Source DNS restoration reported a problem."
+            restore_identity_files "$SNAPSHOT_PATH"
+            restore_sssd_runtime_from_snapshot "$SNAPSHOT_PATH"
+        fi
+        rm -f "$CURRENT_STATE"
+    fi
+
+    PRESET_SWITCH_MODE=1
+    JOIN_TRANSACTION_ACTIVE=0
+    JOIN_TRANSACTION_COMMITTED=0
+    JOIN_TRANSACTION_ROLLBACK=0
+    JOIN_TRANSACTION_SNAPSHOT=""
+    join_domain_guided
+    local rc=$?
+    PRESET_SWITCH_MODE=0
+    PRESET_DOMAIN="" PRESET_DNS="" PRESET_HOSTNAME="" PRESET_COMPUTER="" PRESET_OU="" PRESET_ID_MAPPING=""
+    return "$rc"
+}
+
+ad_connectivity_test() {
+    header
+    printf '%bAD CONNECTIVITY TEST%b\n\n' "$C_BOLD" "$C_RESET"
+
+    local domain="" dns_csv=""
+    if [[ -f "$CURRENT_STATE" ]]; then
+        local DOMAIN="" AD_DNS_SERVERS=""
+        load_state_file "$CURRENT_STATE" || true
+        domain="${DOMAIN:-}"
+        dns_csv="${AD_DNS_SERVERS:-}"
+    fi
+    domain="$(ask 'AD DNS domain (for example corp.example.com)' "$domain")"
+    dns_csv="$(ask 'AD DNS server IPv4 addresses (comma separated)' "$dns_csv")"
+    valid_dns_domain "$domain" || { err "Invalid AD DNS domain."; return 1; }
+    validate_dns_list "$dns_csv" || { err "Invalid AD DNS list."; return 1; }
+
+    select_join_interface "$(dns_first "$dns_csv")" || return 1
+    printf '\nNETWORK / DNS\n'
+    local dns_rc=0 ports_rc=0 time_rc=0
+    preflight_ad_dns_servers "$domain" "$dns_csv" || dns_rc=$?
+    validate_ad_network_ports "$domain" "$dns_csv" || ports_rc=$?
+    audit_time_sync || time_rc=$?
+
+    printf '\nSYSTEM RESOLVER\n'
+    if domain_srv_query "$domain" "" >/dev/null 2>&1; then
+        ok "System resolver can locate AD domain controllers."
+    else
+        warn "System resolver cannot currently locate AD; direct AD DNS results above may still pass."
+        resolver_diagnostics "$domain"
+    fi
+
+    printf '\nMEMBERSHIP\n'
+    local memberships="$(realm list --name-only 2>/dev/null || true)"
+    if [[ -n "$memberships" ]]; then
+        ok "Realm membership: $memberships"
+        if command_exists adcli && adcli testjoin -D "$domain" >/dev/null 2>&1; then
+            ok "Secure machine channel validates with adcli."
+        else
+            warn "Secure machine channel did not validate for $domain."
+        fi
+    else
+        info "Machine is not currently joined to a realm."
+    fi
+
+    printf '\nRESULT\n'
+    if (( dns_rc == 0 && ports_rc == 0 && time_rc == 0 )); then
+        ok "READY: DNS, required TCP ports and time synchronization are healthy."
+        return 0
+    fi
+    err "BLOCKED/DEGRADED: one or more readiness checks failed. Review the diagnostics above."
+    return 1
+}
+
+troubleshoot_ad() {
+    header
+    printf '%bAD TROUBLESHOOTER%b\n\n' "$C_BOLD" "$C_RESET"
+    detect_active_interface
+    detect_dns_backend
+    detect_system_resolver
+
+    printf '  Interface : %s\n  DNS owner : %s\n  Resolver  : %s\n  resolv.conf: %s\n\n' \
+        "${ACTIVE_IFACE:-unknown}" "$DNS_BACKEND" "$SYSTEM_RESOLVER_BACKEND" "$RESOLV_CONF_TARGET"
+
+    local domain=""
+    if [[ -f "$CURRENT_STATE" ]]; then
+        local DOMAIN=""
+        load_state_file "$CURRENT_STATE" || true
+        domain="${DOMAIN:-}"
+    fi
+    domain="$(ask 'AD DNS domain (for example corp.example.com)' "$domain")"
+    [[ -n "$domain" ]] && resolver_diagnostics "$domain"
+
+    printf '\nSERVICES\n'
+    systemctl --no-pager --full status sssd.service 2>/dev/null | sed -n '1,12p' || true
+    printf '\nRECENT SSSD LOGS\n'
+    journalctl -u sssd.service -n 50 --no-pager 2>/dev/null | sed 's/^/  /' || true
+
+    if [[ -s /etc/sssd/sssd.conf ]] && command_exists sssctl; then
+        sssctl config-check 2>&1 | sed 's/^/  /' || true
+    fi
+
+    if incomplete_sssd_residue_present; then
+        warn "Incomplete SSSD residue detected. Guided join can restore the previous snapshot before retrying."
+    fi
+
+    if [[ -n "$domain" && -f "$CURRENT_STATE" ]]; then
+        local AD_DNS_SERVERS=""
+        load_state_file "$CURRENT_STATE" || true
+        if [[ -n "${AD_DNS_SERVERS:-}" ]] && ! domain_srv_query "$domain" "" >/dev/null 2>&1; then
+            warn "Direct configuration exists but system AD discovery is failing."
+            if confirm "Attempt safe resolver convergence repair using the assistant-managed AD DNS?" N; then
+                repair_resolver_convergence "$domain" "$AD_DNS_SERVERS" "$ACTIVE_IFACE" || warn "Resolver repair did not fully converge."
+            fi
+        fi
+    fi
+}
+
+export_diagnostic_bundle() {
+    header
+    local out="${LOG_ROOT}/diagnostic-${RUN_ID}.tar.gz"
+    local tmp="${STATE_ROOT}/diagnostic-${RUN_ID}"
+    rm -rf "$tmp" && mkdir -p "$tmp"
+    {
+        printf 'Generated: %s\n' "$(date -Is)"
+        printf 'Host: %s\n' "$(hostname -f 2>/dev/null || hostname)"
+        printf 'OS: %s\n' "$DISTRO_ID"
+        printf 'Interface: %s\nDNS backend: %s\nResolver: %s\n' "$ACTIVE_IFACE" "$DNS_BACKEND" "$SYSTEM_RESOLVER_BACKEND"
+        printf '\nRealm:\n'; realm list 2>&1 || true
+        printf '\nRoutes:\n'; ip -4 route 2>&1 || true
+        printf '\nAddresses:\n'; ip -4 addr 2>&1 || true
+        printf '\nResolver:\n'; cat /etc/resolv.conf 2>&1 || true
+    } >"$tmp/summary.txt"
+    cp -a "$CURRENT_STATE" "$tmp/current.env" 2>/dev/null || true
+    journalctl -u sssd.service -n 200 --no-pager >"$tmp/sssd-journal.txt" 2>&1 || true
+    command_exists sssctl && sssctl config-check >"$tmp/sssd-config-check.txt" 2>&1 || true
+    tar -C "$tmp" -czf "$out" . || { err "Could not create diagnostic bundle."; rm -rf "$tmp"; return 1; }
+    rm -rf "$tmp"
+    chmod 0600 "$out" 2>/dev/null || true
+    ok "Diagnostic bundle created: $out"
+    warn "Review the bundle before sharing; network/domain metadata is included. Passwords are never collected by this assistant."
 }
 
 # ---------------------------------------------------------------------------
@@ -2225,33 +2509,43 @@ list_snapshots() {
 main_menu() {
     while true; do
         header
-        printf '%bCLIENT JOIN CONTROL PLANE%b\n\n' "$C_BOLD" "$C_RESET"
-        printf '  [1] Readiness audit\n'
-        printf '  [2] Guided domain join\n'
-        printf '  [3] Domain client status\n'
-        printf '  [4] Leave domain cleanly\n'
-        printf '  [5] Restore pre-join state\n'
-        printf '  [6] List snapshots\n'
-        printf '  [0] Exit\n\n'
+        printf '%bAD CLIENT OPERATIONS%b\n\n' "$C_BOLD" "$C_RESET"
+        printf '  [1] %s\n' "$(ui_text 'Readiness audit')"
+        printf '  [2] %s\n' "$(ui_text 'Guided domain join')"
+        printf '  [3] %s\n' "$(ui_text 'Domain client status')"
+        printf '  [4] %s\n' "$(ui_text 'Leave domain cleanly')"
+        printf '  [5] %s\n' "$(ui_text 'Switch to another domain')"
+        printf '  [6] %s\n' "$(ui_text 'AD connectivity test')"
+        printf '  [7] %s\n' "$(ui_text 'Troubleshoot / repair')"
+        printf '  [8] %s\n' "$(ui_text 'Export diagnostic bundle')"
+        printf '  [9] %s\n' "$(ui_text 'Restore pre-join state')"
+        printf '  [10] %s\n' "$(ui_text 'List snapshots')"
+        printf '  [L] %s [%s]\n' "$(ui_text 'Language / Idioma')" "${UI_LANG^^}"
+        printf '  [0] %s\n\n' "$(ui_text 'Exit')"
 
         local choice=""
         choice="$(ask 'Select operation' '1')" || return 0
 
-        case "$choice" in
+        case "${choice^^}" in
             1) audit_readiness || true; pause_ui ;;
             2) join_domain_guided || warn "Join operation did not complete."; pause_ui ;;
             3) status_domain || true; pause_ui ;;
             4) leave_domain_cleanly || warn "Leave operation did not complete."; pause_ui ;;
-            5) restore_prejoin_state || warn "Restore operation did not complete."; pause_ui ;;
-            6) list_snapshots || true; pause_ui ;;
+            5) switch_domain_guided || warn "Domain switch did not complete."; pause_ui ;;
+            6) ad_connectivity_test || true; pause_ui ;;
+            7) troubleshoot_ad || true; pause_ui ;;
+            8) export_diagnostic_bundle || true; pause_ui ;;
+            9) restore_prejoin_state || warn "Restore operation did not complete."; pause_ui ;;
+            10) list_snapshots || true; pause_ui ;;
+            L) toggle_ui_language ;;
             0) return 0 ;;
             *) warn "Unknown option."; pause_ui ;;
         esac
 
-        # Functions that source snapshot metadata may overwrite globals.
         detect_os
         detect_active_interface
         detect_dns_backend
+        detect_system_resolver
     done
 }
 
@@ -2268,8 +2562,13 @@ Modes:
   --join                    Guided domain join
   --status                  Domain client status
   --leave                   Clean domain leave + restore
+  --switch                  Preflight target, leave source, join target
+  --connectivity            AD DNS/network/time connectivity test
+  --troubleshoot            Guided local AD troubleshooting
+  --diagnostics             Export a local diagnostic bundle
   --restore                 Restore pre-join local state
   --snapshots               List local snapshots
+  --lang en|es              UI language
   --no-color                Disable ANSI color
   --help                    Show this help
 
@@ -2298,6 +2597,16 @@ main() {
             --join) mode="join" ;;
             --status) mode="status" ;;
             --leave) mode="leave" ;;
+            --switch) mode="switch" ;;
+            --connectivity) mode="connectivity" ;;
+            --troubleshoot) mode="troubleshoot" ;;
+            --diagnostics) mode="diagnostics" ;;
+            --lang)
+                shift
+                (($#)) || { printf "Missing value for --lang (en|es).\n" >&2; return 2; }
+                set_ui_language "$1" || return 2
+                ;;
+            --lang=*) set_ui_language "${1#*=}" || return 2 ;;
             --restore) mode="restore" ;;
             --snapshots) mode="snapshots" ;;
             --no-color)
@@ -2325,6 +2634,10 @@ main() {
         join) join_domain_guided ;;
         status) status_domain ;;
         leave) leave_domain_cleanly ;;
+        switch) switch_domain_guided ;;
+        connectivity) ad_connectivity_test ;;
+        troubleshoot) troubleshoot_ad ;;
+        diagnostics) export_diagnostic_bundle ;;
         restore) restore_prejoin_state ;;
         snapshots) list_snapshots ;;
     esac
