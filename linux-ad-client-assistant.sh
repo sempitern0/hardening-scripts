@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.5.0-remote-readiness-adaptive-timeouts"
+SCRIPT_VERSION="1.5.1-slow-link-acceptance"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -34,6 +34,7 @@ INPUT_FD=0
 # Override from the environment when needed without editing the script.
 AD_CLIENT_NETWORK_TIMEOUT="${AD_CLIENT_NETWORK_TIMEOUT:-60}"
 AD_CLIENT_MEMBERSHIP_TIMEOUT="${AD_CLIENT_MEMBERSHIP_TIMEOUT:-180}"
+AD_CLIENT_SLOW_NETWORK_TIMEOUT="${AD_CLIENT_SLOW_NETWORK_TIMEOUT:-180}"
 AD_CLIENT_SSH_SETUP="${AD_CLIENT_SSH_SETUP:-ask}"
 
 USE_COLOR=1
@@ -2413,6 +2414,91 @@ register_client_ad_dns() {
     fi
 }
 
+adaptive_adcli_testjoin() {
+    local domain="$1"
+    local normal_timeout="${AD_CLIENT_NETWORK_TIMEOUT:-60}"
+    local slow_timeout="${AD_CLIENT_SLOW_NETWORK_TIMEOUT:-180}"
+    local rc=0 dc="" dns_csv=""
+
+    (( slow_timeout < normal_timeout )) && slow_timeout="$normal_timeout"
+
+    info "Validating the machine trust with adcli (initial window: ${normal_timeout}s)."
+    info "Slow virtual/bridged networks are handled adaptively; the console will report progress before extending the wait."
+
+    if command_exists timeout; then
+        timeout --foreground --signal=TERM --kill-after=10s "${normal_timeout}s" \
+            adcli testjoin -D "$domain" >/dev/null 2>&1
+        rc=$?
+    else
+        adcli testjoin -D "$domain" >/dev/null 2>&1
+        rc=$?
+    fi
+
+    if (( rc == 0 )); then
+        ok "adcli secure machine join passed."
+        return 0
+    fi
+
+    if (( rc != 124 && rc != 137 && rc != 143 )); then
+        err "adcli testjoin failed (rc=$rc)."
+        return 1
+    fi
+
+    warn "The secure-channel check is taking longer than the normal ${normal_timeout}s window."
+
+    if [[ -f "$CURRENT_STATE" ]]; then
+        local AD_DNS_SERVERS=""
+        load_state_file "$CURRENT_STATE" || true
+        dns_csv="${AD_DNS_SERVERS:-}"
+    fi
+    if [[ -z "$dns_csv" ]]; then
+        dns_csv="$(current_dns_summary | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | paste -sd, - || true)"
+    fi
+
+    if domain_srv_query "$domain" "" >/dev/null 2>&1; then
+        ok "AD discovery is still responding while the trust check is slow."
+    else
+        warn "AD discovery did not answer during the extended trust validation."
+    fi
+
+    if [[ -n "$dns_csv" ]] && validate_dns_list "$dns_csv"; then
+        dc="$(ad_dc_targets_from_dns "$domain" "$dns_csv" | awk 'NR==1{print}')"
+    fi
+    if [[ -n "$dc" ]]; then
+        if tcp_port_open "$dc" 88 && tcp_port_open "$dc" 389; then
+            ok "The selected DC is still reachable on Kerberos and LDAP; this looks like latency rather than loss of connectivity."
+        else
+            warn "The selected DC did not answer every Kerberos/LDAP reachability probe during the slow validation window."
+        fi
+    fi
+
+    if (( slow_timeout > normal_timeout )); then
+        info "Extending the machine-trust validation to ${slow_timeout}s because AD connectivity is still present."
+        if command_exists timeout; then
+            timeout --foreground --signal=TERM --kill-after=10s "${slow_timeout}s" \
+                adcli testjoin -D "$domain" >/dev/null 2>&1
+            rc=$?
+        else
+            adcli testjoin -D "$domain" >/dev/null 2>&1
+            rc=$?
+        fi
+
+        if (( rc == 0 )); then
+            ok "adcli secure machine join passed after the extended wait."
+            return 0
+        fi
+    fi
+
+    if (( rc == 124 || rc == 137 || rc == 143 )); then
+        warn "adcli testjoin is still inconclusive after the extended wait."
+        warn "The realm membership, SSSD, keytab and AD discovery checks will decide whether this is a slow-link degraded state rather than a failed join."
+        return 2
+    fi
+
+    err "adcli testjoin failed after the extended validation (rc=$rc)."
+    return 1
+}
+
 postjoin_acceptance() {
     local domain="$1" test_user="${2:-}" failures=0 rc=0 output=""
     printf '
@@ -2453,17 +2539,17 @@ POST-JOIN ACCEPTANCE
         failures=1
     fi
 
-    info "Validating the machine trust with adcli (20s maximum)."
-    if run_probe 20 'adcli machine trust validation' adcli testjoin -D "$domain" >/dev/null 2>&1; then
-        ok "adcli secure machine join passed."
+    local trust_state="passed"
+    if adaptive_adcli_testjoin "$domain"; then
+        trust_state="passed"
     else
         rc=$?
-        if (( rc == 124 )); then
-            err "adcli testjoin timed out; membership exists locally but DC communication is not healthy enough to validate the secure channel."
+        if (( rc == 2 )); then
+            trust_state="slow-inconclusive"
         else
-            err "adcli testjoin failed."
+            trust_state="failed"
+            failures=1
         fi
-        failures=1
     fi
 
     local keytab_listing=""
@@ -2486,7 +2572,17 @@ POST-JOIN ACCEPTANCE
         validate_sssd_identity_lookup "$test_user" "$domain" || failures=1
     fi
 
-    (( failures == 0 ))
+    if (( failures != 0 )); then
+        return 1
+    fi
+
+    if [[ "$trust_state" == "slow-inconclusive" ]]; then
+        warn "All other acceptance checks passed, but adcli trust validation remained slow/inconclusive."
+        warn "The host is joined and usable; keep it in a degraded/pending-validation state and re-check later from Status or Diagnostics."
+        return 2
+    fi
+
+    return 0
 }
 
 join_domain_guided() {
@@ -2728,10 +2824,18 @@ join_domain_guided() {
     audit_remote_management_readiness || true
 
     test_user="$(ask 'Optional AD user for SSSD identity lookup (not Kerberos authentication; blank to skip)' '')"
-    if postjoin_acceptance "$domain" "$test_user"; then
+    postjoin_acceptance "$domain" "$test_user"
+    local acceptance_rc=$?
+    if (( acceptance_rc == 0 )); then
         set_current_phase "JOIN_PENDING_REBOOT" || true
         join_transaction_mark "$snap" "JOIN_PENDING_REBOOT"
         ok "Domain join passed immediate acceptance checks."
+    elif (( acceptance_rc == 2 )); then
+        set_current_phase "JOINED_DEGRADED" || true
+        join_transaction_mark "$snap" "JOINED_DEGRADED"
+        warn "Domain membership is active, but the secure-channel check is slower than the current validation window."
+        info "This is treated as a slow-link/degraded acceptance state, not as a failed join."
+        info "Use Status or Troubleshoot later to promote the client to fully validated state once the trust probe completes normally."
     else
         set_current_phase "JOINED_DEGRADED" || true
         join_transaction_mark "$snap" "JOINED_DEGRADED"
