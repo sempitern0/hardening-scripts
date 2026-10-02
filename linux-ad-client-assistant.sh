@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # linux-ad-client-assistant.sh
-# Version 1.4.0-diagnostics-timeout-hardening
+# Version 1.4.1-bounded-leave-diagnostics
 #
 # Reversible Active Directory client join assistant for Linux.
 #
@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.4.0-diagnostics-timeout-hardening"
+SCRIPT_VERSION="1.4.1-bounded-leave-diagnostics"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -289,6 +289,114 @@ capture_probe() {
         return 124
     fi
     return "$rc"
+}
+
+
+run_membership_operation() {
+    local seconds="$1" label="$2" logfile="$3"
+    shift 3
+    local rc=0
+
+    info "$label (maximum wait: ${seconds}s)."
+    info "Live output is mirrored to: $logfile"
+
+    if command_exists timeout; then
+        timeout --foreground --signal=TERM --kill-after=8s "${seconds}s" "$@" 2>&1 | tee "$logfile"
+        rc=${PIPESTATUS[0]}
+    else
+        warn "GNU timeout is unavailable; this membership operation cannot be safely time-bounded."
+        "$@" 2>&1 | tee "$logfile"
+        rc=${PIPESTATUS[0]}
+    fi
+
+    if (( rc == 124 || rc == 137 || rc == 143 )); then
+        warn "$label exceeded ${seconds}s and was stopped to avoid an indefinitely frozen console."
+        warn "A membership-changing command may have reached AD before the timeout; local rollback is intentionally NOT assumed."
+        return 124
+    fi
+
+    return "$rc"
+}
+
+membership_evidence_after_leave() {
+    local domain="$1"
+    local realms="" trust_rc=1
+
+    realms="$(capture_probe 8 'post-leave realm membership query' realm list --name-only || true)"
+    if ! grep -Fiqx "$domain" <<<"$realms"; then
+        ok "Post-operation evidence: realmd no longer reports membership in $domain."
+        return 0
+    fi
+
+    if command_exists adcli; then
+        run_probe 15 'post-leave machine trust validation' adcli testjoin -D "$domain" >/dev/null 2>&1
+        trust_rc=$?
+        if (( trust_rc == 0 )); then
+            warn "Post-operation evidence: realmd still reports $domain and the machine trust is still valid."
+            return 1
+        fi
+        if (( trust_rc == 124 )); then
+            warn "Post-operation evidence is inconclusive: realmd reports membership but machine-trust validation timed out."
+            return 2
+        fi
+    fi
+
+    warn "Post-operation evidence is ambiguous: realmd still reports $domain but the secure-channel test does not validate."
+    return 2
+}
+
+leave_connectivity_diagnostics() {
+    local domain="$1"
+    local dns_csv="" dc="" adcli_info=""
+
+    printf '\n%bLEAVE CONNECTIVITY DIAGNOSTICS%b\n' "$C_BOLD" "$C_RESET"
+
+    if [[ -f "$CURRENT_STATE" ]]; then
+        local AD_DNS_SERVERS=""
+        load_state_file "$CURRENT_STATE" || true
+        dns_csv="${AD_DNS_SERVERS:-}"
+    fi
+    if [[ -z "$dns_csv" ]]; then
+        dns_csv="$(current_dns_summary | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | paste -sd, - || true)"
+    fi
+
+    if domain_srv_query "$domain" "" >/dev/null 2>&1; then
+        ok "System resolver can discover AD DC locator SRV records."
+    else
+        err "System resolver cannot resolve AD DC locator SRV records."
+    fi
+
+    if [[ -n "$dns_csv" ]] && validate_dns_list "$dns_csv"; then
+        dc="$(ad_dc_targets_from_dns "$domain" "$dns_csv" | awk 'NR==1{print}')"
+        [[ -n "$dc" ]] && info "First discovered DC: $dc"
+        validate_ad_network_ports "$domain" "$dns_csv" || true
+    fi
+
+    if command_exists adcli; then
+        adcli_info="$(capture_probe 15 'adcli domain discovery' adcli info "$domain" || true)"
+        if [[ -n "$adcli_info" ]]; then
+            printf '\nadcli discovery:\n'
+            sed 's/^/  /' <<<"$adcli_info"
+        else
+            warn "adcli could not return domain discovery information within the diagnostic window."
+        fi
+    fi
+
+    if [[ -n "$dc" ]]; then
+        local dc_ip=""
+        dc_ip="$(getent ahostsv4 "$dc" 2>/dev/null | awk 'NR==1{print $1}')"
+        if [[ -n "$dc_ip" ]]; then
+            info "DC IPv4 resolution: $dc -> $dc_ip"
+            local route_iface=""
+            route_iface="$(route_interface_for_target "$dc_ip" || true)"
+            [[ -n "$route_iface" ]] && info "Kernel route to DC uses interface: $route_iface"
+        else
+            warn "The discovered DC hostname did not resolve to IPv4 through NSS."
+        fi
+    fi
+
+    audit_time_sync || true
+    warn "If TCP/389 is reachable but adcli reports 'Can't contact LDAP server', inspect DC hostname resolution, IPv4/IPv6 path selection, TLS/SASL policy, firewall stateful inspection, and the adcli/realmd logs above."
 }
 
 
@@ -2301,9 +2409,25 @@ switch_domain_guided() {
     confirm_literal "The source membership will be removed only after the target passed DNS/network preflight. The target join then starts immediately." "SWITCH" || return 0
 
     local leave_user="$(prompt_domain_admin_account 'remove this computer from the source domain' 'Administrator')"
-    if ! realm leave -v -U "$leave_user" "$source"; then
-        err "Source-domain leave failed. Target join was not attempted."
-        return 1
+    local switch_leave_log="${LOG_ROOT}/${RUN_ID}-switch-leave.log"
+    local switch_leave_rc=0
+
+    run_membership_operation 60 "Source-domain leave" "$switch_leave_log"         realm leave -v -U "$leave_user" "$source"
+    switch_leave_rc=$?
+
+    if (( switch_leave_rc != 0 )); then
+        local evidence_rc=0
+        membership_evidence_after_leave "$source"
+        evidence_rc=$?
+
+        if (( evidence_rc == 0 )); then
+            warn "The leave command did not return cleanly, but post-operation evidence indicates that source membership was removed."
+        else
+            err "Source-domain leave did not complete conclusively. Target join was not attempted."
+            leave_connectivity_diagnostics "$source"
+            warn "Membership state was left untouched locally. Review: $switch_leave_log"
+            return 1
+        fi
     fi
 
     # Restore identity/DNS baseline when available, but preserve current hostname
@@ -2875,11 +2999,45 @@ leave_domain_cleanly() {
         "The machine will leave Active Directory. A reboot will be required." \
         "LEAVE" || return 0
 
-    if ! realm leave -v -U "$leave_user" "$domain"; then
-        err "Clean realm leave failed."
-        warn "No local rollback was forced, because that can leave a stale AD computer account."
-        warn "Use Restore pre-join state only if the domain is unavailable and you accept that risk."
-        return 1
+    local leave_log="${LOG_ROOT}/${RUN_ID}-realm-leave.log"
+    local leave_rc=0 evidence_rc=0
+
+    run_membership_operation 60 "Clean realm leave" "$leave_log"         realm leave -v -U "$leave_user" "$domain"
+    leave_rc=$?
+
+    if (( leave_rc != 0 )); then
+        membership_evidence_after_leave "$domain"
+        evidence_rc=$?
+
+        case "$evidence_rc" in
+            0)
+                warn "realm leave did not return cleanly, but post-operation evidence indicates that domain membership was removed."
+                warn "Proceeding with local restoration because membership removal is evidenced."
+                ;;
+            1)
+                err "Clean realm leave did not complete; the machine trust still validates."
+                warn "No local rollback was forced, because doing so could create a stale or split membership state."
+                leave_connectivity_diagnostics "$domain"
+                warn "Detailed leave output: $leave_log"
+                return 1
+                ;;
+            *)
+                err "Clean realm leave ended in an ambiguous state."
+                warn "No DNS, SSSD, keytab or hostname rollback will be performed automatically."
+                leave_connectivity_diagnostics "$domain"
+                warn "Run Domain client status / Deep diagnostics before retrying or forcing local restore."
+                warn "Detailed leave output: $leave_log"
+                return 1
+                ;;
+        esac
+    else
+        membership_evidence_after_leave "$domain" || {
+            evidence_rc=$?
+            if (( evidence_rc != 0 )); then
+                warn "realm leave returned success, but post-operation membership evidence is not fully converged yet."
+                warn "Local restoration will continue because the membership command itself returned success."
+            fi
+        }
     fi
 
     local snap=""
