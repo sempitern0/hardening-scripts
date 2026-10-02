@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DEBIAN AD Assistant
-# Version 5.2.8-remote-linux-dns-fallback
+# Version 5.3.0-remote-batch-operations
 #
 # Self-contained Samba Active Directory Domain Controller assistant.
 #
@@ -45,7 +45,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.2.8-remote-linux-dns-fallback"
+SCRIPT_VERSION="5.3.0-remote-batch-operations"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -173,6 +173,9 @@ REMOTE_TARGET_OS=""
 REMOTE_SSH_USER=""
 REMOTE_TARGET_HOST_OVERRIDE=""
 REMOTE_TARGET_KIND_OVERRIDE=""
+REMOTE_PORT_TIMEOUT="${REMOTE_PORT_TIMEOUT:-10}"
+REMOTE_SSH_CONNECT_TIMEOUT="${REMOTE_SSH_CONNECT_TIMEOUT:-20}"
+REMOTE_BATCH_ACCOUNTS=()
 
 KRB5_CACHE=""
 # Preserve the caller's cache hint for read-only diagnostics. The assistant still
@@ -5351,8 +5354,8 @@ domain_computer_inventory_tsv() {
         if [[ -n "$ip" ]]; then
             ssh_ok=0
             smb_ok=0
-            command_exists timeout && timeout 3 bash -c "</dev/tcp/${ip}/22" >/dev/null 2>&1 && ssh_ok=1
-            command_exists timeout && timeout 3 bash -c "</dev/tcp/${ip}/445" >/dev/null 2>&1 && smb_ok=1
+            command_exists timeout && timeout "$REMOTE_PORT_TIMEOUT" bash -c "</dev/tcp/${ip}/22" >/dev/null 2>&1 && ssh_ok=1
+            command_exists timeout && timeout "$REMOTE_PORT_TIMEOUT" bash -c "</dev/tcp/${ip}/445" >/dev/null 2>&1 && smb_ok=1
             if (( ssh_ok == 1 && smb_ok == 1 )); then
                 hint="SSH+SMB"
             elif (( ssh_ok == 1 )); then
@@ -12137,7 +12140,7 @@ remote_port_open() {
     local host="$1" port="$2"
     [[ -n "$host" && "$port" =~ ^[0-9]+$ ]] || return 1
     command_exists timeout || return 1
-    timeout 2 bash -c 'exec 3<>"/dev/tcp/${1}/${2}"' _ "$host" "$port" >/dev/null 2>&1
+    timeout "$REMOTE_PORT_TIMEOUT" bash -c 'exec 3<>"/dev/tcp/${1}/${2}"' _ "$host" "$port" >/dev/null 2>&1
 }
 
 remote_target_context() {
@@ -12157,6 +12160,278 @@ remote_target_context() {
 
     printf '%s	%s	%s	%s
 ' "$account" "$dns" "${ip:--}" "${os:-unknown}"
+}
+
+remote_set_target_account() {
+    local account="$1" row=""
+    row="$(remote_target_context "$account")"
+    IFS=$'\t' read -r \
+        REMOTE_TARGET_ACCOUNT \
+        REMOTE_TARGET_DNS \
+        REMOTE_TARGET_IP \
+        REMOTE_TARGET_OS <<<"$row"
+    [[ "$REMOTE_TARGET_IP" == "-" ]] && REMOTE_TARGET_IP=""
+    REMOTE_TARGET_HOST_OVERRIDE=""
+    REMOTE_TARGET_KIND_OVERRIDE=""
+}
+
+remote_parse_selection() {
+    local selection="$1" max="$2" token start end i
+    local -A seen=()
+    selection="${selection//,/ }"
+    selection="${selection//;/ }"
+
+    if [[ "${selection^^}" == "A" || "${selection,,}" == "all" ]]; then
+        for ((i=1; i<=max; i++)); do printf '%s\n' "$i"; done
+        return 0
+    fi
+
+    for token in $selection; do
+        if [[ "$token" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+            start="${BASH_REMATCH[1]}"; end="${BASH_REMATCH[2]}"
+            (( start <= end )) || { i="$start"; start="$end"; end="$i"; }
+            for ((i=start; i<=end; i++)); do
+                (( i >= 1 && i <= max )) || continue
+                [[ -n "${seen[$i]:-}" ]] || { seen[$i]=1; printf '%s\n' "$i"; }
+            done
+        elif [[ "$token" =~ ^[0-9]+$ ]]; then
+            i="$token"
+            (( i >= 1 && i <= max )) || continue
+            [[ -n "${seen[$i]:-}" ]] || { seen[$i]=1; printf '%s\n' "$i"; }
+        else
+            return 1
+        fi
+    done
+}
+
+remote_select_batch_targets() {
+    local filter="" choice="" index="" account=""
+    local -a rows=() selected=()
+
+    while true; do
+        mapfile -t rows < <(
+            domain_computer_inventory_tsv |
+            { if [[ -n "$filter" ]]; then grep -iF -- "$filter" || true; else cat; fi; }
+        )
+        list_domain_computers_indexed "$filter"
+        printf '  %b[A  ]%b  Select all listed endpoints\n' "$C_CYAN" "$C_RESET" >&2
+        printf '  Multiple selection: 1,3,5-8\n' >&2
+
+        choice="$(ask 'Select endpoint(s)' '0')"
+        case "${choice^^}" in
+            0|"") return 1 ;;
+            S) filter="$(ask 'Computer filter' "$filter")"; continue ;;
+        esac
+
+        mapfile -t selected < <(remote_parse_selection "$choice" "${#rows[@]}" || true)
+        ((${#selected[@]})) || { msg_warn "Invalid/empty endpoint selection."; continue; }
+
+        REMOTE_BATCH_ACCOUNTS=()
+        for index in "${selected[@]}"; do
+            account="${rows[$((index-1))]%%$'\t'*}"
+            [[ -n "$account" ]] && REMOTE_BATCH_ACCOUNTS+=("$account")
+        done
+
+        ((${#REMOTE_BATCH_ACCOUNTS[@]})) || return 1
+        remote_set_target_account "${REMOTE_BATCH_ACCOUNTS[0]}"
+        REMOTE_SSH_USER=""
+        msg_success "Selected ${#REMOTE_BATCH_ACCOUNTS[@]} remote endpoint(s)."
+        return 0
+    done
+}
+
+remote_batch_status() {
+    ((${#REMOTE_BATCH_ACCOUNTS[@]})) || { remote_select_batch_targets || return 1; }
+    section "REMOTE BATCH READINESS"
+    printf '  %-22s %-32s %-15s %-9s %-5s %-5s %-7s\n' "ACCOUNT" "DNS" "IP" "FAMILY" "SSH" "SMB" "WINRM"
+    local account host kind ssh smb winrm
+    for account in "${REMOTE_BATCH_ACCOUNTS[@]}"; do
+        remote_set_target_account "$account"
+        host="$(remote_target_host)"
+        kind="$(remote_target_kind)"
+        ssh="-"; smb="-"; winrm="-"
+        [[ -n "$host" ]] && remote_port_open "$host" 22 && ssh="open"
+        [[ -n "$host" ]] && remote_port_open "$host" 445 && smb="open"
+        if [[ -n "$host" ]] && { remote_port_open "$host" 5985 || remote_port_open "$host" 5986; }; then winrm="open"; fi
+        printf '  %-22s %-32s %-15s %-9s %-5s %-5s %-7s\n' \
+            "$account" "${REMOTE_TARGET_DNS:-unresolved}" "${REMOTE_TARGET_IP:-unresolved}" "$kind" "$ssh" "$smb" "$winrm"
+    done
+}
+
+remote_batch_message() {
+    ((${#REMOTE_BATCH_ACCOUNTS[@]})) || { remote_select_batch_targets || return 1; }
+    local message msg64 account kind host success=0 fail=0
+    message="$(ask 'Message to interactive users' 'Administrative message')"
+    msg64="$(printf '%s' "$message" | base64 -w0)"
+    confirm "Send this message to ${#REMOTE_BATCH_ACCOUNTS[@]} selected endpoint(s)?" N || return 0
+
+    for account in "${REMOTE_BATCH_ACCOUNTS[@]}"; do
+        remote_set_target_account "$account"
+        kind="$(remote_target_kind)"; host="$(remote_target_host)"
+        printf '\n[%s] %s (%s)\n' "$account" "${REMOTE_TARGET_DNS:-unresolved}" "$kind"
+        case "$kind" in
+            linux)
+                if [[ -n "$host" ]] && remote_port_open "$host" 22 && \
+                   remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); if [ \"\$(id -u)\" -eq 0 ]; then printf '%s\\n' \"\$m\" | wall; else printf '%s\\n' \"\$m\" | sudo wall; fi"; then
+                    ((success+=1)); remote_ops_audit "batch-message" "OK" "linux"
+                else ((fail+=1)); remote_ops_audit "batch-message" "FAIL" "linux"; fi
+                ;;
+            windows)
+                if [[ -n "$host" ]] && remote_port_open "$host" 22 && \
+                   remote_windows_ssh_ps "\$m=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$msg64')); & msg.exe * \$m"; then
+                    ((success+=1)); remote_ops_audit "batch-message" "OK" "windows"
+                else ((fail+=1)); remote_ops_audit "batch-message" "FAIL" "windows"; fi
+                ;;
+            *)
+                msg_warn "Unknown family; skipped $account."
+                ((fail+=1))
+                ;;
+        esac
+    done
+    msg_info "Batch message complete: success=$success failed/skipped=$fail."
+}
+
+remote_batch_diagnostics() {
+    ((${#REMOTE_BATCH_ACCOUNTS[@]})) || { remote_select_batch_targets || return 1; }
+    local account kind host out
+    section "REMOTE BATCH DIAGNOSTICS"
+    for account in "${REMOTE_BATCH_ACCOUNTS[@]}"; do
+        remote_set_target_account "$account"
+        kind="$(remote_target_kind)"; host="$(remote_target_host)"
+        printf '\n%b[%s] %s%b\n' "$C_BOLD" "$account" "${REMOTE_TARGET_DNS:-unresolved} / $kind" "$C_RESET"
+        case "$kind" in
+            linux)
+                if [[ -n "$host" ]] && remote_port_open "$host" 22; then
+                    out="$(remote_ssh_capture "printf 'host='; hostname; printf 'uptime='; uptime -p 2>/dev/null || uptime; printf 'failed_units='; systemctl --failed --no-legend 2>/dev/null | wc -l; printf 'disk_root='; df -P / | awk 'NR==2{print \\$5}'" 2>&1 || true)"
+                    printf '%s\n' "$out" | sed 's/^/  /'
+                else msg_warn "SSH unreachable."; fi
+                ;;
+            windows)
+                if [[ -n "$host" ]] && remote_port_open "$host" 22; then
+                    remote_windows_ssh_ps_capture "\$os=Get-CimInstance Win32_OperatingSystem; [pscustomobject]@{Computer=\$env:COMPUTERNAME;Uptime=((Get-Date)-\$os.LastBootUpTime).ToString();FreeGB=[math]::Round(\$os.FreePhysicalMemory/1MB,1)} | Format-List" 2>&1 | sed 's/^/  /' || true
+                else msg_warn "Windows SSH unreachable for full diagnostics."; fi
+                ;;
+            *) msg_warn "Unknown endpoint family." ;;
+        esac
+    done
+}
+
+remote_batch_service() {
+    ((${#REMOTE_BATCH_ACCOUNTS[@]})) || { remote_select_batch_targets || return 1; }
+    local service action account kind host okc=0 failc=0
+    service="$(ask 'Service/unit name')"
+    [[ -n "$service" ]] || return 1
+    printf '  [1] Status only\n  [2] Restart service/unit\n'
+    action="$(ask 'Select operation' '1')"
+    [[ "$action" == 1 || "$action" == 2 ]] || return 1
+    [[ "$action" == 1 ]] || confirm_high_risk "Restart '$service' on ${#REMOTE_BATCH_ACCOUNTS[@]} selected endpoint(s)" || return 0
+
+    for account in "${REMOTE_BATCH_ACCOUNTS[@]}"; do
+        remote_set_target_account "$account"; kind="$(remote_target_kind)"; host="$(remote_target_host)"
+        printf '\n[%s] %s\n' "$account" "$kind"
+        case "$kind" in
+            linux)
+                if [[ -n "$host" ]] && remote_port_open "$host" 22; then
+                    if [[ "$action" == 1 ]]; then
+                        remote_ssh_exec "systemctl is-active '$service'; systemctl is-enabled '$service' 2>/dev/null || true" && ((okc+=1)) || ((failc+=1))
+                    else
+                        remote_ssh_exec "if [ \"\$(id -u)\" -eq 0 ]; then systemctl restart '$service'; else sudo systemctl restart '$service'; fi; systemctl is-active '$service'" && ((okc+=1)) || ((failc+=1))
+                    fi
+                else ((failc+=1)); fi
+                ;;
+            windows)
+                if [[ -n "$host" ]] && remote_port_open "$host" 22; then
+                    if [[ "$action" == 1 ]]; then
+                        remote_windows_ssh_ps "Get-Service -Name '$service' -ErrorAction Stop | Format-List Name,Status,StartType" && ((okc+=1)) || ((failc+=1))
+                    else
+                        remote_windows_ssh_ps "Restart-Service -Name '$service' -ErrorAction Stop; Get-Service -Name '$service' | Format-List Name,Status" && ((okc+=1)) || ((failc+=1))
+                    fi
+                else ((failc+=1)); fi
+                ;;
+            *) ((failc+=1)) ;;
+        esac
+    done
+    msg_info "Batch service operation complete: success=$okc failed/skipped=$failc."
+}
+
+remote_batch_power() {
+    local action="$1"
+    ((${#REMOTE_BATCH_ACCOUNTS[@]})) || { remote_select_batch_targets || return 1; }
+    local delay message msg64 minutes account kind host okc=0 failc=0 ps reboot_flag
+    delay="$(ask 'Delay before action (seconds)' '60')"; [[ "$delay" =~ ^[0-9]+$ ]] || delay=60
+    message="$(ask 'User-visible maintenance reason' 'Administrative maintenance')"
+    confirm_high_risk "${action^} ${#REMOTE_BATCH_ACCOUNTS[@]} selected endpoint(s) after ${delay}s" || return 0
+    msg64="$(printf '%s' "$message" | base64 -w0)"
+    minutes=$(( (delay + 59) / 60 )); (( minutes < 1 )) && minutes=1
+
+    for account in "${REMOTE_BATCH_ACCOUNTS[@]}"; do
+        remote_set_target_account "$account"; kind="$(remote_target_kind)"; host="$(remote_target_host)"
+        printf '\n[%s] %s / %s\n' "$account" "${REMOTE_TARGET_DNS:-unresolved}" "$kind"
+        case "$kind" in
+            linux)
+                if [[ -n "$host" ]] && remote_port_open "$host" 22; then
+                    if [[ "$action" == restart ]]; then
+                        remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); if [ \"\$(id -u)\" -eq 0 ]; then shutdown -r +$minutes \"\$m\"; else sudo shutdown -r +$minutes \"\$m\"; fi" && ((okc+=1)) || ((failc+=1))
+                    else
+                        remote_ssh_exec "m=\$(printf '%s' '$msg64' | base64 -d); if [ \"\$(id -u)\" -eq 0 ]; then shutdown -h +$minutes \"\$m\"; else sudo shutdown -h +$minutes \"\$m\"; fi" && ((okc+=1)) || ((failc+=1))
+                    fi
+                else ((failc+=1)); fi
+                ;;
+            windows)
+                if [[ -n "$host" ]] && remote_port_open "$host" 22; then
+                    if [[ "$action" == restart ]]; then
+                        ps="\$m=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$msg64')); & shutdown.exe /r /t $delay /c \$m"
+                    else
+                        ps="\$m=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$msg64')); & shutdown.exe /s /t $delay /c \$m"
+                    fi
+                    remote_windows_ssh_ps "$ps" && ((okc+=1)) || ((failc+=1))
+                elif [[ -n "$host" ]] && remote_port_open "$host" 445; then
+                    reboot_flag=no; [[ "$action" == restart ]] && reboot_flag=yes
+                    remote_windows_rpc_power "$reboot_flag" "$delay" "$message" && ((okc+=1)) || ((failc+=1))
+                else ((failc+=1)); fi
+                ;;
+            *) ((failc+=1)) ;;
+        esac
+    done
+    msg_info "Batch ${action} submission complete: success=$okc failed/skipped=$failc."
+}
+
+remote_batch_export_evidence() {
+    ((${#REMOTE_BATCH_ACCOUNTS[@]})) || { remote_select_batch_targets || return 1; }
+    local account
+    for account in "${REMOTE_BATCH_ACCOUNTS[@]}"; do
+        remote_set_target_account "$account"
+        remote_export_evidence || true
+    done
+}
+
+remote_batch_menu() {
+    while true; do
+        ui_menu_screen "REMOTE BATCH OPERATIONS" "Selected endpoints: ${#REMOTE_BATCH_ACCOUNTS[@]}"
+        ui_menu_item "T" "Select targets" "Multiple selection: 1,3,5-8 or A for all" "$C_CYAN"
+        ui_menu_item "R" "Readiness matrix" "DNS/IP/family and management transports" "$C_GREEN"
+        ui_menu_item "D" "Diagnostics summary" "Host, uptime, failed units/resources" "$C_CYAN"
+        ui_menu_item "M" "Message users" "Send one message to all selected endpoints" "$C_GREEN"
+        ui_menu_item "V" "Service control" "Status or restart one service/unit across targets" "$C_MAGENTA"
+        ui_menu_item "B" "Restart endpoints" "Scheduled batch restart with one high-risk confirmation" "$C_YELLOW"
+        ui_menu_item "X" "Shut down endpoints" "Scheduled batch shutdown with one high-risk confirmation" "$C_RED"
+        ui_menu_item "E" "Export evidence" "Generate one evidence file per selected endpoint" "$C_CYAN"
+        ui_menu_item "0" "Back" "Return to Remote Operations Center" "$C_RED"
+        ui_rule
+        local choice; choice="$(ask 'Batch operation' 'T')"
+        case "${choice^^}" in
+            T) remote_select_batch_targets || true; ui_pause ;;
+            R) remote_batch_status || true; ui_pause ;;
+            D) remote_batch_diagnostics || true; ui_pause ;;
+            M) remote_batch_message || true; ui_pause ;;
+            V) remote_batch_service || true; ui_pause ;;
+            B) remote_batch_power restart || true; ui_pause ;;
+            X) remote_batch_power shutdown || true; ui_pause ;;
+            E) remote_batch_export_evidence || true; ui_pause ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid batch operation."; ui_pause ;;
+        esac
+    done
 }
 
 remote_select_target() {
@@ -12300,7 +12575,7 @@ remote_ssh_exec() {
 
     ssh \
         -tt \
-        -o ConnectTimeout=6 \
+        -o ConnectTimeout="$REMOTE_SSH_CONNECT_TIMEOUT" \
         -o ServerAliveInterval=10 \
         -o StrictHostKeyChecking=accept-new \
         -l "$REMOTE_SSH_USER" \
@@ -12315,7 +12590,7 @@ remote_ssh_capture() {
     command_exists ssh || return 1
 
     ssh \
-        -o ConnectTimeout=6 \
+        -o ConnectTimeout="$REMOTE_SSH_CONNECT_TIMEOUT" \
         -o ServerAliveInterval=10 \
         -o StrictHostKeyChecking=accept-new \
         -l "$REMOTE_SSH_USER" \
@@ -12783,6 +13058,8 @@ remote_ops_guidance() {
     - No credential is stored by this console.
     - Remote actions are appended to remote-ops/operations.tsv.
     - Destructive session/power actions require HIGH-risk confirmation.
+    - Multiple endpoints can be selected in Batch operations using 1,3,5-8 or A.
+    - Network probes use configurable timeouts (REMOTE_PORT_TIMEOUT / REMOTE_SSH_CONNECT_TIMEOUT).
     - Arbitrary remote shell/script deployment is intentionally not exposed.
     - Prefer JEA on Windows and restricted sudoers on Linux for delegated operators.
     - Do not enable wide remote-management firewall scopes merely to make the panel work.
@@ -12796,7 +13073,7 @@ remote_ops_menu() {
         local target="none selected" family_hint=""
         if [[ -n "$REMOTE_TARGET_ACCOUNT" ]]; then
             family_hint="${REMOTE_TARGET_KIND_OVERRIDE:-${REMOTE_TARGET_OS:-unknown}}"
-            target="${REMOTE_TARGET_DNS:-$REMOTE_TARGET_ACCOUNT} · ${family_hint}"
+            target="${REMOTE_TARGET_DNS:-$REMOTE_TARGET_ACCOUNT} · ${REMOTE_TARGET_IP:-no-ip} · ${family_hint}"
         fi
 
         ui_menu_screen "REMOTE OPERATIONS CENTER" "Target: $target"
@@ -12805,7 +13082,7 @@ remote_ops_menu() {
         ui_workspace_pair "D" "Diagnostics" "$C_CYAN" "V" "Service control" "$C_MAGENTA"
         ui_workspace_pair "R" "Restart endpoint" "$C_YELLOW" "X" "Shut down endpoint" "$C_RED"
         ui_workspace_pair "C" "Cancel shutdown" "$C_GREEN" "E" "Export evidence" "$C_CYAN"
-        ui_workspace_pair "G" "Guardrails / setup" "$C_MAGENTA" "" "" "$C_CYAN"
+        ui_workspace_pair "B" "Batch operations" "$C_GREEN" "G" "Guardrails / setup" "$C_MAGENTA"
         ui_menu_exit
         ui_rule
 
@@ -12822,6 +13099,7 @@ remote_ops_menu() {
             X) remote_power_action shutdown || true; ui_pause ;;
             C) remote_cancel_power_action || msg_warn "No scheduled power action could be cancelled."; ui_pause ;;
             E) remote_export_evidence || true; ui_pause ;;
+            B) remote_batch_menu ;;
             G) remote_ops_guidance; ui_pause ;;
             H) MENU_MAIN_REQUESTED=1; return 0 ;;
             0) return 0 ;;

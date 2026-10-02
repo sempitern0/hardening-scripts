@@ -1,7 +1,7 @@
-﻿#requires -RunAsAdministrator
+#requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Windows AD Client Assistant - v1.3.0-it-admin-toolkit
+    Windows AD Client Assistant - v1.4.0-remote-readiness-adaptive-timeouts
 
 .DESCRIPTION
     Reversible, transaction-aware assistant for joining Windows clients and
@@ -22,7 +22,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Audit','Join','Status','Leave','Switch','Connectivity','Troubleshoot','Diagnostics','Restore','Snapshots','Recover')]
+    [ValidateSet('Interactive','Audit','Join','Status','Leave','Switch','Connectivity','Troubleshoot','Diagnostics','RemoteSetup','Restore','Snapshots','Recover')]
     [string]$Mode = 'Interactive',
 
     [ValidateSet('en','es')]
@@ -31,6 +31,12 @@ param(
     [string]$StateRoot = "$env:ProgramData\ADClientAssistant",
 
     [string]$ExternalDnsProbe = 'www.microsoft.com',
+
+    [ValidateRange(5,300)]
+    [int]$NetworkOperationTimeoutSeconds = 60,
+
+    [ValidateRange(1000,60000)]
+    [int]$TcpProbeTimeoutMs = 8000,
 
     # AD clients should normally use only AD DNS. By default, every configured
     # AD DNS server must also resolve a name outside the AD zone before the
@@ -49,7 +55,7 @@ $ErrorActionPreference = 'Stop'
 # ---------------------------------------------------------------------------
 
 $script:ProductName = 'Windows AD Client Assistant'
-$script:Version = '1.3.0-it-admin-toolkit'
+$script:Version = '1.4.0-remote-readiness-adaptive-timeouts'
 $script:StartedAt = Get-Date
 $script:SnapshotRoot = Join-Path $StateRoot 'snapshots'
 $script:CurrentState = Join-Path $StateRoot 'current.json'
@@ -460,7 +466,7 @@ function Test-TcpPort {
     param(
         [Parameter(Mandatory=$true)][string]$ComputerName,
         [Parameter(Mandatory=$true)][int]$Port,
-        [int]$TimeoutMs = 1800
+        [int]$TimeoutMs = $TcpProbeTimeoutMs
     )
 
     $client = New-Object System.Net.Sockets.TcpClient
@@ -852,8 +858,12 @@ function Test-AdDnsServers {
 function Wait-SystemAdDiscovery {
     param(
         [Parameter(Mandatory=$true)][string]$Domain,
-        [int]$Attempts = 8
+        [int]$Attempts = 0
     )
+
+    if ($Attempts -le 0) {
+        $Attempts = [Math]::Max(8,[Math]::Ceiling($NetworkOperationTimeoutSeconds / 2))
+    }
 
     $srvName = '_ldap._tcp.dc._msdcs.{0}' -f $Domain
     for ($i = 1; $i -le $Attempts; $i++) {
@@ -863,7 +873,7 @@ function Wait-SystemAdDiscovery {
             if ($answers.Count -gt 0) { return $true }
         }
         catch {}
-        Start-Sleep -Seconds 1
+        Start-Sleep -Seconds 2
     }
     return $false
 }
@@ -1152,6 +1162,154 @@ function Sync-LifecycleState {
 # Audit / status
 # ---------------------------------------------------------------------------
 
+function Get-RemoteManagementReadiness {
+    $result = [ordered]@{
+        OpenSshInstalled = $false
+        SshdService      = $false
+        SshdRunning      = $false
+        SshdAutomatic    = $false
+        FirewallRule     = $false
+        Tcp22Listening   = $false
+        WinRMRunning     = $false
+    }
+
+    try {
+        $cap = Get-WindowsCapability -Online -Name 'OpenSSH.Server*' -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($cap -and $cap.State -eq 'Installed') { $result.OpenSshInstalled = $true }
+    }
+    catch {}
+
+    $svc = Get-Service -Name sshd -ErrorAction SilentlyContinue
+    if ($svc) {
+        $result.SshdService = $true
+        $result.SshdRunning = ($svc.Status -eq 'Running')
+        try {
+            $svcCim = Get-CimInstance Win32_Service -Filter "Name='sshd'" -ErrorAction Stop
+            $result.SshdAutomatic = ($svcCim.StartMode -eq 'Auto')
+        }
+        catch {}
+    }
+
+    try {
+        $rules = @(Get-NetFirewallRule -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -eq 'AD Client Assistant - OpenSSH' -or $_.Name -eq 'OpenSSH-Server-In-TCP' })
+        $result.FirewallRule = ($rules.Count -gt 0 -and @($rules | Where-Object Enabled -eq 'True').Count -gt 0)
+    }
+    catch {}
+
+    try {
+        $result.Tcp22Listening = @(
+            Get-NetTCPConnection -State Listen -LocalPort 22 -ErrorAction SilentlyContinue
+        ).Count -gt 0
+    }
+    catch {}
+
+    $winrm = Get-Service -Name WinRM -ErrorAction SilentlyContinue
+    if ($winrm) { $result.WinRMRunning = ($winrm.Status -eq 'Running') }
+
+    return [pscustomobject]$result
+}
+
+function Show-RemoteManagementReadiness {
+    Write-Ui ''
+    Write-Ui 'REMOTE MANAGEMENT READINESS' Cyan
+    $r = Get-RemoteManagementReadiness
+
+    if ($r.OpenSshInstalled) { Write-Ok 'OpenSSH Server capability is installed.' }
+    else { Write-Warn 'OpenSSH Server capability is not installed.' }
+
+    if ($r.SshdRunning) { Write-Ok 'sshd service is running.' }
+    elseif ($r.SshdService) { Write-Warn 'sshd service exists but is not running.' }
+    else { Write-Warn 'sshd service is not installed.' }
+
+    if ($r.SshdAutomatic) { Write-Ok 'sshd startup type is Automatic.' }
+    elseif ($r.SshdService) { Write-Warn 'sshd startup type is not Automatic.' }
+
+    if ($r.Tcp22Listening) { Write-Ok 'TCP/22 is listening locally.' }
+    else { Write-Warn 'TCP/22 is not listening locally.' }
+
+    if ($r.FirewallRule) { Write-Ok 'An enabled inbound OpenSSH firewall rule exists.' }
+    else { Write-Warn 'No enabled inbound OpenSSH firewall rule was detected.' }
+
+    if ($r.WinRMRunning) { Write-Info 'WinRM is also running; Windows-native administration is available where policy permits.' }
+    else { Write-Info 'WinRM is not required by the Debian remote-operations console; OpenSSH is its primary full-control transport.' }
+
+    return $r
+}
+
+function Enable-RemoteManagementReadiness {
+    [CmdletBinding()]
+    param([switch]$NonInteractive)
+
+    if (-not $NonInteractive) {
+        if (-not (Confirm-Choice -Prompt 'Enable remote administration readiness (OpenSSH Server) on this domain client?' -Default Y)) {
+            Write-Info 'Remote administration setup skipped.'
+            return $false
+        }
+    }
+
+    Write-Ui ''
+    Write-Ui 'REMOTE MANAGEMENT SETUP' Cyan
+
+    $cap = $null
+    try {
+        $cap = Get-WindowsCapability -Online -Name 'OpenSSH.Server*' -ErrorAction Stop |
+            Select-Object -First 1
+    }
+    catch {
+        Write-Warn ("Unable to query OpenSSH capability: {0}" -f $_.Exception.Message)
+    }
+
+    if (-not $cap -or $cap.State -ne 'Installed') {
+        Write-Info 'Installing Windows OpenSSH Server capability. This may take time on WSUS/FOD-backed systems.'
+        try {
+            Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' -ErrorAction Stop | Out-Null
+            Write-Ok 'OpenSSH Server capability installed.'
+        }
+        catch {
+            Write-ErrorUi ("OpenSSH Server installation failed: {0}" -f $_.Exception.Message)
+            Write-Warn 'Domain membership is unaffected. Install the Windows OpenSSH Server capability manually and rerun Remote Setup.'
+            return $false
+        }
+    }
+
+    try {
+        Set-Service -Name sshd -StartupType Automatic -ErrorAction Stop
+        Start-Service -Name sshd -ErrorAction Stop
+        Write-Ok 'sshd enabled and started.'
+    }
+    catch {
+        Write-ErrorUi ("Unable to start/configure sshd: {0}" -f $_.Exception.Message)
+        return $false
+    }
+
+    try {
+        $existing = Get-NetFirewallRule -DisplayName 'AD Client Assistant - OpenSSH' -ErrorAction SilentlyContinue
+        if (-not $existing) {
+            New-NetFirewallRule `
+                -DisplayName 'AD Client Assistant - OpenSSH' `
+                -Direction Inbound `
+                -Action Allow `
+                -Protocol TCP `
+                -LocalPort 22 `
+                -Profile Domain,Private `
+                -ErrorAction Stop | Out-Null
+        }
+        else {
+            $existing | Enable-NetFirewallRule -ErrorAction SilentlyContinue | Out-Null
+        }
+        Write-Ok 'OpenSSH inbound firewall rule enabled for Domain/Private profiles.'
+    }
+    catch {
+        Write-Warn ("Could not configure the OpenSSH firewall rule: {0}" -f $_.Exception.Message)
+    }
+
+    [void](Show-RemoteManagementReadiness)
+    Write-Info 'No local/domain account was granted additional administrator rights by this setup.'
+    return $true
+}
+
 function Invoke-ReadinessAudit {
     Write-Header
     Write-Ui 'CLIENT READINESS' Cyan
@@ -1178,6 +1336,7 @@ function Invoke-ReadinessAudit {
     }
 
     [void](Test-TimeState)
+    [void](Show-RemoteManagementReadiness)
 
     $state = Get-CurrentState
     if ($state) {
@@ -1464,6 +1623,7 @@ function Invoke-DomainSwitch {
         if ($result -and $result.PSObject.Properties['HasSucceeded'] -and -not $result.HasSucceeded) { throw 'Add-Computer returned HasSucceeded=False.' }
         [void](Set-CurrentStateValues -Values @{Phase='JOIN_PENDING_REBOOT';PhaseBootMarker=(Get-BootMarker);MembershipCommitted=$true})
         Write-Ok 'Windows accepted the direct domain-to-domain transition.'
+        [void](Enable-RemoteManagementReadiness)
         Write-Warn 'Target AD DNS is retained until reboot and secure-channel validation.'
         if (Confirm-Choice -Prompt 'Restart now?' -Default N) { $script:RunOutcome='REBOOT_REQUESTED'; Write-RunReport; Restart-Computer -Force }
     }
@@ -1633,6 +1793,8 @@ function Invoke-GuidedJoin {
         Write-Ok 'Windows accepted the domain join operation.'
         Write-Warn 'AD DNS is intentionally retained until reboot and final secure-channel validation.'
         Write-Info ("Recovery snapshot: {0}" -f $snapshot.SnapshotPath)
+
+        [void](Enable-RemoteManagementReadiness)
 
         if (Confirm-Choice -Prompt 'Restart now?' -Default N) {
             $script:RunOutcome = 'REBOOT_REQUESTED'
@@ -1999,6 +2161,7 @@ function Show-MainMenu {
         Write-Ui ("  [9] {0}" -f (Get-UiText 'Restore pre-join state'))
         Write-Ui ("  [10] {0}" -f (Get-UiText 'List recovery snapshots'))
         Write-Ui ("  [11] {0}" -f (Get-UiText 'Recover interrupted lifecycle')) Yellow
+        Write-Ui ("  [12] Remote management setup / readiness")
         Write-Ui ("  [L] {0} [{1}]" -f (Get-UiText 'Language / Idioma'),$script:UiLanguage.ToUpperInvariant())
         Write-Ui ("  [0] {0}" -f (Get-UiText 'Exit'))
         Write-Ui ''
@@ -2020,6 +2183,7 @@ function Show-MainMenu {
                 '9' { Invoke-RestorePreJoin; Pause-Ui }
                 '10' { Show-Snapshots; Pause-Ui }
                 '11' { Invoke-Recovery; Pause-Ui }
+                '12' { [void](Enable-RemoteManagementReadiness); Pause-Ui }
                 'L' { Switch-UiLanguage }
                 '0' { return }
                 default { Write-Warn 'Unknown option.'; Pause-Ui }
@@ -2055,6 +2219,7 @@ try {
         'Connectivity' { Invoke-ConnectivityTest }
         'Troubleshoot' { Invoke-Troubleshoot }
         'Diagnostics' { Export-DiagnosticBundle }
+        'RemoteSetup' { [void](Enable-RemoteManagementReadiness -NonInteractive) }
         'Restore'     { Invoke-RestorePreJoin }
         'Snapshots'   { Show-Snapshots }
         'Recover'     { Invoke-Recovery }

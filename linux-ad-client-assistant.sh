@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # linux-ad-client-assistant.sh
-# Version 1.4.3-secure-dyndns-remote-readiness
+# Version 1.5.0-remote-readiness-adaptive-timeouts
 #
 # Reversible Active Directory client join assistant for Linux.
 #
@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.4.3-secure-dyndns-remote-readiness"
+SCRIPT_VERSION="1.5.0-remote-readiness-adaptive-timeouts"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -29,6 +29,12 @@ BACKUP_ROOT="/var/backups/ad-client-assistant"
 LOG_ROOT="/var/log/ad-client-assistant"
 CURRENT_STATE="${STATE_ROOT}/current.env"
 INPUT_FD=0
+
+# Network operations are intentionally tolerant of slow virtual/lab environments.
+# Override from the environment when needed without editing the script.
+AD_CLIENT_NETWORK_TIMEOUT="${AD_CLIENT_NETWORK_TIMEOUT:-60}"
+AD_CLIENT_MEMBERSHIP_TIMEOUT="${AD_CLIENT_MEMBERSHIP_TIMEOUT:-180}"
+AD_CLIENT_SSH_SETUP="${AD_CLIENT_SSH_SETUP:-ask}"
 
 USE_COLOR=1
 [[ -t 1 && -z "${NO_COLOR:-}" ]] || USE_COLOR=0
@@ -255,8 +261,16 @@ run_probe() {
     shift 2
     local rc=0
 
+    # Network/directory probes get a higher floor so nested virtualization,
+    # busy DCs and NetLogon/LDAP discovery are not mistaken for failures.
+    case "${label,,}" in
+        *dns*|*realm*|*ldap*|*kerberos*|*sssd*|*identity*|*trust*|*network*|*ad\ computer*)
+            (( seconds < AD_CLIENT_NETWORK_TIMEOUT )) && seconds="$AD_CLIENT_NETWORK_TIMEOUT"
+            ;;
+    esac
+
     if command_exists timeout; then
-        timeout --foreground --signal=TERM --kill-after=3s "${seconds}s" "$@"
+        timeout --foreground --signal=TERM --kill-after=10s "${seconds}s" "$@"
         rc=$?
     else
         "$@"
@@ -297,11 +311,12 @@ run_membership_operation() {
     shift 3
     local rc=0
 
+    (( seconds < AD_CLIENT_MEMBERSHIP_TIMEOUT )) && seconds="$AD_CLIENT_MEMBERSHIP_TIMEOUT"
     info "$label (maximum wait: ${seconds}s)."
     info "Live output is mirrored to: $logfile"
 
     if command_exists timeout; then
-        timeout --foreground --signal=TERM --kill-after=8s "${seconds}s" "$@" 2>&1 | tee "$logfile"
+        timeout --foreground --signal=TERM --kill-after=15s "${seconds}s" "$@" 2>&1 | tee "$logfile"
         rc=${PIPESTATUS[0]}
     else
         warn "GNU timeout is unavailable; this membership operation cannot be safely time-bounded."
@@ -2085,6 +2100,105 @@ ensure_sssd_dynamic_dns() {
     return 0
 }
 
+configure_remote_management() {
+    local ssh_service="" ssh_pkg="" setup_choice=""
+
+    case "$AD_CLIENT_SSH_SETUP" in
+        yes|YES|1|true|TRUE) setup_choice="yes" ;;
+        no|NO|0|false|FALSE) setup_choice="no" ;;
+        *)
+            if confirm "Enable remote administration readiness (OpenSSH server) on this domain client?" Y; then
+                setup_choice="yes"
+            else
+                setup_choice="no"
+            fi
+            ;;
+    esac
+
+    [[ "$setup_choice" == yes ]] || {
+        info "Remote administration setup was skipped. It can be enabled later from Troubleshoot / repair."
+        return 0
+    }
+
+    if systemctl list-unit-files ssh.service >/dev/null 2>&1; then
+        ssh_service="ssh.service"
+    elif systemctl list-unit-files sshd.service >/dev/null 2>&1; then
+        ssh_service="sshd.service"
+    else
+        case "$PKG_FAMILY" in
+            apt) ssh_pkg="openssh-server" ;;
+            dnf) ssh_pkg="openssh-server" ;;
+            *) ssh_pkg="" ;;
+        esac
+
+        if [[ -n "$ssh_pkg" ]]; then
+            info "Installing remote-management dependency: $ssh_pkg"
+            if [[ "$PKG_FAMILY" == apt ]]; then
+                DEBIAN_FRONTEND=noninteractive apt-get install -y "$ssh_pkg" || {
+                    warn "Could not install $ssh_pkg; remote commands will remain unavailable."
+                    return 1
+                }
+            else
+                if command_exists dnf; then
+                    dnf install -y "$ssh_pkg" || return 1
+                elif command_exists yum; then
+                    yum install -y "$ssh_pkg" || return 1
+                fi
+            fi
+        fi
+
+        if systemctl list-unit-files ssh.service >/dev/null 2>&1; then
+            ssh_service="ssh.service"
+        elif systemctl list-unit-files sshd.service >/dev/null 2>&1; then
+            ssh_service="sshd.service"
+        fi
+    fi
+
+    [[ -n "$ssh_service" ]] || {
+        warn "OpenSSH server service could not be located after setup."
+        return 1
+    }
+
+    mkdir -p /etc/ssh/sshd_config.d 2>/dev/null || true
+    cat >/etc/ssh/sshd_config.d/90-ad-client-assistant.conf <<'EOF'
+# Managed by Linux AD Client Assistant.
+# Keep PAM enabled so SSSD-backed domain identities can authenticate.
+UsePAM yes
+KbdInteractiveAuthentication yes
+EOF
+
+    if command_exists sshd && ! sshd -t; then
+        rm -f /etc/ssh/sshd_config.d/90-ad-client-assistant.conf
+        warn "sshd rejected the managed drop-in; it was removed."
+        return 1
+    fi
+
+    systemctl enable --now "$ssh_service" || {
+        warn "Could not enable/start $ssh_service."
+        return 1
+    }
+
+    # If UFW is active, prefer a narrow rule from the configured AD DNS/DC
+    # addresses. This keeps the default setup useful without opening SSH to
+    # every network.
+    if command_exists ufw && ufw status 2>/dev/null | grep -Fq 'Status: active'; then
+        local dns_csv="" ip=""
+        if [[ -f "$CURRENT_STATE" ]]; then
+            local AD_DNS_SERVERS=""
+            load_state_file "$CURRENT_STATE" || true
+            dns_csv="${AD_DNS_SERVERS:-}"
+        fi
+        while IFS= read -r ip; do
+            [[ -n "$ip" ]] || continue
+            ufw allow from "$ip" to any port 22 proto tcp comment 'AD remote operations' >/dev/null 2>&1 || true
+        done < <(parse_dns_csv "$dns_csv")
+    fi
+
+    ok "Remote administration readiness enabled via $ssh_service (TCP/22)."
+    info "Privileged remote actions still require an account with appropriate sudo policy; no broad sudo grant was created."
+    return 0
+}
+
 audit_remote_management_readiness() {
     local ssh_service="" ssh_port=""
 
@@ -2116,6 +2230,28 @@ audit_remote_management_readiness() {
         else
             warn "OpenSSH is active but TCP/22 was not observed listening."
             return 1
+        fi
+    fi
+
+    if command_exists sshd; then
+        local effective=""
+        effective="$(sshd -T 2>/dev/null || true)"
+        if grep -Eq '^usepam yes$' <<<"$effective"; then
+            ok "sshd PAM integration is enabled for SSSD-backed identities."
+        else
+            warn "sshd effective configuration does not report UsePAM=yes; domain-user SSH authentication may fail."
+        fi
+    fi
+
+    local joined_domain="" fqdn="" resolved=""
+    joined_domain="$(capture_probe 10 'realm membership query' realm list --name-only 2>/dev/null | awk 'NR==1{print}' || true)"
+    if [[ -n "$joined_domain" ]]; then
+        fqdn="$(client_ad_fqdn "$joined_domain")"
+        resolved="$(getent ahostsv4 "$fqdn" 2>/dev/null | awk 'NR==1{print $1}' || true)"
+        if [[ -n "$resolved" ]]; then
+            ok "Remote-management hostname resolves: $fqdn -> $resolved."
+        else
+            warn "No DNS A record resolves for $fqdn; name-based remote operations may require repair/registration."
         fi
     fi
 
@@ -2588,6 +2724,7 @@ join_domain_guided() {
     apply_access_policy "$domain" || \
         warn "Login authorization policy was not changed."
 
+    configure_remote_management || warn "Remote administration setup is incomplete; domain membership remains valid."
     audit_remote_management_readiness || true
 
     test_user="$(ask 'Optional AD user for SSSD identity lookup (not Kerberos authentication; blank to skip)' '')"
@@ -3003,13 +3140,15 @@ DIAGNOSTIC VERDICT
     printf '
 SAFE FOLLOW-UP
 '
-    printf '  [1] Test one domain user through SSSD/NSS (12s timeout)
+    printf '  [1] Test one domain user through SSSD/NSS (adaptive timeout)
 '
     printf '  [2] Show recent SSSD journal (last 80 lines)
 '
     printf '  [3] Attempt resolver convergence repair
 '
     printf '  [4] Repair/publish secure AD DNS registration
+'
+    printf '  [5] Configure/repair remote administration readiness (OpenSSH)
 '
     printf '  [0] Return without changes
 '
@@ -3045,6 +3184,10 @@ SAFE FOLLOW-UP
             else
                 warn "A valid AD DNS list is required before secure DNS registration can run."
             fi
+            ;;
+        5)
+            configure_remote_management || true
+            audit_remote_management_readiness || true
             ;;
         *) : ;;
     esac
