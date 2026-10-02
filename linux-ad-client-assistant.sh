@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # linux-ad-client-assistant.sh
-# Version 1.3.2-credential-prompt-fix
+# Version 1.3.3-sssd-compat-identity-lookup
 #
 # Reversible Active Directory client join assistant for Linux.
 #
@@ -21,7 +21,7 @@
 set -uo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.3.2-credential-prompt-fix"
+SCRIPT_VERSION="1.3.3-sssd-compat-identity-lookup"
 PRODUCT_NAME="Linux AD Client Assistant"
 
 STATE_ROOT="/var/lib/ad-client-assistant"
@@ -190,7 +190,7 @@ ui_text() {
         'System hostname') printf 'Hostname del sistema' ;;
         'AD computer name (NetBIOS, max 15 chars)') printf 'Nombre del equipo en AD (NetBIOS, máximo 15 caracteres)' ;;
         'Computer OU DN (optional)') printf 'DN de la OU del equipo (opcional)' ;;
-        'Optional domain user for identity lookup validation (blank to skip)') printf 'Usuario de dominio opcional para validar identidad (vacío para omitir)' ;;
+        'Optional AD user for SSSD identity lookup (not Kerberos authentication; blank to skip)') printf 'Usuario AD opcional para validar resolución de identidad por SSSD (no autenticación Kerberos; vacío para omitir)' ;;
         'Reboot now?') printf '¿Reiniciar ahora?' ;;
         *) printf '%s' "$t" ;;
     esac
@@ -1788,6 +1788,79 @@ apply_access_policy() {
 }
 
 
+repair_sssd_config_compatibility() {
+    local snap="${1:-}"
+    local conf="/etc/sssd/sssd.conf"
+    command_exists sssctl || return 0
+    [[ -s "$conf" ]] || return 0
+
+    local check=""
+    check="$(sssctl config-check 2>&1 || true)"
+    if ! grep -Fq "Attribute 'config_file_version' is not allowed in section 'sssd'" <<<"$check"; then
+        return 0
+    fi
+
+    warn "SSSD validator reports legacy/unsupported option: config_file_version."
+    info "Removing only that deprecated directive from [sssd]; domain/provider settings are left unchanged."
+
+    if [[ -n "$snap" && -d "$snap" && ! -e "${snap}/sssd.conf-postjoin-before-compat-fix" ]]; then
+        cp -a -- "$conf" "${snap}/sssd.conf-postjoin-before-compat-fix" 2>/dev/null || true
+    fi
+
+    local tmp="${conf}.compat.$$"
+    awk '
+        BEGIN { section="" }
+        /^[[:space:]]*\[/ {
+            section=tolower($0)
+            gsub(/[[:space:]]/, "", section)
+        }
+        section=="[sssd]" && /^[[:space:]]*config_file_version[[:space:]]*=/ { next }
+        { print }
+    ' "$conf" >"$tmp" || { rm -f -- "$tmp"; return 1; }
+
+    chmod --reference="$conf" "$tmp" 2>/dev/null || chmod 0600 "$tmp"
+    chown --reference="$conf" "$tmp" 2>/dev/null || true
+    mv -f -- "$tmp" "$conf" || return 1
+
+    if sssctl config-check >/dev/null 2>&1; then
+        ok "SSSD compatibility repair succeeded; configuration validation now passes."
+        return 0
+    fi
+
+    err "SSSD still reports configuration errors after removing config_file_version."
+    sssctl config-check 2>&1 | sed 's/^/  /' || true
+    return 1
+}
+
+validate_sssd_identity_lookup() {
+    local input="$1" domain="$2"
+    local -a candidates=()
+    local candidate=""
+
+    [[ -n "$input" ]] || return 0
+    candidates+=("$input")
+
+    # A bare account name is an identity lookup, not a Kerberos login.  Try a
+    # fully-qualified AD identity too because SSSD deployments can require it.
+    if [[ "$input" != *@* && "$input" != *\\* && -n "$domain" ]]; then
+        candidates+=("${input}@${domain}")
+    fi
+
+    for candidate in "${candidates[@]}"; do
+        if getent passwd "$candidate" >/dev/null 2>&1 || id "$candidate" >/dev/null 2>&1; then
+            ok "SSSD/NSS identity lookup succeeded for $candidate."
+            return 0
+        fi
+    done
+
+    warn "SSSD/NSS identity lookup did not resolve '$input'."
+    if [[ "$input" != *@* && "$input" != *\\* ]]; then
+        info "The test also tried '${input}@${domain}' because fully-qualified names may be required by SSSD."
+    fi
+    return 1
+}
+
+
 postjoin_acceptance() {
     local domain="$1" test_user="${2:-}" failures=0
     printf '\nPOST-JOIN ACCEPTANCE\n'
@@ -1843,12 +1916,7 @@ postjoin_acceptance() {
     fi
 
     if [[ -n "$test_user" ]]; then
-        if getent passwd "$test_user" >/dev/null 2>&1 || id "$test_user" >/dev/null 2>&1; then
-            ok "Domain identity lookup succeeded for $test_user."
-        else
-            warn "Domain identity lookup did not resolve $test_user."
-            failures=1
-        fi
+        validate_sssd_identity_lookup "$test_user" "$domain" || failures=1
     fi
 
     (( failures == 0 ))
@@ -2058,6 +2126,13 @@ join_domain_guided() {
         "$snap" "$domain" "$JOIN_REALM_NAME" "$ACTIVE_IFACE" \
         "$dns_csv" "$hostname_changed" "$JOIN_COMPUTER_NAME"
 
+    if ! repair_sssd_config_compatibility "$snap"; then
+        set_current_phase "JOINED_DEGRADED" || true
+        err "Domain membership succeeded, but SSSD configuration requires manual review."
+        warn "Membership is retained; do not force a local rollback."
+        return 1
+    fi
+
     if ! systemctl enable --now sssd.service; then
         set_current_phase "JOINED_DEGRADED" || true
         err "Domain join succeeded, but SSSD failed to start. AD DNS and snapshot are retained for repair/clean leave."
@@ -2071,7 +2146,7 @@ join_domain_guided() {
     apply_access_policy "$domain" || \
         warn "Login authorization policy was not changed."
 
-    test_user="$(ask 'Optional domain user for identity lookup validation (blank to skip)' '')"
+    test_user="$(ask 'Optional AD user for SSSD identity lookup (not Kerberos authentication; blank to skip)' '')"
     if postjoin_acceptance "$domain" "$test_user"; then
         set_current_phase "JOIN_PENDING_REBOOT" || true
         join_transaction_mark "$snap" "JOIN_PENDING_REBOOT"
