@@ -1,7 +1,7 @@
-#requires -RunAsAdministrator
+﻿#requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Windows AD Client Assistant - v1.4.0-remote-readiness-adaptive-timeouts
+    Windows AD Client Assistant - v1.5.2-bilingual-defense-parity
 
 .DESCRIPTION
     Reversible, transaction-aware assistant for joining Windows clients and
@@ -22,7 +22,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Audit','Join','Status','Leave','Switch','Connectivity','Troubleshoot','Diagnostics','RemoteSetup','Restore','Snapshots','Recover')]
+    [ValidateSet('Interactive','Audit','Join','Status','Leave','Switch','Connectivity','Troubleshoot','Diagnostics','RemoteSetup','Security','SecurityCleanup','SecurityAwareness','Restore','Snapshots','Recover')]
     [string]$Mode = 'Interactive',
 
     [ValidateSet('en','es')]
@@ -55,7 +55,7 @@ $ErrorActionPreference = 'Stop'
 # ---------------------------------------------------------------------------
 
 $script:ProductName = 'Windows AD Client Assistant'
-$script:Version = '1.4.0-remote-readiness-adaptive-timeouts'
+$script:Version = '1.5.2-bilingual-defense-parity'
 $script:StartedAt = Get-Date
 $script:SnapshotRoot = Join-Path $StateRoot 'snapshots'
 $script:CurrentState = Join-Path $StateRoot 'current.json'
@@ -198,6 +198,25 @@ $script:UiSpanish = @{
     'Computer name' = 'Nombre del equipo'
     'Workgroup after leaving the domain' = 'Grupo de trabajo tras abandonar el dominio'
     'Restart now?' = '¿Reiniciar ahora?'
+    'Suricata + Wazuh security / guarded IPS' = 'Seguridad Suricata + Wazuh / IPS controlado'
+    'SURICATA + WAZUH SECURITY' = 'SEGURIDAD SURICATA + WAZUH'
+    'Validate Suricata configuration' = 'Validar configuración de Suricata'
+    'Configure Wazuh manager' = 'Configurar manager Wazuh'
+    'Enable Suricata EVE ingestion in Wazuh' = 'Activar ingestión EVE de Suricata en Wazuh'
+    'IDS / IPS response center' = 'Centro de respuesta IDS / IPS'
+    'Recent Wazuh agent log' = 'Registro reciente del agente Wazuh'
+    'Open graphical Defense Center' = 'Abrir Centro de Defensa gráfico'
+    'AD Client Defense Center - Suricata + Wazuh' = 'Centro de Defensa del cliente AD - Suricata + Wazuh'
+    'Blocks' = 'Bloqueos'
+    'Alerts' = 'Alertas'
+    'Refresh' = 'Actualizar'
+    'Unblock' = 'Desbloquear'
+    'Unblock all' = 'Desbloquear todo'
+    'Block IP' = 'Bloquear IP'
+    'Trust IP' = 'Confiar en IP'
+    'Apply response' = 'Aplicar respuesta'
+    'Close' = 'Cerrar'
+
 }
 
 function Get-UiText {
@@ -1795,6 +1814,7 @@ function Invoke-GuidedJoin {
         Write-Info ("Recovery snapshot: {0}" -f $snapshot.SnapshotPath)
 
         [void](Enable-RemoteManagementReadiness)
+        Initialize-EndpointSecurityAfterJoin
 
         if (Confirm-Choice -Prompt 'Restart now?' -Default N) {
             $script:RunOutcome = 'REBOOT_REQUESTED'
@@ -2141,6 +2161,404 @@ function Invoke-Recovery {
 }
 
 # ---------------------------------------------------------------------------
+# Suricata + Wazuh endpoint defense
+# ---------------------------------------------------------------------------
+
+function Get-ClientSecurityPaths {
+    $root = Join-Path $StateRoot 'security'
+    $backup = Join-Path $root 'backups'
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    New-Item -ItemType Directory -Path $backup -Force | Out-Null
+    return [pscustomobject]@{
+        Root=$root
+        Backup=$backup
+        IpsState=(Join-Path $root 'guarded-ips.json')
+        IpsTask='ADClientAssistant-GuardedIpsCleanup'
+        IpsPrefix='ADClientAssistant-IPS-'
+    }
+}
+
+function Get-ClientSuricataInfo {
+    $service = $null
+    try {
+        $service = Get-CimInstance Win32_Service -ErrorAction Stop |
+            Where-Object { $_.Name -match '(?i)suricata' -or $_.DisplayName -match '(?i)suricata' } |
+            Select-Object -First 1
+    }
+    catch {}
+    $servicePath = if ($service) { [string]$service.PathName } else { '' }
+    $exe = $null
+    if ($servicePath -match '^\s*"([^"]*suricata\.exe)"') { $exe=$Matches[1] }
+    elseif ($servicePath -match '([A-Za-z]:\\[^\r\n"]*?suricata\.exe)') { $exe=$Matches[1] }
+    if (-not $exe -or -not (Test-Path -LiteralPath $exe)) {
+        $exe = @("$env:ProgramFiles\Suricata\suricata.exe","${env:ProgramFiles(x86)}\Suricata\suricata.exe",'C:\Suricata\suricata.exe') |
+            Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+    }
+    $config = @("$env:ProgramFiles\Suricata\suricata.yaml","$env:ProgramFiles\Suricata\etc\suricata\suricata.yaml","$env:ProgramData\Suricata\suricata.yaml",'C:\Suricata\suricata.yaml') |
+        Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+    $eve = @("$env:ProgramFiles\Suricata\log\eve.json","$env:ProgramFiles\Suricata\logs\eve.json","$env:ProgramData\Suricata\log\eve.json","$env:ProgramData\Suricata\logs\eve.json",'C:\Suricata\log\eve.json','C:\Suricata\logs\eve.json') |
+        Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+    if (-not $eve -and $config) {
+        try {
+            $logDir = $null
+            foreach ($line in Get-Content -LiteralPath $config -ErrorAction Stop) {
+                if ($line -match '^\s*default-log-dir:\s*["'']?([^"''#]+)') { $logDir=$Matches[1].Trim(); break }
+            }
+            if ($logDir) {
+                $candidate=Join-Path $logDir 'eve.json'
+                if (Test-Path -LiteralPath $candidate) { $eve=$candidate }
+            }
+        }
+        catch {}
+    }
+    $npcap = Get-Service -Name npcap,npf -ErrorAction SilentlyContinue | Select-Object -First 1
+    [pscustomobject]@{
+        Installed=[bool]($exe -and (Test-Path -LiteralPath $exe))
+        Executable=$exe
+        Config=$config
+        EvePath=$eve
+        ServiceName=$(if($service){[string]$service.Name}else{$null})
+        ServiceState=$(if($service){[string]$service.State}else{'Not installed'})
+        NpcapInstalled=[bool]$npcap
+    }
+}
+
+function Get-ClientWazuhInfo {
+    $service=$null
+    foreach($name in @('WazuhSvc','wazuh','ossec-agent')){
+        try{$service=Get-CimInstance Win32_Service -Filter ("Name='{0}'" -f $name) -ErrorAction Stop;if($service){break}}catch{}
+    }
+    if(-not $service){
+        try{$service=Get-CimInstance Win32_Service -ErrorAction Stop | Where-Object{$_.Name -match '(?i)wazuh|ossec' -or $_.DisplayName -match '(?i)wazuh|ossec'} | Select-Object -First 1}catch{}
+    }
+    $roots=@("${env:ProgramFiles(x86)}\ossec-agent","$env:ProgramFiles\Wazuh Agent","$env:ProgramFiles\ossec-agent",'C:\Program Files (x86)\ossec-agent')|Where-Object{$_}
+    $root=$roots|Where-Object{Test-Path -LiteralPath $_}|Select-Object -First 1
+    $config=$null;$log=$null;$manager=$null;$eveConfigured=$false
+    if($root){
+        foreach($candidate in @((Join-Path $root 'ossec.conf'),(Join-Path $root 'etc\ossec.conf'))){if(Test-Path -LiteralPath $candidate){$config=$candidate;break}}
+        foreach($candidate in @((Join-Path $root 'ossec.log'),(Join-Path $root 'logs\ossec.log'))){if(Test-Path -LiteralPath $candidate){$log=$candidate;break}}
+    }
+    if($config){
+        try{
+            $raw=Get-Content -LiteralPath $config -Raw -ErrorAction Stop
+            if($raw -match '(?is)<client>.*?<server>.*?<address>\s*([^<]+)\s*</address>'){$manager=$Matches[1].Trim()}
+            $suricata=Get-ClientSuricataInfo
+            if($suricata.EvePath -and $raw -match [regex]::Escape([string]$suricata.EvePath)){$eveConfigured=$true}
+        }catch{}
+    }
+    [pscustomobject]@{
+        Installed=[bool]($service -or $root)
+        ServiceName=$(if($service){[string]$service.Name}else{$null})
+        ServiceState=$(if($service){[string]$service.State}else{'Not installed'})
+        Config=$config
+        Log=$log
+        Manager=$manager
+        EveConfigured=$eveConfigured
+    }
+}
+
+function Backup-ClientSecurityConfig {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    if(-not(Test-Path -LiteralPath $Path)){return $null}
+    $paths=Get-ClientSecurityPaths
+    $dest=Join-Path $paths.Backup ('{0}.{1}.bak' -f ([IO.Path]::GetFileName($Path)),(Get-Date -Format 'yyyyMMdd-HHmmss'))
+    Copy-Item -LiteralPath $Path -Destination $dest -Force
+    Write-Log ("Security config backup: {0}" -f $dest) INFO
+    return $dest
+}
+
+function Set-ClientWazuhManager {
+    $w=Get-ClientWazuhInfo
+    if(-not $w.Config){Write-Warn 'Wazuh agent configuration was not detected.';return}
+    $manager=Read-Value -Prompt 'Wazuh manager FQDN or IP' -Default $(if($w.Manager){$w.Manager}else{''})
+    if([string]::IsNullOrWhiteSpace($manager)){return}
+    if($manager -notmatch '^[A-Za-z0-9._:-]+$'){Write-ErrorUi 'Unsupported manager value.';return}
+    if(-not(Confirm-Choice -Prompt ("Apply Wazuh manager {0}?" -f $manager) -Default N)){return}
+    $backup=Backup-ClientSecurityConfig -Path $w.Config
+    try{
+        $raw=Get-Content -LiteralPath $w.Config -Raw -ErrorAction Stop
+        if($raw -match '(?is)(<client>.*?<server>.*?<address>)(.*?)(</address>)'){
+            $updated=[regex]::Replace($raw,'(?is)(<client>.*?<server>.*?<address>)(.*?)(</address>)',('$1'+$manager+'$3'),1)
+        }else{
+            $block="<ossec_config>`r`n  <client>`r`n    <server>`r`n      <address>$manager</address>`r`n    </server>`r`n  </client>`r`n</ossec_config>`r`n"
+            $updated=$raw.TrimEnd()+"`r`n"+$block
+        }
+        Set-Content -LiteralPath $w.Config -Value $updated -Encoding UTF8
+        if($w.ServiceName){
+            Restart-Service -Name $w.ServiceName -Force -ErrorAction Stop
+            Start-Sleep -Seconds 2
+            $svc=Get-Service -Name $w.ServiceName -ErrorAction Stop
+            if($svc.Status -ne 'Running'){throw 'Wazuh service did not return to Running state.'}
+        }
+        Write-Ok 'Wazuh manager configuration updated and service is healthy.'
+    }catch{
+        Write-ErrorUi ("Wazuh manager update failed: {0}" -f $_.Exception.Message)
+        if($backup -and(Test-Path -LiteralPath $backup)){Copy-Item -LiteralPath $backup -Destination $w.Config -Force;if($w.ServiceName){try{Restart-Service -Name $w.ServiceName -Force -ErrorAction SilentlyContinue}catch{}};Write-Warn 'Original Wazuh configuration restored.'}
+    }
+}
+
+function Enable-ClientWazuhSuricataIngestion {
+    param([switch]$NonInteractive)
+    $w=Get-ClientWazuhInfo;$suricata=Get-ClientSuricataInfo
+    if(-not $w.Config){if(-not $NonInteractive){Write-Warn 'Wazuh agent is not installed/configured.'};return $false}
+    if(-not $suricata.EvePath){if(-not $NonInteractive){Write-Warn 'Suricata EVE JSON was not detected.'};return $false}
+    $raw=Get-Content -LiteralPath $w.Config -Raw -ErrorAction Stop
+    if($raw -match [regex]::Escape([string]$suricata.EvePath)){if(-not $NonInteractive){Write-Ok 'Wazuh already ingests Suricata EVE JSON.'};return $true}
+    if(-not $NonInteractive -and -not(Confirm-Choice -Prompt 'Add Suricata EVE JSON to Wazuh telemetry?' -Default Y)){return $false}
+    $backup=Backup-ClientSecurityConfig -Path $w.Config
+    try{
+        $block="  <localfile>`r`n    <log_format>json</log_format>`r`n    <location>$($suricata.EvePath)</location>`r`n  </localfile>`r`n"
+        if($raw -notmatch '(?i)</ossec_config>\s*$'){throw 'Wazuh ossec.conf closing element was not found.'}
+        $updated=[regex]::Replace($raw,'(?i)</ossec_config>\s*$',($block+'</ossec_config>'+"`r`n"),1)
+        Set-Content -LiteralPath $w.Config -Value $updated -Encoding UTF8
+        if($w.ServiceName){
+            Restart-Service -Name $w.ServiceName -Force -ErrorAction Stop
+            Start-Sleep -Seconds 2
+            $svc=Get-Service -Name $w.ServiceName -ErrorAction Stop
+            if($svc.Status -ne 'Running'){throw 'Wazuh service did not return to Running state.'}
+        }
+        if(-not $NonInteractive){Write-Ok 'Wazuh now ingests Suricata EVE JSON.'}
+        return $true
+    }catch{
+        if($backup -and(Test-Path -LiteralPath $backup)){Copy-Item -LiteralPath $backup -Destination $w.Config -Force}
+        if(-not $NonInteractive){Write-ErrorUi ("Wazuh/Suricata integration failed: {0}" -f $_.Exception.Message)}
+        return $false
+    }
+}
+
+function Test-ClientSuricataConfiguration {
+    $s=Get-ClientSuricataInfo
+    if(-not $s.Executable -or -not $s.Config){Write-Warn 'Suricata executable/configuration was not detected.';return $false}
+    Write-Info ("Validating Suricata configuration: {0}" -f $s.Config)
+    $out=& $s.Executable -T -c $s.Config 2>&1
+    $rc=$LASTEXITCODE
+    $out|Select-Object -Last 30|ForEach-Object{Write-Ui ("  {0}" -f $_) Gray}
+    if($rc -eq 0){Write-Ok 'Suricata configuration is valid.';return $true}
+    Write-ErrorUi ("Suricata configuration test failed (exit {0})." -f $rc);return $false
+}
+
+function Get-ClientGuardedIpsState {
+    $p=Get-ClientSecurityPaths
+    if(-not(Test-Path -LiteralPath $p.IpsState)){return [pscustomobject]@{Enabled=$false;BlockMinutes=30;MaxRules=20;LastRun=$null;Rules=@()}}
+    try{return Get-Content -LiteralPath $p.IpsState -Raw|ConvertFrom-Json}catch{return [pscustomobject]@{Enabled=$false;BlockMinutes=30;MaxRules=20;LastRun=$null;Rules=@()}}
+}
+
+function Save-ClientGuardedIpsState { param($State);$p=Get-ClientSecurityPaths;$State|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $p.IpsState -Encoding UTF8 }
+
+function Test-ClientPublicIpCandidate {
+    param([string]$Address)
+    if(Test-ClientDefenseTrustedIp -Address $Address){return $false}
+    $ip=$null;if(-not [Net.IPAddress]::TryParse($Address,[ref]$ip)){return $false};if($ip.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork){return $false}
+    $b=$ip.GetAddressBytes();if($b[0]-eq 10 -or $b[0]-eq 127){return $false};if($b[0]-eq 169 -and $b[1]-eq 254){return $false};if($b[0]-eq 172 -and $b[1]-ge 16 -and $b[1]-le 31){return $false};if($b[0]-eq 192 -and $b[1]-eq 168){return $false};if($b[0]-eq 224 -or $b[0]-ge 240){return $false}
+    try{if(@(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue|Select-Object -ExpandProperty IPAddress)-contains $Address){return $false}}catch{}
+    return $true
+}
+
+function Get-ClientGuardedIpsCandidates {
+    param([int]$Hours=1,[int]$MaxEvents=5000)
+    $s=Get-ClientSuricataInfo;if(-not $s.EvePath){return @()};$cutoff=(Get-Date).ToUniversalTime().AddHours(-1*$Hours);$events=New-Object 'System.Collections.Generic.List[object]'
+    foreach($line in Get-Content -LiteralPath $s.EvePath -Tail $MaxEvents -ErrorAction SilentlyContinue){
+        if([string]::IsNullOrWhiteSpace($line)){continue};try{$evt=$line|ConvertFrom-Json -ErrorAction Stop}catch{continue};if($evt.event_type -ne 'alert' -or -not $evt.alert){continue}
+        $sev=99;try{$sev=[int]$evt.alert.severity}catch{};if($sev -gt 1){continue};$ts=$null;try{$ts=([datetime]$evt.timestamp).ToUniversalTime()}catch{};if($ts -and $ts -lt $cutoff){continue}
+        $src=[string]$evt.src_ip;if(-not(Test-ClientPublicIpCandidate -Address $src)){continue};$events.Add([pscustomobject]@{SourceIp=$src;Signature=[string]$evt.alert.signature;Severity=$sev})
+    }
+    return @($events|Group-Object SourceIp|Sort-Object Count -Descending|ForEach-Object{$sample=$_.Group|Select-Object -First 1;[pscustomobject]@{SourceIp=$_.Name;Count=$_.Count;Signature=$sample.Signature;Severity=$sample.Severity}})
+}
+
+function Remove-ExpiredClientGuardedIpsRules {
+    $state=Get-ClientGuardedIpsState;$now=Get-Date;$keep=New-Object 'System.Collections.Generic.List[object]'
+    foreach($entry in @($state.Rules)){$expires=$null;try{$expires=[datetime]$entry.Expires}catch{};if(-not $expires -or $expires -le $now){try{Remove-NetFirewallRule -Name ([string]$entry.RuleName) -ErrorAction SilentlyContinue}catch{}}else{$keep.Add($entry)}}
+    $state.Rules=@($keep);$state.LastRun=(Get-Date).ToString('o');Save-ClientGuardedIpsState $state;return $keep.Count
+}
+
+function Register-ClientGuardedIpsTask {
+    $p=Get-ClientSecurityPaths;if(-not(Get-Command Register-ScheduledTask -ErrorAction SilentlyContinue)){return};if(-not $PSCommandPath){return}
+    try{$action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -Mode SecurityCleanup -NoColor -StateRoot "{1}"' -f $PSCommandPath,$StateRoot);$trigger=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 3650);$principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest;Register-ScheduledTask -TaskName $p.IpsTask -Action $action -Trigger $trigger -Principal $principal -Force|Out-Null}catch{Write-Warn ("Could not register guarded IPS cleanup task: {0}" -f $_.Exception.Message)}
+}
+
+function Invoke-ClientGuardedIpsResponse {
+    param([switch]$NonInteractive)
+    [void](Remove-ExpiredClientGuardedIpsRules);$state=Get-ClientGuardedIpsState;if(-not $state.Enabled){if(-not $NonInteractive){Write-Warn 'Guarded IPS is disabled.'};return}
+    $candidates=@(Get-ClientGuardedIpsCandidates -Hours 1);if($candidates.Count -eq 0){if(-not $NonInteractive){Write-Ok 'No high-confidence public-source candidates were found.'};return}
+    $active=@($state.Rules|ForEach-Object{[string]$_.SourceIp});$remaining=[math]::Max(0,[int]$state.MaxRules-@($state.Rules).Count);$new=New-Object 'System.Collections.Generic.List[object]';$paths=Get-ClientSecurityPaths
+    foreach($candidate in $candidates){if($remaining -le 0){break};if($active -contains [string]$candidate.SourceIp){continue};$safe=([string]$candidate.SourceIp)-replace '[^0-9A-Fa-f\.:]','_';$name='{0}{1}-{2}' -f $paths.IpsPrefix,$safe,([guid]::NewGuid().ToString('N').Substring(0,8));$expires=(Get-Date).AddMinutes([int]$state.BlockMinutes)
+        try{New-NetFirewallRule -Name $name -DisplayName ("AD Client Guarded IPS - {0}" -f $candidate.SourceIp) -Description ("Temporary Suricata severity-1 response; expires {0}; {1}" -f $expires.ToString('o'),$candidate.Signature) -Direction Inbound -Action Block -RemoteAddress ([string]$candidate.SourceIp) -Profile Any -ErrorAction Stop|Out-Null;$new.Add([pscustomobject]@{RuleName=$name;SourceIp=[string]$candidate.SourceIp;Created=(Get-Date).ToString('o');Expires=$expires.ToString('o');Signature=[string]$candidate.Signature;AlertCount=[int]$candidate.Count});$remaining--;Write-Log ("Guarded IPS blocked {0} temporarily." -f $candidate.SourceIp) WARN}catch{Write-Log ("Guarded IPS block failed for {0}: {1}" -f $candidate.SourceIp,$_.Exception.Message) WARN}}
+    $state.Rules=@($state.Rules)+@($new);$state.LastRun=(Get-Date).ToString('o');Save-ClientGuardedIpsState $state;if(-not $NonInteractive){Write-Ok ("Created {0} temporary firewall block rule(s)." -f $new.Count)}
+}
+
+function Enable-ClientGuardedIps {
+    $s=Get-ClientSuricataInfo;if(-not $s.EvePath){Write-Warn 'Suricata EVE JSON is required before guarded IPS can be enabled.';return}
+    Write-Ui '';Write-Ui 'GUARDED IPS SAFETY PROFILE' Cyan;Write-Info 'Only severity-1 Suricata alerts from public IPv4 sources are eligible.';Write-Info 'Private/local/domain addresses are never automatically blocked. Rules expire after 30 minutes.';Write-Info 'The assistant does not enable inline Suricata/WinDivert automatically.'
+    $preview=@(Get-ClientGuardedIpsCandidates -Hours 1);Write-Info ("Current eligible candidates: {0}" -f $preview.Count);$preview|Select-Object -First 10|ForEach-Object{Write-Ui ("  {0,-16} alerts={1,-3} {2}" -f $_.SourceIp,$_.Count,$_.Signature) Gray}
+    if(-not(Confirm-Literal -Prompt 'Enable temporary firewall responses from high-confidence Suricata alerts.' -Literal 'APPLY')){Write-Info 'Guarded IPS activation cancelled.';return}
+    $state=Get-ClientGuardedIpsState;$cfg=Get-ClientDefenseConfig;$state.Enabled=$true;$state.BlockMinutes=[int]$cfg.BlockMinutes;$state.MaxRules=20;Save-ClientGuardedIpsState $state;Register-ClientGuardedIpsTask;Invoke-ClientGuardedIpsResponse;Write-Ok 'Guarded IPS enabled.'
+}
+
+function Disable-ClientGuardedIps {
+    $state=Get-ClientGuardedIpsState;$paths=Get-ClientSecurityPaths;$state.Enabled=$false;foreach($entry in @($state.Rules)){try{Remove-NetFirewallRule -Name ([string]$entry.RuleName) -ErrorAction SilentlyContinue}catch{}};$state.Rules=@();Save-ClientGuardedIpsState $state;try{Unregister-ScheduledTask -TaskName $paths.IpsTask -Confirm:$false -ErrorAction SilentlyContinue}catch{};Write-Ok 'Guarded IPS disabled and managed block rules removed.'
+}
+
+
+function Get-ClientDefenseConfig {
+    $p=Get-ClientSecurityPaths
+    $path=Join-Path $p.Root 'defense-ops.json'
+    $defaults=[ordered]@{BusinessStart='08:00';BusinessEnd='18:00';BusinessDays=@('Monday','Tuesday','Wednesday','Thursday','Friday');DayAlertSeverity=1;AfterHoursAlertSeverity=2;DayWindowHours=1;AfterHoursWindowHours=4;BlockMinutes=30;TrustedIps=@();TelegramEnabled=$false;TelegramChatId='';LastAlertFingerprint=''}
+    if(-not(Test-Path -LiteralPath $path)){[pscustomobject]$defaults|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $path -Encoding UTF8;return [pscustomobject]$defaults}
+    try{$cfg=Get-Content -LiteralPath $path -Raw|ConvertFrom-Json;foreach($k in $defaults.Keys){if(-not $cfg.PSObject.Properties[$k]){$cfg|Add-Member -NotePropertyName $k -NotePropertyValue $defaults[$k]}};return $cfg}catch{return [pscustomobject]$defaults}
+}
+function Save-ClientDefenseConfig {param($Config);$p=Get-ClientSecurityPaths;$Config|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $p.Root 'defense-ops.json') -Encoding UTF8}
+function Test-ClientDefenseTrustedIp {param([string]$Address);$cfg=Get-ClientDefenseConfig;return(@($cfg.TrustedIps)-contains $Address)}
+function Test-ClientBusinessHours {
+    $cfg=Get-ClientDefenseConfig;$now=Get-Date;if(@($cfg.BusinessDays)-notcontains $now.DayOfWeek.ToString()){return $false}
+    try{$s=[TimeSpan]::Parse([string]$cfg.BusinessStart);$e=[TimeSpan]::Parse([string]$cfg.BusinessEnd);$t=$now.TimeOfDay;if($s -le $e){return($t -ge $s -and $t -lt $e)};return($t -ge $s -or $t -lt $e)}catch{return $true}
+}
+function Get-ClientAwarenessProfile {$cfg=Get-ClientDefenseConfig;if(Test-ClientBusinessHours){return[pscustomobject]@{Label='business-hours';Severity=[int]$cfg.DayAlertSeverity;WindowHours=[int]$cfg.DayWindowHours}};return[pscustomobject]@{Label='after-hours';Severity=[int]$cfg.AfterHoursAlertSeverity;WindowHours=[int]$cfg.AfterHoursWindowHours}}
+function Protect-ClientSecret {param([string]$Text);$bytes=[Text.Encoding]::UTF8.GetBytes($Text);$p=[Security.Cryptography.ProtectedData]::Protect($bytes,$null,[Security.Cryptography.DataProtectionScope]::LocalMachine);[Convert]::ToBase64String($p)}
+function Unprotect-ClientSecret {param([string]$Text);try{$b=[Convert]::FromBase64String($Text);$p=[Security.Cryptography.ProtectedData]::Unprotect($b,$null,[Security.Cryptography.DataProtectionScope]::LocalMachine);[Text.Encoding]::UTF8.GetString($p)}catch{$null}}
+function Set-ClientTelegramHook {
+    $p=Get-ClientSecurityPaths;$cfg=Get-ClientDefenseConfig;$tokenPath=Join-Path $p.Root 'telegram-token.dpapi'
+    $chat=Read-Value -Prompt 'Telegram chat/channel ID' -Default $(if($cfg.TelegramChatId){[string]$cfg.TelegramChatId}else{''})
+    $sec=Read-Host 'Telegram bot token (hidden; Enter keeps current)' -AsSecureString;$ptr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+    try{$token=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)}finally{[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)}
+    if($token){(Protect-ClientSecret $token)|Set-Content -LiteralPath $tokenPath -Encoding ASCII}
+    if(-not(Test-Path -LiteralPath $tokenPath)){Write-Warn 'No Telegram token is stored.';return}
+    $cfg.TelegramChatId=$chat;$cfg.TelegramEnabled=$true;Save-ClientDefenseConfig $cfg;Write-Ok 'Telegram hook configured with a DPAPI-protected token.'
+}
+function Send-ClientTelegramMessage {
+    param([string]$Text,[switch]$Quiet)
+    $p=Get-ClientSecurityPaths;$cfg=Get-ClientDefenseConfig;$tokenPath=Join-Path $p.Root 'telegram-token.dpapi'
+    if(-not $cfg.TelegramEnabled -or -not (Test-Path -LiteralPath $tokenPath)){if(-not $Quiet){Write-Warn 'Telegram hook is disabled.'};return $false}
+    $token=Unprotect-ClientSecret ((Get-Content -LiteralPath $tokenPath -Raw).Trim());if(-not $token){if(-not $Quiet){Write-Warn 'Telegram token could not be decrypted.'};return $false}
+    try{[void](Invoke-RestMethod -Method Post -Uri ('https://api.telegram.org/bot{0}/sendMessage'-f $token) -Body @{chat_id=[string]$cfg.TelegramChatId;text=$Text;disable_web_page_preview='true'} -TimeoutSec 15 -ErrorAction Stop);return $true}catch{Write-Log ("Telegram notification failed: {0}"-f$_.Exception.Message) WARN;if(-not $Quiet){Write-Warn $_.Exception.Message};return $false}
+}
+function Get-ClientAwarenessAlerts {
+    param([int]$Hours=0,[int]$Severity=0)
+    $profile=Get-ClientAwarenessProfile;if($Hours -le 0){$Hours=$profile.WindowHours};if($Severity -le 0){$Severity=$profile.Severity};$s=Get-ClientSuricataInfo;if(-not $s.EvePath){return@()}
+    $cut=(Get-Date).ToUniversalTime().AddHours(-1*$Hours);$r=New-Object 'System.Collections.Generic.List[object]'
+    foreach($line in Get-Content -LiteralPath $s.EvePath -Tail 8000 -ErrorAction SilentlyContinue){if([string]::IsNullOrWhiteSpace($line)){continue};try{$e=$line|ConvertFrom-Json -ErrorAction Stop}catch{continue};if($e.event_type -ne 'alert' -or -not $e.alert){continue};$sev=99;try{$sev=[int]$e.alert.severity}catch{};if($sev -gt $Severity){continue};$ts=$null;try{$ts=([datetime]$e.timestamp).ToUniversalTime()}catch{};if($ts -and $ts -lt $cut){continue};$r.Add([pscustomobject]@{Timestamp=[string]$e.timestamp;SourceIp=[string]$e.src_ip;DestinationIp=[string]$e.dest_ip;Severity=$sev;Signature=[string]$e.alert.signature;Action=[string]$e.alert.action})}
+    return@($r|Sort-Object Timestamp -Descending)
+}
+function Add-ClientManualBlock {
+    param([string]$Address)
+    if(-not $Address){$Address=Read-Value -Prompt 'IPv4 address to block'}
+    $ip=$null;if(-not [Net.IPAddress]::TryParse($Address,[ref]$ip)-or$ip.AddressFamily-ne[Net.Sockets.AddressFamily]::InterNetwork){Write-Warn 'Invalid IPv4 address.';return};if(Test-ClientDefenseTrustedIp $Address){Write-Warn 'Address is trusted; remove it from trusted IPs first.';return}
+    $cfg=Get-ClientDefenseConfig;$state=Get-ClientGuardedIpsState;$paths=Get-ClientSecurityPaths;if(@($state.Rules|ForEach-Object{$_.SourceIp})-contains$Address){Write-Warn 'Already blocked.';return}
+    $name='{0}{1}-{2}'-f $paths.IpsPrefix,($Address -replace '[^0-9.]','_'),([guid]::NewGuid().ToString('N').Substring(0,8));$exp=(Get-Date).AddMinutes([int]$cfg.BlockMinutes)
+    New-NetFirewallRule -Name $name -DisplayName ("AD Client Manual IPS - {0}" -f $Address) -Direction Inbound -Action Block -RemoteAddress $Address -Profile Any -Description ("Operator temporary block; expires {0}"-f$exp.ToString('o'))|Out-Null
+    $state.Rules=@($state.Rules)+@([pscustomobject]@{RuleName=$name;SourceIp=$Address;Created=(Get-Date).ToString('o');Expires=$exp.ToString('o');Signature='Manual operator block';AlertCount=0});Save-ClientGuardedIpsState $state;Write-Ok ("Blocked {0} temporarily." -f $Address)
+}
+function Remove-ClientBlock {
+    param([string]$Address)
+    $state=Get-ClientGuardedIpsState;if(-not $Address){$Address=Read-Value -Prompt 'IPv4 address to unblock'};$matches=@($state.Rules|Where-Object{$_.SourceIp -eq $Address});if($matches.Count -eq 0){Write-Warn 'No active assistant-managed block found.';return};foreach($r in$matches){Remove-NetFirewallRule -Name ([string]$r.RuleName) -ErrorAction SilentlyContinue};$state.Rules=@($state.Rules|Where-Object{$_.SourceIp -ne $Address});Save-ClientGuardedIpsState $state;Write-Ok ("Unblocked {0}." -f $Address)
+}
+function Remove-AllClientBlocks {$state=Get-ClientGuardedIpsState;foreach($r in@($state.Rules)){Remove-NetFirewallRule -Name ([string]$r.RuleName) -ErrorAction SilentlyContinue};$state.Rules=@();Save-ClientGuardedIpsState $state;Write-Ok 'All assistant-managed blocks removed.'}
+function Add-ClientTrustedIp {
+    param([string]$Address)
+    if(-not $Address){$Address=Read-Value -Prompt 'IPv4 address to trust'};$ip=$null;if(-not [Net.IPAddress]::TryParse($Address,[ref]$ip)){Write-Warn 'Invalid IP.';return};$cfg=Get-ClientDefenseConfig;if(@($cfg.TrustedIps) -notcontains $Address){$cfg.TrustedIps=@($cfg.TrustedIps)+$Address;Save-ClientDefenseConfig $cfg};Remove-ClientBlock -Address $Address;Write-Ok ("Trusted IP: {0}" -f $Address)
+}
+function Register-ClientAwarenessTask {
+    $p=Get-ClientSecurityPaths
+    if(-not(Get-Command Register-ScheduledTask -ErrorAction SilentlyContinue)){Write-Warn 'Scheduled Task cmdlets unavailable.';return}
+    if(-not $PSCommandPath){Write-Warn 'Current script path unavailable.';return}
+    try{
+        $action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -Mode SecurityAwareness -NoColor -StateRoot "{1}"' -f $PSCommandPath,$StateRoot)
+        $trigger=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 3650)
+        $principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+        Register-ScheduledTask -TaskName 'ADClientAssistant-DefenseAwareness' -Action $action -Trigger $trigger -Principal $principal -Force|Out-Null
+        Write-Ok 'Defense awareness notification task enabled (every 15 minutes).'
+    }catch{Write-Warn ("Could not register awareness task: {0}" -f $_.Exception.Message)}
+}
+
+function Set-ClientAwarenessSchedule {
+    $cfg=Get-ClientDefenseConfig;Write-Ui 'AWARENESS SCHEDULE' Cyan
+    $s=Read-Value -Prompt 'Business start HH:mm' -Default ([string]$cfg.BusinessStart);$e=Read-Value -Prompt 'Business end HH:mm' -Default ([string]$cfg.BusinessEnd);try{[void][TimeSpan]::Parse($s);[void][TimeSpan]::Parse($e)}catch{Write-Warn 'Invalid time.';return}
+    $d=[int](Read-Value -Prompt 'Business-hours review window (hours)' -Default ([string]$cfg.DayWindowHours));$n=[int](Read-Value -Prompt 'After-hours review window (hours)' -Default ([string]$cfg.AfterHoursWindowHours));$ttl=[int](Read-Value -Prompt 'Temporary block duration (minutes)' -Default ([string]$cfg.BlockMinutes))
+    $cfg.BusinessStart=$s;$cfg.BusinessEnd=$e;$cfg.DayWindowHours=[math]::Max(1,$d);$cfg.AfterHoursWindowHours=[math]::Max(1,$n);$cfg.BlockMinutes=[math]::Max(1,$ttl);Save-ClientDefenseConfig $cfg;$ips=Get-ClientGuardedIpsState;$ips.BlockMinutes=$cfg.BlockMinutes;Save-ClientGuardedIpsState $ips;Write-Ok 'Awareness schedule updated.'
+}
+function Invoke-ClientAwarenessCheck {
+    param([switch]$Notify)
+    $p=Get-ClientAwarenessProfile;$a=@(Get-ClientAwarenessAlerts -Hours $p.WindowHours -Severity $p.Severity);Write-Info ("{0}: {1} matching alert(s) in {2}h (severity <= {3})." -f $p.Label,$a.Count,$p.WindowHours,$p.Severity);$a|Select-Object -First 20|ForEach-Object{Write-Ui ("  sev={0} {1,-16} {2}" -f $_.Severity,$_.SourceIp,$_.Signature) Gray}
+    if($Notify -and $a.Count -gt 0){$cfg=Get-ClientDefenseConfig;$groups=@($a|Group-Object SourceIp|Sort-Object Count -Descending|Select-Object -First 5);$fp=($groups|ForEach-Object{"$($_.Name):$($_.Count)"})-join'|';if($fp -ne [string]$cfg.LastAlertFingerprint){$msg=@("Windows AD client security alert ($($p.Label))","Host: $env:COMPUTERNAME","Matches: $($a.Count)","Review manually in Security Center.")+@($groups|ForEach-Object{"Source $($_.Name): $($_.Count) alert(s)"});if(Send-ClientTelegramMessage -Text ($msg -join "`n") -Quiet){$cfg.LastAlertFingerprint=$fp;Save-ClientDefenseConfig $cfg;Write-Ok 'Telegram alert sent.'}}}
+}
+function Show-ClientDefenseGui {
+    try{Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop;Add-Type -AssemblyName System.Drawing -ErrorAction Stop}catch{Write-Warn 'Windows Forms unavailable.';return}
+    $form=New-Object Windows.Forms.Form;$form.Text=(Get-UiText 'AD Client Defense Center - Suricata + Wazuh');$form.Width=1060;$form.Height=700;$form.StartPosition='CenterScreen'
+    $status=New-Object Windows.Forms.Label;$status.Dock='Top';$status.Height=48;$status.Padding=New-Object Windows.Forms.Padding(8)
+    $tabs=New-Object Windows.Forms.TabControl;$tabs.Dock='Fill'
+    $t1=New-Object Windows.Forms.TabPage;$t1.Text='Blocks';$grid=New-Object Windows.Forms.DataGridView;$grid.Dock='Fill';$grid.ReadOnly=$true;$grid.SelectionMode='FullRowSelect';$grid.AutoSizeColumnsMode='Fill';$grid.AllowUserToAddRows=$false
+    $bar=New-Object Windows.Forms.FlowLayoutPanel;$bar.Dock='Bottom';$bar.Height=46
+    foreach($spec in@(@('Refresh','r'),@('Unblock selected','u'),@('Unblock all','ua'),@('Block IP','b'),@('Trust selected','t'),@('Run IPS','i'))){$btn=New-Object Windows.Forms.Button;$btn.Text=$spec[0];$btn.Tag=$spec[1];$btn.AutoSize=$true;[void]$bar.Controls.Add($btn)}
+    [void]$t1.Controls.Add($grid);[void]$t1.Controls.Add($bar)
+    $t2=New-Object Windows.Forms.TabPage;$t2.Text='Alerts';$ag=New-Object Windows.Forms.DataGridView;$ag.Dock='Fill';$ag.ReadOnly=$true;$ag.AutoSizeColumnsMode='Fill';$ag.AllowUserToAddRows=$false;[void]$t2.Controls.Add($ag)
+    [void]$tabs.TabPages.Add($t1);[void]$tabs.TabPages.Add($t2);[void]$form.Controls.Add($tabs);[void]$form.Controls.Add($status)
+    $refresh={$state=Get-ClientGuardedIpsState;$p=Get-ClientAwarenessProfile;$s=Get-ClientSuricataInfo;$w=Get-ClientWazuhInfo;$status.Text=("Suricata={0} | Wazuh={1} | IPS={2} | {3}: {4}h/sev<={5}"-f$s.ServiceState,$w.ServiceState,$state.Enabled,$p.Label,$p.WindowHours,$p.Severity);$grid.DataSource=$null;$grid.DataSource=@($state.Rules|Select-Object SourceIp,Created,Expires,Signature);$ag.DataSource=$null;$ag.DataSource=@(Get-ClientAwarenessAlerts -Hours $p.WindowHours -Severity $p.Severity|Select-Object -First 150)}.GetNewClosure()
+    foreach($btn in@($bar.Controls)){$btn.Add_Click({try{switch([string]$this.Tag){'u'{if($grid.SelectedRows.Count -gt 0){Remove-ClientBlock -Address ([string]$grid.SelectedRows[0].Cells['SourceIp'].Value)}}'ua'{Remove-AllClientBlocks}'b'{Add-Type -AssemblyName Microsoft.VisualBasic;$ip=[Microsoft.VisualBasic.Interaction]::InputBox('IPv4 address','Temporary block','');if($ip){Add-ClientManualBlock -Address $ip}}'t'{if($grid.SelectedRows.Count -gt 0){Add-ClientTrustedIp -Address ([string]$grid.SelectedRows[0].Cells['SourceIp'].Value)}}'i'{Invoke-ClientGuardedIpsResponse -NonInteractive}};&$refresh}catch{[Windows.Forms.MessageBox]::Show($_.Exception.Message)|Out-Null}}.GetNewClosure())}
+    &$refresh;[void]$form.ShowDialog();$form.Dispose()
+}
+
+function Show-ClientSecurityStatus {
+    Write-Header;Write-Ui (Get-UiText 'SURICATA + WAZUH SECURITY') Cyan;Write-Ui '';$s=Get-ClientSuricataInfo;$w=Get-ClientWazuhInfo;[void](Remove-ExpiredClientGuardedIpsRules);$ips=Get-ClientGuardedIpsState
+    Write-Ui ("Suricata installed : {0}" -f $s.Installed);Write-Ui ("Suricata service   : {0}" -f $s.ServiceState);Write-Ui ("Suricata EVE       : {0}" -f $(if($s.EvePath){$s.EvePath}else{'not detected'}));Write-Ui ("Npcap              : {0}" -f $s.NpcapInstalled)
+    Write-Ui ("Wazuh installed    : {0}" -f $w.Installed);Write-Ui ("Wazuh service      : {0}" -f $w.ServiceState);Write-Ui ("Wazuh manager      : {0}" -f $(if($w.Manager){$w.Manager}else{'not detected'}));Write-Ui ("EVE -> Wazuh       : {0}" -f $w.EveConfigured)
+    Write-Ui ("Guarded IPS        : {0}" -f $(if($ips.Enabled){'enabled'}else{'disabled'}));Write-Ui ("Active temp blocks : {0}" -f @($ips.Rules).Count)
+    Write-Info 'Recommended posture is passive Suricata IDS + Wazuh correlation. Guarded IPS is optional and conservative.'
+}
+
+function Show-ClientSecurityMenu {
+    while($true){
+        Show-ClientSecurityStatus
+        Write-Ui ''
+        Write-Ui ("  [1] {0}" -f (Get-UiText 'Validate Suricata configuration'))
+        Write-Ui ("  [2] {0}" -f (Get-UiText 'Configure Wazuh manager'))
+        Write-Ui ("  [3] {0}" -f (Get-UiText 'Enable Suricata EVE ingestion in Wazuh'))
+        Write-Ui '  [4] Enable guarded IPS' Yellow
+        Write-Ui '  [5] Run guarded IPS now'
+        Write-Ui '  [6] Disable guarded IPS' Yellow
+        Write-Ui ("  [7] {0}" -f (Get-UiText 'Recent Wazuh agent log'))
+        Write-Ui '  [8] Defense GUI (alerts / blocked IPs / quick unblock)' Cyan
+        Write-Ui '  [9] Unblock / trust / manual block'
+        Write-Ui '  [10] Awareness schedule'
+        Write-Ui '  [11] Telegram alert hook'
+        Write-Ui '  [12] Run awareness check + notify'
+        Write-Ui '  [0] Back';Write-Ui ''
+        $choice=Read-Value -Prompt 'Select operation' -Default '1'
+        switch($choice.ToUpperInvariant()){
+            '1'{[void](Test-ClientSuricataConfiguration);Pause-Ui}
+            '2'{Set-ClientWazuhManager;Pause-Ui}
+            '3'{[void](Enable-ClientWazuhSuricataIngestion);Pause-Ui}
+            '4'{Enable-ClientGuardedIps;Pause-Ui}
+            '5'{Invoke-ClientGuardedIpsResponse;Pause-Ui}
+            '6'{if(Confirm-Choice -Prompt 'Disable guarded IPS and remove assistant-managed firewall blocks?' -Default N){Disable-ClientGuardedIps};Pause-Ui}
+            '7'{$w=Get-ClientWazuhInfo;if($w.Log){Get-Content -LiteralPath $w.Log -Tail 40 -ErrorAction SilentlyContinue|ForEach-Object{Write-Ui $_ Gray}}else{Write-Warn 'Wazuh agent log was not detected.'};Pause-Ui}
+            '8'{Show-ClientDefenseGui}
+            '9'{
+                [void](Remove-ExpiredClientGuardedIpsRules);$state=Get-ClientGuardedIpsState;$cfg=Get-ClientDefenseConfig
+                Write-Ui '';Write-Ui 'BLOCKED / TRUSTED IP MANAGEMENT' Cyan
+                foreach($r in@($state.Rules)){Write-Ui ("  BLOCK {0,-16} expires={1}" -f $r.SourceIp,$r.Expires) Gray}
+                Write-Ui ("Trusted: {0}" -f $(if(@($cfg.TrustedIps).Count){@($cfg.TrustedIps) -join ', '}else{'none'})) Gray
+                Write-Ui '  [1] Unblock IP';Write-Ui '  [2] Unblock all';Write-Ui '  [3] Manual temporary block';Write-Ui '  [4] Trust IP';Write-Ui '  [0] Back'
+                switch((Read-Value -Prompt 'Select operation' -Default '1')){'1'{Remove-ClientBlock}'2'{if(Confirm-Choice -Prompt 'Remove all assistant-managed blocks?' -Default N){Remove-AllClientBlocks}}'3'{Add-ClientManualBlock}'4'{Add-ClientTrustedIp}}
+                Pause-Ui
+            }
+            '10'{Set-ClientAwarenessSchedule;Pause-Ui}
+            '11'{Set-ClientTelegramHook;if(Confirm-Choice -Prompt 'Send test Telegram notification now?' -Default N){[void](Send-ClientTelegramMessage -Text ("AD Client Assistant test from {0}" -f $env:COMPUTERNAME))};if(Confirm-Choice -Prompt 'Enable 15-minute awareness notification task?' -Default Y){Register-ClientAwarenessTask};Pause-Ui}
+            '12'{Invoke-ClientAwarenessCheck -Notify;Pause-Ui}
+            '0'{return}
+            default{Write-Warn 'Unknown option.';Pause-Ui}
+        }
+    }
+}
+
+function Initialize-EndpointSecurityAfterJoin {
+    $s=Get-ClientSuricataInfo;$w=Get-ClientWazuhInfo
+    if(-not $s.Installed -and -not $w.Installed){Write-Info 'Suricata/Wazuh are not installed; endpoint security integration can be configured later from option 13.';return}
+    Write-Info 'Security sensors detected. Checking Suricata/Wazuh integration.'
+    if($s.Installed){[void](Test-ClientSuricataConfiguration)}
+    if($s.EvePath -and $w.Config){[void](Enable-ClientWazuhSuricataIngestion -NonInteractive)}
+}
+
+
+# ---------------------------------------------------------------------------
 # Interactive control plane
 # ---------------------------------------------------------------------------
 
@@ -2162,6 +2580,7 @@ function Show-MainMenu {
         Write-Ui ("  [10] {0}" -f (Get-UiText 'List recovery snapshots'))
         Write-Ui ("  [11] {0}" -f (Get-UiText 'Recover interrupted lifecycle')) Yellow
         Write-Ui ("  [12] Remote management setup / readiness")
+        Write-Ui ("  [13] {0}" -f (Get-UiText 'Suricata + Wazuh security / guarded IPS'))
         Write-Ui ("  [L] {0} [{1}]" -f (Get-UiText 'Language / Idioma'),$script:UiLanguage.ToUpperInvariant())
         Write-Ui ("  [0] {0}" -f (Get-UiText 'Exit'))
         Write-Ui ''
@@ -2184,6 +2603,7 @@ function Show-MainMenu {
                 '10' { Show-Snapshots; Pause-Ui }
                 '11' { Invoke-Recovery; Pause-Ui }
                 '12' { [void](Enable-RemoteManagementReadiness); Pause-Ui }
+                '13' { Show-ClientSecurityMenu }
                 'L' { Switch-UiLanguage }
                 '0' { return }
                 default { Write-Warn 'Unknown option.'; Pause-Ui }
@@ -2220,6 +2640,9 @@ try {
         'Troubleshoot' { Invoke-Troubleshoot }
         'Diagnostics' { Export-DiagnosticBundle }
         'RemoteSetup' { [void](Enable-RemoteManagementReadiness -NonInteractive) }
+        'Security' { Show-ClientSecurityMenu }
+        'SecurityCleanup' { [void](Remove-ExpiredClientGuardedIpsRules); Invoke-ClientGuardedIpsResponse -NonInteractive }
+        'SecurityAwareness' { Invoke-ClientAwarenessCheck -Notify }
         'Restore'     { Invoke-RestorePreJoin }
         'Snapshots'   { Show-Snapshots }
         'Recover'     { Invoke-Recovery }

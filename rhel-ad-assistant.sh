@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # rhel-ad-assistant.sh
-# Version 2.0.0-control-plane
+# Version 3.0.0-functional-parity
 #
 # Self-contained Samba Active Directory Domain Controller assistant for
 # Enterprise Linux-style systems.
@@ -33,10 +33,18 @@ umask 077
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
-SCRIPT_VERSION="2.0.0-control-plane"
+SCRIPT_VERSION="3.0.0-functional-parity"
 PRODUCT_NAME="RHEL AD Control Plane"
 MODE="interactive"
 FORCE_NO_COLOR=0
+UI_LANG="${RHEL_AD_LANG:-en}"
+DEFENSE_DIR="${STATE_DIR}/defense"
+DEFENSE_CONFIG="${DEFENSE_DIR}/defense.conf"
+DEFENSE_TRUSTED="${DEFENSE_DIR}/trusted-ips.txt"
+TELEGRAM_CONFIG="${DEFENSE_DIR}/telegram.conf"
+DOMAIN_REPORT_DIR="${STATE_DIR}/reports/domain"
+SSH_CONTROL_DIR="/run/radssh"
+REMOTE_SERVICE_USER="adremote"
 ALLOW_UNSUPPORTED_RHEL_DC=0
 ALLOW_ISOLATED_DNS=0
 EXTERNAL_DNS_PROBE="www.redhat.com"
@@ -147,8 +155,26 @@ warn() { printf '%b[WARN]%b %s\n' "$C_YELLOW" "$C_RESET" "$*"; log "WARN $*"; re
 err()  { printf '%b[ERROR]%b %s\n' "$C_RED" "$C_RESET" "$*" >&2; log "ERROR $*"; record_event FAIL "$*"; ((FAIL_COUNT+=1)); }
 changed() { ((CHANGES+=1)); log "CHANGE $*"; record_event CHANGE "$*"; }
 
+ui_t() {
+    local key="$1"
+    [[ "${UI_LANG,,}" == es ]] || { printf '%s' "$key"; return; }
+    case "$key" in
+      'Action') printf 'Acción' ;; 'Workspace') printf 'Área de trabajo' ;; 'Area') printf 'Área' ;; 'Module') printf 'Módulo' ;; 'Select operation') printf 'Selecciona operación' ;;
+      'Daily operations') printf 'Operaciones diarias' ;; 'Directory') printf 'Directorio' ;; 'Policy / GPO / DNS') printf 'Política / GPO / DNS' ;; 'Security') printf 'Seguridad' ;;
+      'Remote operations') printf 'Operaciones remotas' ;; 'Insights / IDS') printf 'Información / IDS' ;; 'Maintenance') printf 'Mantenimiento' ;; 'All modules') printf 'Todos los módulos' ;;
+      'Status') printf 'Estado' ;; 'Validate DC') printf 'Validar DC' ;; 'Audit/evidence') printf 'Auditoría/evidencia' ;; 'DNS health') printf 'Salud DNS' ;; 'Time health') printf 'Salud de hora' ;;
+      'Directory users') printf 'Usuarios del directorio' ;; 'Computers / OUs') printf 'Equipos / OUs' ;; 'Backup') printf 'Copia de seguridad' ;; 'Remote endpoint operations') printf 'Operaciones remotas de endpoints' ;;
+      'IDS / Suricata') printf 'IDS / Suricata' ;; 'Wazuh integration') printf 'Integración Wazuh' ;; 'IDS / IPS response center') printf 'Centro de respuesta IDS / IPS' ;; 'Daily domain reports') printf 'Informes diarios del dominio' ;;
+      'Language / Idioma') printf 'Idioma / Language' ;; 'Back') printf 'Volver' ;; 'Exit') printf 'Salir' ;; 'Invalid selection.') printf 'Selección no válida.' ;;
+      'Press Enter to continue') printf 'Pulsa Enter para continuar' ;; *) printf '%s' "$key" ;;
+    esac
+}
+set_ui_language(){ case "${1,,}" in en|es) UI_LANG="${1,,}" ;; *) err "Language must be en or es."; return 1;; esac; }
+toggle_ui_language(){ [[ "$UI_LANG" == en ]] && UI_LANG=es || UI_LANG=en; }
+
 ask() {
     local prompt="$1" default="${2:-}" value=""
+    prompt="$(ui_t "$prompt")"
     if [[ -n "$default" ]]; then printf '%s [%s]: ' "$prompt" "$default" >&${INPUT_FD}; else printf '%s: ' "$prompt" >&${INPUT_FD}; fi
     IFS= read -r -u "$INPUT_FD" value || return 1
     [[ -n "$value" ]] || value="$default"
@@ -168,7 +194,9 @@ ask_secret_confirmed() {
 
 confirm() {
     local prompt="$1" default="${2:-N}" answer=""
-    printf '%s [%s]: ' "$prompt" "$default" >&${INPUT_FD}
+    prompt="$(ui_t "$prompt")"
+    local shown="$default"; [[ "$UI_LANG" == es && "${default^^}" == Y ]] && shown=S
+    printf '%s [%s]: ' "$prompt" "$shown" >&${INPUT_FD}
     IFS= read -r -u "$INPUT_FD" answer || return 1
     [[ -n "$answer" ]] || answer="$default"
     [[ "${answer,,}" =~ ^(y|yes|s|si|sí)$ ]]
@@ -176,14 +204,14 @@ confirm() {
 
 confirm_literal() {
     local prompt="$1" literal="$2" answer=""
-    printf '%s\nType %s to continue: ' "$prompt" "$literal" >&${INPUT_FD}
+    if [[ "$UI_LANG" == es ]]; then printf '%s\nEscribe %s para continuar: ' "$prompt" "$literal" >&${INPUT_FD}; else printf '%s\nType %s to continue: ' "$prompt" "$literal" >&${INPUT_FD}; fi
     IFS= read -r -u "$INPUT_FD" answer || return 1
     [[ "$answer" == "$literal" ]]
 }
 
 pause_ui() {
     [[ $TTY_MODE -eq 1 ]] || return 0
-    printf '\nPress Enter to continue...' >&${INPUT_FD}
+    printf '\n%s...' "$(ui_t 'Press Enter to continue')" >&${INPUT_FD}
     read -r -u "$INPUT_FD" _ || true
 }
 
@@ -2207,13 +2235,13 @@ remote_select_target() {
 }
 
 remote_ssh() {
-    local cmd="$1"
+    local cmd="$1" user cp
     [[ -n "$REMOTE_TARGET" ]] || remote_select_target || return 1
     remote_tcp_open "$REMOTE_TARGET" 22 || { err "SSH/22 is not reachable on $REMOTE_TARGET."; return 1; }
-    [[ -n "$REMOTE_SSH_USER" ]] || REMOTE_SSH_USER="$(ask 'SSH user' 'root')"
-    valid_ssh_user "$REMOTE_SSH_USER" || { err "Invalid SSH user syntax."; return 1; }
+    user="${REMOTE_SSH_USER:-$REMOTE_SERVICE_USER}"
+    mkdir -p "$SSH_CONTROL_DIR"; chmod 0700 "$SSH_CONTROL_DIR" 2>/dev/null || true; cp="$SSH_CONTROL_DIR/%C"
     remote_log SSH "$cmd"
-    ssh -o ConnectTimeout=5 "${REMOTE_SSH_USER}@${REMOTE_TARGET}" "$cmd"
+    local keyopt=(); [[ -f "$REMOTE_OPS_DIR/controller_ed25519" ]] && keyopt=(-i "$REMOTE_OPS_DIR/controller_ed25519" -o IdentitiesOnly=yes); ssh "${keyopt[@]}" -o ConnectTimeout=12 -o ConnectionAttempts=3 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o ControlMaster=auto -o ControlPersist=180 -o ControlPath="$cp" "${user}@${REMOTE_TARGET}" "$cmd"
 }
 
 remote_windows_rpc() {
@@ -2259,7 +2287,7 @@ remote_ops_menu() {
     require_dc || return 1
     while true; do
         printf '\nREMOTE OPERATIONS\n  Target: %s / %s\n' "${REMOTE_TARGET:-not-selected}" "${REMOTE_TARGET_OS:-unknown}"
-        printf '  [1] Select AD computer\n  [2] Readiness / port diagnostics\n  [3] Linux SSH: sessions + uptime\n  [4] Linux SSH: service status\n  [5] Linux SSH: restart service\n  [6] Linux SSH: wall message\n  [7] Linux SSH: reboot in 1 minute\n  [8] Linux SSH: shutdown in 1 minute\n  [9] Windows RPC: list services\n  [R] Windows RPC: reboot in 60s\n  [S] Windows RPC: shutdown in 60s\n  [C] Windows RPC: cancel shutdown\n  [E] Export evidence\n  [G] Guardrails\n  [0] Back\n'
+        printf '  [1] Select AD computer\n  [2] Readiness / port diagnostics\n  [3] Linux SSH: sessions + uptime\n  [4] Linux SSH: service status\n  [5] Linux SSH: restart service\n  [6] Linux SSH: wall message\n  [7] Linux SSH: reboot now\n  [8] Linux SSH: shutdown now\n  [9] Windows RPC: list services\n  [R] Windows RPC: reboot in 60s\n  [S] Windows RPC: shutdown in 60s\n  [C] Windows RPC: cancel shutdown\n  [B] Bootstrap managed Linux SSH identity\n  [E] Export evidence\n  [G] Guardrails\n  [0] Back\n'
         local c svc message
         c="$(ask 'Action' '1')"; c="${c^^}"
         case "$c" in
@@ -2277,12 +2305,13 @@ remote_ops_menu() {
                 confirm "Restart $svc on $REMOTE_TARGET?" N && remote_ssh "sudo systemctl restart '$svc' && systemctl is-active '$svc'"
                 ;;
             6) message="$(ask 'Broadcast message' 'Administrative maintenance will begin shortly.')"; remote_ssh "printf '%s\\n' $(printf '%q' "$message") | wall" ;;
-            7) confirm_literal "Schedule reboot on remote Linux endpoint $REMOTE_TARGET." "REBOOT" && remote_ssh "sudo shutdown -r +1 'Scheduled by AD operations'" ;;
-            8) confirm_literal "Schedule shutdown on remote Linux endpoint $REMOTE_TARGET." "SHUTDOWN" && remote_ssh "sudo shutdown -h +1 'Scheduled by AD operations'" ;;
+            7) confirm_literal "Reboot remote Linux endpoint $REMOTE_TARGET." "REBOOT" && remote_ssh "sudo systemd-run --unit=rhel-ad-reboot-$(date +%s) --on-active=2s /usr/bin/systemctl reboot >/dev/null && echo REBOOT-SCHEDULED" ;;
+            8) confirm_literal "Shut down remote Linux endpoint $REMOTE_TARGET." "SHUTDOWN" && remote_ssh "sudo systemd-run --unit=rhel-ad-poweroff-$(date +%s) --on-active=2s /usr/bin/systemctl poweroff >/dev/null && echo POWEROFF-SCHEDULED" ;;
             9) remote_windows_rpc service-list ;;
             R) confirm_literal "Schedule Windows reboot through authenticated Samba RPC." "REBOOT" && remote_windows_rpc reboot ;;
             S) confirm_literal "Schedule Windows shutdown through authenticated Samba RPC." "SHUTDOWN" && remote_windows_rpc shutdown ;;
             C) remote_windows_rpc abort ;;
+            B) remote_bootstrap_service ;;
             E) remote_diagnostics ;;
             G) printf '\nGuardrails:\n  - Credentials are requested by ssh/net interactively and are not stored.\n  - Power actions require literal confirmation.\n  - Prefer JEA/least-privilege endpoints for repeat Windows administration.\n  - Use SSH keys/sudo policy rather than embedding Linux passwords.\n  - Evidence is stored under %s.\n' "$REMOTE_EVIDENCE_DIR" ;;
             0) return 0 ;;
@@ -2439,19 +2468,152 @@ EOF_TIMER
     changed "Enabled daily passive IDS evidence timer"
 }
 
+
+# ---------------------------------------------------------------------------
+# Modern IDS/Wazuh response, managed SSH and daily domain reporting
+# ---------------------------------------------------------------------------
+
+defense_init(){ mkdir -p "$DEFENSE_DIR" "$DOMAIN_REPORT_DIR" "$SSH_CONTROL_DIR"; chmod 0700 "$DEFENSE_DIR" "$SSH_CONTROL_DIR" 2>/dev/null || true; touch "$DEFENSE_TRUSTED"; chmod 0600 "$DEFENSE_TRUSTED"; [[ -f "$DEFENSE_CONFIG" ]] || { printf 'BUSINESS_START=08:00\nBUSINESS_END=18:00\nBUSINESS_HOURS_WINDOW=1\nAFTER_HOURS_WINDOW=8\nBLOCK_TTL_MINUTES=30\n' >"$DEFENSE_CONFIG"; chmod 0600 "$DEFENSE_CONFIG"; }; }
+defense_load(){ defense_init; BUSINESS_START=08:00; BUSINESS_END=18:00; BUSINESS_HOURS_WINDOW=1; AFTER_HOURS_WINDOW=8; BLOCK_TTL_MINUTES=30; source "$DEFENSE_CONFIG" 2>/dev/null || true; }
+defense_public_ipv4(){ local ip="$1" a b; [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1; IFS=. read -r a b _ _ <<<"$ip"; ((a>=1&&a<=223)) || return 1; ((a==10||a==127||a==0||(a==169&&b==254)||(a==172&&b>=16&&b<=31)||(a==192&&b==168))) && return 1; return 0; }
+defense_nft_setup(){ command_exists nft || { warn "nft command unavailable."; return 1; }; nft list table inet rhel_ad_guard >/dev/null 2>&1 || nft add table inet rhel_ad_guard; nft list set inet rhel_ad_guard blocked4 >/dev/null 2>&1 || nft 'add set inet rhel_ad_guard blocked4 { type ipv4_addr; flags timeout; }'; nft list chain inet rhel_ad_guard input >/dev/null 2>&1 || { nft 'add chain inet rhel_ad_guard input { type filter hook input priority -5; policy accept; }'; nft add rule inet rhel_ad_guard input ip saddr @blocked4 counter drop comment 'RHEL AD guarded IPS'; }; }
+defense_list_blocks(){ defense_init; if command_exists nft && nft list set inet rhel_ad_guard blocked4 >/dev/null 2>&1; then nft list set inet rhel_ad_guard blocked4; else info "No assistant-managed temporary blocks."; fi; }
+defense_unblock(){ local ip="$1"; nft delete element inet rhel_ad_guard blocked4 "{ $ip }" 2>/dev/null && ok "Unblocked $ip." || warn "$ip not present."; }
+defense_unblock_all(){ confirm_literal "Emergency removal of every assistant-managed temporary block." "UNBLOCK-ALL" || return 0; nft flush set inet rhel_ad_guard blocked4 2>/dev/null || true; ok "All temporary blocks cleared."; }
+defense_block(){ defense_load; local ip="$1" ttl="${2:-$BLOCK_TTL_MINUTES}"; defense_public_ipv4 "$ip" || { warn "Guarded response accepts only public IPv4 sources."; return 1; }; grep -Fxq "$ip" "$DEFENSE_TRUSTED" 2>/dev/null && { warn "$ip is trusted."; return 1; }; defense_nft_setup || return 1; nft delete element inet rhel_ad_guard blocked4 "{ $ip }" 2>/dev/null || true; nft add element inet rhel_ad_guard blocked4 "{ $ip timeout ${ttl}m }"; ok "Blocked $ip for ${ttl} minutes."; }
+defense_trusted(){ defense_init; printf '\nTRUSTED IP / IP DE CONFIANZA\n'; nl -ba "$DEFENSE_TRUSTED" 2>/dev/null || true; }
+defense_trust_add(){ local ip="$1"; [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1; grep -Fxq "$ip" "$DEFENSE_TRUSTED" || echo "$ip" >>"$DEFENSE_TRUSTED"; defense_unblock "$ip" >/dev/null 2>&1 || true; ok "$ip trusted and unblocked."; }
+defense_trust_remove(){ local ip="$1"; grep -Fxv "$ip" "$DEFENSE_TRUSTED" >"${DEFENSE_TRUSTED}.tmp" || true; mv "${DEFENSE_TRUSTED}.tmp" "$DEFENSE_TRUSTED"; chmod 0600 "$DEFENSE_TRUSTED"; }
+
+wazuh_status(){ printf '\nWAZUH\n'; local svc=''; for x in wazuh-agent wazuh; do systemctl list-unit-files "$x.service" >/dev/null 2>&1 && { svc="$x"; break; }; done; printf '  service: %s\n' "${svc:-not detected}"; [[ -n "$svc" ]] && printf '  state  : %s\n' "$(systemctl is-active "$svc" 2>/dev/null || true)"; [[ -r /var/ossec/etc/ossec.conf ]] && printf '  config : /var/ossec/etc/ossec.conf\n'; }
+wazuh_suricata_integrate(){ local cfg=/var/ossec/etc/ossec.conf eve="${IDS_EVE_DIR}/eve.json"; [[ -r "$cfg" ]] || { warn "Wazuh agent is not configured."; return 1; }; [[ -e "$eve" ]] || { warn "Suricata EVE JSON is not available."; return 1; }; grep -Fq "$eve" "$cfg" && { ok "Wazuh already ingests Suricata EVE."; return 0; }; confirm "Add Suricata EVE telemetry to Wazuh?" Y || return 0; cp -a "$cfg" "${cfg}.rhel-ad.$(date +%s).bak"; local tmp; tmp="$(mktemp)"; awk -v eve="$eve" 'BEGIN{d=0} /<\/ossec_config>/&&!d{print "  <localfile>\n    <log_format>json</log_format>\n    <location>" eve "</location>\n  </localfile>";d=1}{print}' "$cfg" >"$tmp"; install -m 0640 "$tmp" "$cfg"; rm -f "$tmp"; systemctl restart wazuh-agent 2>/dev/null || systemctl restart wazuh 2>/dev/null || { warn "Wazuh restart failed; backup preserved."; return 1; }; ok "Wazuh now ingests Suricata EVE."; }
+
+ids_human_review(){ defense_load; local eve="${IDS_EVE_DIR}/eve.json" hm hours label; [[ -r "$eve" ]] || { warn "No readable EVE JSON."; return 1; }; hm="$(date +%H:%M)"; hours="$BUSINESS_HOURS_WINDOW"; label=business; if [[ "$hm" < "$BUSINESS_START" || "$hm" > "$BUSINESS_END" ]]; then hours="$AFTER_HOURS_WINDOW"; label=after-hours; fi; printf '\nINTRUSION REVIEW / REVISIÓN DE INTRUSIONES (%s, %sh)\n' "$label" "$hours"; python3 - "$eve" "$hours" <<'PY_REV'
+import sys,json,datetime,collections
+p,h=sys.argv[1],int(sys.argv[2]); cut=datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=h); c=collections.Counter()
+for line in open(p,errors='replace'):
+ try:e=json.loads(line)
+ except:continue
+ if e.get('event_type')!='alert':continue
+ try:
+  t=datetime.datetime.fromisoformat(str(e.get('timestamp','')).replace('Z','+00:00'))
+  if t<cut:continue
+ except:pass
+ a=e.get('alert') or {}; sig=str(a.get('signature','unknown')); cat=str(a.get('category','')); sev=a.get('severity','?'); src=e.get('src_ip','?'); dst=e.get('dest_ip','?')
+ low=(sig+' '+cat).lower(); kind='Recon/scan' if any(x in low for x in ('scan','recon','probe')) else 'Credential/auth' if any(x in low for x in ('brute','login','password','kerberos','ntlm')) else 'Malware/C2' if any(x in low for x in ('malware','trojan','c2','command and control')) else 'Exploit/intrusion' if any(x in low for x in ('exploit','attack','shell','overflow','injection')) else 'Protocol/anomaly'
+ c[(kind,src,dst,sev,sig)]+=1
+for (kind,src,dst,sev,sig),n in c.most_common(50):print(f'{n:4} {kind:18} sev={sev} {src:15}->{dst:15} {sig}')
+PY_REV
+}
+ids_recommended_response(){
+    local eve="${IDS_EVE_DIR}/eve.json"; [[ -r "$eve" ]] || return 1
+    local rows ip; rows="$(python3 - "$eve" <<'PY_REC'
+import sys,json,collections,ipaddress,datetime
+p=sys.argv[1]; cut=datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=8); c=collections.Counter()
+with open(p,errors='replace') as f:
+ for l in f:
+  try:
+   e=json.loads(l); a=e.get('alert') or {}; ip=e.get('src_ip')
+   if e.get('event_type')!='alert' or int(a.get('severity',9))!=1 or not ip or not ipaddress.ip_address(ip).is_global: continue
+   try:
+    if datetime.datetime.fromisoformat(str(e.get('timestamp','')).replace('Z','+00:00'))<cut: continue
+   except Exception: pass
+   c[ip]+=1
+  except Exception: pass
+for ip,n in c.most_common(20): print(f'{ip}\t{n}')
+PY_REC
+)"
+    [[ -n "$rows" ]] || { info "No qualifying severity-1 public source."; return 0; }
+    printf '%s\n' "$rows" | nl -ba
+    ip="$(ask 'IPv4 to block (blank cancels)' '')"; [[ -n "$ip" ]] && defense_block "$ip"
+}
+defense_schedule(){ defense_load; local a b c d e; a="$(ask 'Business start HH:MM' "$BUSINESS_START")"; b="$(ask 'Business end HH:MM' "$BUSINESS_END")"; c="$(ask 'Business IDS lookback hours' "$BUSINESS_HOURS_WINDOW")"; d="$(ask 'After-hours IDS lookback hours' "$AFTER_HOURS_WINDOW")"; e="$(ask 'Default block TTL minutes' "$BLOCK_TTL_MINUTES")"; printf 'BUSINESS_START=%s\nBUSINESS_END=%s\nBUSINESS_HOURS_WINDOW=%s\nAFTER_HOURS_WINDOW=%s\nBLOCK_TTL_MINUTES=%s\n' "$a" "$b" "$c" "$d" "$e" >"$DEFENSE_CONFIG"; chmod 0600 "$DEFENSE_CONFIG"; ok "Awareness schedule saved."; }
+defense_telegram(){ defense_init; local token chat; token="$(ask 'Telegram bot token' '')"; chat="$(ask 'Telegram chat/channel ID' '')"; [[ -n "$token" && -n "$chat" ]] || return 1; printf 'TOKEN=%s\nCHAT_ID=%s\n' "$token" "$chat" >"$TELEGRAM_CONFIG"; chmod 0600 "$TELEGRAM_CONFIG"; curl -fsS --max-time 12 -X POST "https://api.telegram.org/bot${token}/sendMessage" --data-urlencode "chat_id=$chat" --data-urlencode "text=RHEL AD Assistant notification test on $(hostname -f 2>/dev/null||hostname)" >/dev/null && ok "Telegram test sent." || warn "Telegram test failed."; }
+defense_response_menu(){ while true; do printf '\nIDS / IPS RESPONSE CENTER / CENTRO DE RESPUESTA\n  [1] List blocks / Ver bloqueos\n  [2] Unblock IP / Desbloquear IP\n  [3] Emergency unblock all / Desbloqueo total\n  [4] Temporary manual block / Bloqueo temporal\n  [5] Trusted IPs / IP de confianza\n  [6] Remove trusted IP / Quitar confianza\n  [7] Recommended severity-1 response\n  [8] Awareness schedule / Horario de vigilancia\n  [9] Telegram hook\n  [10] Enable 15-minute alert timer\n  [0] Back / Volver\n'; local c ip; c="$(ask 'Action' '1')"; case "$c" in 1) defense_list_blocks;;2) ip="$(ask 'IPv4' '')"; [[ -n "$ip" ]]&&defense_unblock "$ip";;3) defense_unblock_all;;4) ip="$(ask 'Public IPv4' '')"; [[ -n "$ip" ]]&&defense_block "$ip";;5) defense_trusted; ip="$(ask 'IPv4 to trust (blank skips)' '')"; [[ -n "$ip" ]]&&defense_trust_add "$ip";;6) defense_trusted; ip="$(ask 'IPv4 to remove' '')"; [[ -n "$ip" ]]&&defense_trust_remove "$ip";;7) ids_recommended_response;;8) defense_schedule;;9) defense_telegram;;10) ids_enable_alert_timer;;0)return 0;;esac; pause_ui; done; }
+
+ids_alert_watch_once(){
+    defense_load
+    local eve="${IDS_EVE_DIR}/eve.json"; [[ -r "$eve" && -r "$TELEGRAM_CONFIG" ]] || return 0
+    local TOKEN CHAT_ID; source "$TELEGRAM_CONFIG"; [[ -n "${TOKEN:-}" && -n "${CHAT_ID:-}" ]] || return 0
+    local summary; summary="$(python3 - "$eve" <<'PY_ALERT'
+import sys,json,collections,ipaddress,datetime
+p=sys.argv[1]; cut=datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=8); c=collections.Counter()
+with open(p,errors='replace') as f:
+ for l in f:
+  try:
+   e=json.loads(l);a=e.get('alert') or {};ip=e.get('src_ip')
+   if e.get('event_type')!='alert' or int(a.get('severity',9))>1 or not ip or not ipaddress.ip_address(ip).is_global: continue
+   try:
+    if datetime.datetime.fromisoformat(str(e.get('timestamp','')).replace('Z','+00:00'))<cut: continue
+   except Exception: pass
+   c[(ip,a.get('signature','unknown'))]+=1
+  except Exception: pass
+for (ip,sig),n in c.most_common(5): print(f'{n}x {ip} {sig}')
+PY_ALERT
+)"
+    [[ -n "$summary" ]] || return 0
+    curl -fsS --max-time 12 -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" --data-urlencode "chat_id=$CHAT_ID" --data-urlencode "text=RHEL AD security attention required on $(hostname -f 2>/dev/null||hostname):\n${summary}\nReview manually in the assistant; no action was executed from Telegram." >/dev/null || true
+}
+ids_enable_alert_timer(){ install_cli_shortcuts; cat >/etc/systemd/system/rhel-ad-ids-awareness.service <<EOF_SVC
+[Unit]
+Description=RHEL AD IDS awareness notification check
+[Service]
+Type=oneshot
+ExecStart=$CLI_LIBEXEC --ids-alert-watch
+EOF_SVC
+cat >/etc/systemd/system/rhel-ad-ids-awareness.timer <<'EOF_TIM'
+[Unit]
+Description=RHEL AD IDS awareness timer
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=15m
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF_TIM
+systemctl daemon-reload; systemctl enable --now rhel-ad-ids-awareness.timer; ok "15-minute IDS awareness timer enabled."; }
+
+domain_daily_report(){ defense_init; local f="$DOMAIN_REPORT_DIR/domain-$(date +%F).txt"; { echo "RHEL AD DAILY DOMAIN REPORT / INFORME DIARIO AD"; echo "Generated: $(date -Is)"; echo "Host: $(hostname -f 2>/dev/null||hostname)"; echo; echo '== SERVICES =='; for u in "$DC_SERVICE" chronyd firewalld suricata wazuh-agent; do [[ -n "$u" ]]&&printf '%-24s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null||true)"; done; echo; echo '== FAILED UNITS =='; systemctl --failed --no-pager 2>/dev/null||true; echo; echo '== AD VALIDATION =='; "$SAMBA_TOOL" domain info "$(hostname -f 2>/dev/null||hostname)" 2>&1||true; "$SAMBA_TOOL" dbcheck --cross-ncs --quiet 2>&1||true; echo; echo '== DNS / NETWORK =='; dig +short _ldap._tcp."${DOMAIN:-invalid}" SRV 2>/dev/null||true; ip -brief addr 2>/dev/null||true; echo; echo '== TIME =='; chronyc tracking 2>/dev/null||true; echo; echo '== RECENT AUTH / SERVICE WARNINGS =='; journalctl --since '-24 hours' -p warning --no-pager 2>/dev/null|tail -n 200||true; echo; echo '== SURICATA HUMAN REVIEW =='; ids_human_review 2>&1||true; echo; echo '== HUMAN ATTENTION =='; systemctl --failed --no-legend 2>/dev/null|grep -q . && echo '[ATTENTION] Failed systemd units present.' || echo '[OK] No failed systemd units.'; } >"$f"; find "$DOMAIN_REPORT_DIR" -type f -name 'domain-*.txt' -mtime +90 -delete 2>/dev/null||true; ok "Domain report saved: $f"; printf '%s\n' "$f"; }
+domain_reports_menu(){ while true; do printf '\nDAILY DOMAIN REPORTS / INFORMES DIARIOS\n  [1] Generate now / Generar ahora\n  [2] List reports / Listar informes\n  [3] View latest / Ver último\n  [4] Enable daily timer / Activar temporizador\n  [0] Back / Volver\n'; local c latest; c="$(ask 'Action' '1')"; case "$c" in 1) domain_daily_report;;2) ls -lh "$DOMAIN_REPORT_DIR" 2>/dev/null||true;;3) latest="$(ls -1t "$DOMAIN_REPORT_DIR"/domain-*.txt 2>/dev/null|head -1||true)"; [[ -n "$latest" ]]&&less "$latest"||warn "No reports.";;4) install_cli_shortcuts; cat >/etc/systemd/system/rhel-ad-domain-report.service <<EOF_SVC
+[Unit]
+Description=RHEL AD Assistant daily domain report
+[Service]
+Type=oneshot
+ExecStart=$CLI_LIBEXEC --domain-report
+EOF_SVC
+cat >/etc/systemd/system/rhel-ad-domain-report.timer <<'EOF_TIM'
+[Unit]
+Description=Daily RHEL AD Assistant domain report
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=20m
+[Install]
+WantedBy=timers.target
+EOF_TIM
+systemctl daemon-reload; systemctl enable --now rhel-ad-domain-report.timer; ok "Daily report timer enabled.";;0)return 0;;esac; pause_ui; done; }
+
+remote_control_path(){ mkdir -p "$SSH_CONTROL_DIR"; chmod 0700 "$SSH_CONTROL_DIR"; printf '%s/%%C' "$SSH_CONTROL_DIR"; }
+remote_ssh_managed(){ local cmd="$1" user="${REMOTE_SSH_USER:-$REMOTE_SERVICE_USER}" cp; [[ -n "$REMOTE_TARGET" ]]||remote_select_target||return 1; cp="$(remote_control_path)"; ssh -o ConnectTimeout=12 -o ConnectionAttempts=3 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o ControlMaster=auto -o ControlPersist=180 -o ControlPath="$cp" "${user}@${REMOTE_TARGET}" "$cmd"; }
+remote_bootstrap_service(){ [[ -n "$REMOTE_TARGET" ]]||remote_select_target||return 1; local admin pub key; admin="$(ask 'Bootstrap SSH administrator (for example admin@domain)' '')"; [[ -n "$admin" ]]||return 0; defense_init; key="$REMOTE_OPS_DIR/controller_ed25519"; mkdir -p "$REMOTE_OPS_DIR"; chmod 0700 "$REMOTE_OPS_DIR"; [[ -f "$key" ]]||ssh-keygen -q -t ed25519 -N '' -f "$key"; pub="$(cat "$key.pub")"; info "One bootstrap login is required; its password is never stored."; ssh -o ConnectTimeout=20 "${admin}@${REMOTE_TARGET}" "sudo useradd --system --create-home --shell /bin/bash $REMOTE_SERVICE_USER 2>/dev/null || true; sudo install -d -m 700 -o $REMOTE_SERVICE_USER -g $REMOTE_SERVICE_USER /home/$REMOTE_SERVICE_USER/.ssh; printf '%s\\n' '$pub' | sudo tee /home/$REMOTE_SERVICE_USER/.ssh/authorized_keys >/dev/null; sudo chown $REMOTE_SERVICE_USER:$REMOTE_SERVICE_USER /home/$REMOTE_SERVICE_USER/.ssh/authorized_keys; sudo chmod 600 /home/$REMOTE_SERVICE_USER/.ssh/authorized_keys; printf '%s\\n' '$REMOTE_SERVICE_USER ALL=(root) NOPASSWD:/usr/bin/systemctl,/usr/bin/loginctl,/usr/bin/journalctl,/usr/bin/ss,/usr/bin/hostnamectl,/usr/bin/systemd-run' | sudo tee /etc/sudoers.d/rhel-ad-remote-ops >/dev/null; sudo chmod 440 /etc/sudoers.d/rhel-ad-remote-ops" && ok "Managed remote identity prepared on $REMOTE_TARGET."; }
+
 ids_menu() {
     while true; do
-        printf '\nIDS / SURICATA\n  [1] Readiness / sensor health\n  [2] Install/configure passive sensor\n  [3] Update rules\n  [4] Recent EVE summary\n  [5] Generate report file\n  [6] Recent alerts\n  [7] Enable daily report timer\n  [0] Back\n'
+        printf '\nIDS / SURICATA + WAZUH\n  [1] Readiness / sensor health\n  [2] Install/configure passive sensor\n  [3] Update rules\n  [4] Human intrusion review / Revisión de intrusiones\n  [5] Generate report file\n  [6] Recent alerts\n  [7] Enable daily report timer\n  [8] Wazuh status / Estado Wazuh\n  [9] Integrate Suricata EVE -> Wazuh\n  [R] IDS / IPS response center\n  [D] Daily domain reports\n  [0] Back / Volver\n'
         local c
         c="$(ask 'Action' '1')"
         case "$c" in
             1) ids_sensor_health || true ;;
             2) ids_configure ;;
             3) command_exists suricata-update && suricata-update || warn "suricata-update unavailable." ;;
-            4) ids_report ;;
+            4) ids_human_review ;;
             5) ids_daily_report ;;
             6) [[ -r "${IDS_EVE_DIR}/eve.json" ]] && grep '"event_type":"alert"\|"event_type": "alert"' "${IDS_EVE_DIR}/eve.json" | tail -n 30 || warn "No EVE alerts available." ;;
             7) ids_enable_daily_timer ;;
+            8) wazuh_status ;;
+            9) wazuh_suricata_integrate ;;
+            R|r) defense_response_menu ;;
+            D|d) domain_reports_menu ;;
             0) return 0 ;;
         esac
         pause_ui
@@ -2519,7 +2681,7 @@ post_install_checklist() {
 
 operations_console() {
     while true; do
-        printf '\nDAILY OPERATIONS\n  [1] Status\n  [2] Validate DC\n  [3] Audit/evidence\n  [4] DNS health\n  [5] Time health\n  [6] Directory users\n  [7] Computers / OUs\n  [8] Backup\n  [9] Remote endpoint operations\n  [0] Back\n'
+        printf '\nDAILY OPERATIONS / OPERACIONES DIARIAS\n  [1] Status\n  [2] Validate DC\n  [3] Audit/evidence\n  [4] DNS health\n  [5] Time health\n  [6] Directory users\n  [7] Computers / OUs\n  [8] Backup\n  [9] Remote endpoint operations\n  [H] Daily domain reports\n  [0] Back\n'
         local c
         c="$(ask 'Action' '2')"
         case "$c" in
@@ -2532,6 +2694,7 @@ operations_console() {
             7) computers_menu ;;
             8) backup_menu ;;
             9) remote_ops_menu ;;
+            H|h) domain_reports_menu ;;
             0) return 0 ;;
         esac
         pause_ui
@@ -2540,7 +2703,7 @@ operations_console() {
 
 maintenance_menu() {
     while true; do
-        printf '\nMAINTENANCE\n  [B] Backup / recovery evidence\n  [T] Time / Chrony\n  [D] Resolver / DNS repair\n  [O] Boot ordering / self-heal\n  [P] Dependencies\n  [M] Migration / additional DC\n  [C] CLI shortcuts\n  [X] Controlled domain reset\n  [0] Back\n'
+        printf '\nMAINTENANCE / MANTENIMIENTO\n  [B] Backup / recovery evidence\n  [T] Time / Chrony\n  [D] Resolver / DNS repair\n  [O] Boot ordering / self-heal\n  [P] Dependencies\n  [M] Migration / additional DC\n  [C] CLI shortcuts\n  [X] Controlled domain reset\n  [0] Back\n'
         local c
         c="$(ask 'Action' 'B')"; c="${c^^}"
         case "$c" in
@@ -2560,7 +2723,7 @@ maintenance_menu() {
 
 all_modules_menu() {
     while true; do
-        printf '\nALL MODULES\n'
+        printf '\nALL MODULES / TODOS LOS MÓDULOS\n'
         printf '  [ 1] Audit / evidence                 [12] Operations console\n'
         printf '  [ 2] Validate AD/DC                  [13] Boot ordering / health\n'
         printf '  [ 3] DNS / resolver                  [14] CLI shortcuts\n'
@@ -2610,12 +2773,13 @@ manage_menu() {
             continue
         fi
 
-        printf 'WORKSPACES\n'
-        printf '  [O] Daily operations      [D] Directory\n'
-        printf '  [P] Policy / GPO / DNS    [S] Security\n'
-        printf '  [R] Remote operations     [I] Insights / IDS\n'
-        printf '  [M] Maintenance           [A] All modules\n'
-        printf '  [0] Exit\n\n'
+        printf 'WORKSPACES / ÁREAS DE TRABAJO\n'
+        printf '  [O] %-24s [D] %s\n' "$(ui_t 'Daily operations')" "$(ui_t 'Directory')"
+        printf '  [P] %-24s [S] %s\n' "$(ui_t 'Policy / GPO / DNS')" "$(ui_t 'Security')"
+        printf '  [R] %-24s [I] %s\n' "$(ui_t 'Remote operations')" "$(ui_t 'Insights / IDS')"
+        printf '  [M] %-24s [A] %s\n' "$(ui_t 'Maintenance')" "$(ui_t 'All modules')"
+        printf '  [L] %s [%s]\n' "$(ui_t 'Language / Idioma')" "${UI_LANG^^}"
+        printf '  [0] %s\n\n' "$(ui_t 'Exit')"
         local c
         c="$(ask 'Workspace' 'O')"; c="${c^^}"
         case "$c" in
@@ -2627,6 +2791,7 @@ manage_menu() {
             I) insights_workspace ;;
             M) maintenance_menu ;;
             A) all_modules_menu ;;
+            L) toggle_ui_language ;;
             0) return 0 ;;
             *) warn "Invalid selection."; pause_ui ;;
         esac
@@ -2635,7 +2800,7 @@ manage_menu() {
 
 directory_workspace() {
     while true; do
-        printf '\nDIRECTORY WORKSPACE\n  [U] Users\n  [G] Groups / access\n  [C] Computers / OUs\n  [P] Permissions / DS ACL\n  [R] Remote endpoint operations\n  [0] Back\n'
+        printf '\nDIRECTORY WORKSPACE / DIRECTORIO\n  [U] Users\n  [G] Groups / access\n  [C] Computers / OUs\n  [P] Permissions / DS ACL\n  [R] Remote endpoint operations\n  [0] Back\n'
         local c
         c="$(ask 'Area' 'U')"; c="${c^^}"
         case "$c" in U) users_menu ;; G) groups_menu ;; C) computers_menu ;; P) permissions_menu ;; R) remote_ops_menu ;; 0) return 0 ;; *) warn "Invalid selection." ;; esac
@@ -2653,7 +2818,7 @@ policy_workspace() {
 
 security_workspace() {
     while true; do
-        printf '\nSECURITY WORKSPACE\n  [H] Host / SELinux / crypto / firewall\n  [S] Samba / Kerberos security\n  [I] Passive Suricata IDS\n  [R] Remote operations guardrails\n  [0] Back\n'
+        printf '\nSECURITY WORKSPACE / SEGURIDAD\n  [H] Host / SELinux / crypto / firewall\n  [S] Samba / Kerberos security\n  [I] Passive Suricata IDS\n  [R] Remote operations guardrails\n  [0] Back\n'
         local c
         c="$(ask 'Area' 'H')"; c="${c^^}"
         case "$c" in H) security_host_report; selinux_audit; pause_ui ;; S) security_menu ;; I) ids_menu ;; R) printf '\nUse least-privilege SSH/sudo or Windows JEA/RPC delegation; credentials are never persisted.\n'; pause_ui ;; 0) return 0 ;; *) warn "Invalid selection." ;; esac
@@ -2708,6 +2873,8 @@ Security / operations:
   --remote                  Remote endpoint operations center
   --ids                     Passive Suricata IDS workspace
   --ids-daily               Generate a noninteractive IDS report
+  --domain-report           Generate daily AD/domain health-security report
+  --ids-alert-watch         Noninteractive IDS attention notification check
   --install-cli             Install/update adctl/ad-users/... local shortcuts
   --cli-info                Show installed shortcut status
 
@@ -2717,6 +2884,7 @@ Options:
                             Red Hat does not support Samba as an AD DC on RHEL.
   --external-dns-probe NAME External name used to verify DNS forwarding
   --allow-isolated-dns      Waive external DNS resolution only for isolated domains
+  --lang en|es              UI language
   --no-color                Disable ANSI colors
   -h, --help                Show help
 
@@ -2756,6 +2924,9 @@ parse_args() {
             --remote) MODE=remote ;;
             --ids) MODE=ids ;;
             --ids-daily) MODE=ids-daily ;;
+            --domain-report) MODE=domain-report ;;
+            --ids-alert-watch) MODE=ids-alert-watch ;;
+            --lang) shift; [[ $# -gt 0 ]] || exit 2; set_ui_language "$1" ;;
             --install-cli) MODE=install-cli ;;
             --cli-info) MODE=cli-info ;;
             --allow-unsupported-rhel-dc) ALLOW_UNSUPPORTED_RHEL_DC=1 ;;
@@ -2771,6 +2942,7 @@ parse_args() {
 
 main() {
     parse_args "$@"
+    UI_LANG="${UI_LANG,,}"; [[ "$UI_LANG" == en || "$UI_LANG" == es ]] || UI_LANG=en
     if ((FORCE_NO_COLOR)) || [[ ! -t 1 || -n "${NO_COLOR:-}" ]]; then
         C_RESET="" C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_CYAN="" C_MAGENTA=""
     fi
@@ -2798,6 +2970,8 @@ main() {
         remote) remote_ops_menu ;;
         ids) ids_menu ;;
         ids-daily) ids_daily_report ;;
+        domain-report) domain_daily_report ;;
+        ids-alert-watch) ids_alert_watch_once ;;
         install-cli) install_cli_shortcuts ;;
         cli-info) cli_info ;;
         *) err "Internal mode dispatch error: $MODE"; exit 2 ;;

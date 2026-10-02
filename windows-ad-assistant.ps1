@@ -1,7 +1,7 @@
 ﻿#requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Windows Server AD Control Plane - v1.7.0-remote-ops-ui
+    Windows Server AD Control Plane - v1.8.2-bilingual-defense-parity
 
 .DESCRIPTION
     Professional, audit-first assistant for Windows Server and Active Directory.
@@ -42,16 +42,16 @@
       RemoteOps          Remote endpoint operations center
 
 .EXAMPLE
-    .\windows-server-ad-v1.7.0-remote-ops-ui.ps1
+    .\windows-ad-assistant.ps1
 
 .EXAMPLE
-    .\windows-server-ad-v1.7.0-remote-ops-ui.ps1 -Mode Audit
+    .\windows-ad-assistant.ps1 -Mode Audit
 
 .EXAMPLE
-    .\windows-server-ad-v1.7.0-remote-ops-ui.ps1 -Mode ADAdmin
+    .\windows-ad-assistant.ps1 -Mode ADAdmin
 
 .EXAMPLE
-    .\windows-server-ad-v1.7.0-remote-ops-ui.ps1 -Mode Validate
+    .\windows-ad-assistant.ps1 -Mode Validate
 
 .NOTES
     Validate in a lab before production deployment.
@@ -59,8 +59,11 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Audit','Validate','Harden','Backup','ADAdmin','Provision','Migration','DirectorySecurity','Dependencies','Reset','IDS','IDSReport','RemoteOps')]
+    [ValidateSet('Interactive','Audit','Validate','Harden','Backup','ADAdmin','Provision','Migration','DirectorySecurity','Dependencies','Reset','IDS','IDSReport','IDSResponseCleanup','IDSAwarenessCheck','RemoteOps')]
     [string]$Mode = 'Interactive',
+
+    [ValidateSet('en','es')]
+    [string]$Language = 'en',
 
     [string]$ExportPath = "$env:ProgramData\WindowsADControlPlane",
 
@@ -79,7 +82,7 @@ $ErrorActionPreference = 'Stop'
 # ===========================================================================
 
 $script:ProductName = 'Windows Server AD Control Plane'
-$script:Version = '1.7.0-remote-ops-ui'
+$script:Version = '1.8.2-bilingual-defense-parity'
 $script:Started = Get-Date
 
 $script:Results = New-Object 'System.Collections.Generic.List[object]'
@@ -110,14 +113,36 @@ $script:IdsStatePath = Join-Path $ExportPath 'ids'
 $script:IdsReportPath = Join-Path $script:IdsStatePath 'reports'
 $script:IdsIntegrationFile = Join-Path $script:IdsStatePath 'suricata-integration.json'
 $script:IdsTaskName = 'WindowsADControlPlane-SuricataDaily'
+$script:WazuhIntegrationFile = Join-Path $script:IdsStatePath 'wazuh-integration.json'
+$script:GuardedIpsStateFile = Join-Path $script:IdsStatePath 'guarded-ips.json'
+$script:GuardedIpsTaskName = 'WindowsADControlPlane-GuardedIpsCleanup'
+$script:GuardedIpsRulePrefix = 'WindowsADControlPlane-IPS-'
+$script:DefenseOpsConfigFile = Join-Path $script:IdsStatePath 'defense-ops.json'
+$script:TelegramTokenFile = Join-Path $script:IdsStatePath 'telegram-token.dpapi'
 $script:RemoteOpsPath = Join-Path $ExportPath 'remote-ops'
 $script:RemoteOpsEvidencePath = Join-Path $script:RemoteOpsPath 'evidence'
 $script:RemoteOpsLog = Join-Path $script:RemoteOpsPath 'operations.tsv'
 $script:RemoteTarget = $null
 $script:RemoteOpsCredential = $null
 $script:RemoteSshUser = $null
+$script:DnsExternalProbeName = 'www.microsoft.com'
+$script:DnsExternalHealth = 'UNKNOWN'
+$script:DnsExternalHealthChecked = $null
+$script:SuricataUpdateTimeoutSeconds = 1200
 
 $script:UiWidth = 96
+$script:UiLanguage = $Language.ToLowerInvariant()
+
+$script:UiSpanish = @{
+ 'AD/DC CONTROL PLANE'='PLANO DE CONTROL AD/DC'; 'Workspace navigation · stable letters for daily muscle memory'='Navegación por áreas · letras estables para memoria muscular';
+ 'Daily operations'='Operaciones diarias'; 'Directory'='Directorio'; 'Policy / DNS'='Política / DNS'; 'Policy / GPO / DNS'='Política / GPO / DNS'; 'Security'='Seguridad'; 'Remote operations'='Operaciones remotas'; 'Insights / IDS'='Información / IDS'; 'Maintenance'='Mantenimiento'; 'All modules'='Todos los módulos'; 'Exit'='Salir'; 'Close control plane'='Cerrar plano de control'; 'Workspace'='Área de trabajo'; 'Invalid workspace.'='Área de trabajo no válida.';
+ 'Back'='Volver'; 'Main menu'='Menú principal'; 'Return to previous console'='Volver a la consola anterior'; 'Jump directly to the Windows Server Control Plane'='Ir directamente al plano de control de Windows Server'; 'Select operation'='Selecciona operación'; 'Press ENTER to continue'='Pulsa ENTER para continuar';
+ 'IDS / Suricata'='IDS / Suricata'; 'Wazuh integration'='Integración Wazuh'; 'Defense operations'='Operaciones de defensa'; 'Guarded IPS response'='Respuesta IPS controlada'; 'Blocked IP addresses'='Direcciones IP bloqueadas'; 'Unblock selected IP'='Desbloquear IP seleccionada'; 'Emergency unblock all'='Desbloqueo de emergencia total'; 'Temporarily block IP'='Bloquear IP temporalmente'; 'Trust selected IP'='Confiar en IP seleccionada'; 'Trusted IP addresses'='Direcciones IP de confianza'; 'Awareness schedule'='Horario de vigilancia'; 'Telegram notifications'='Notificaciones de Telegram';
+ 'Suricata IDS readiness'='Preparación IDS de Suricata'; 'Suricata sensor health'='Salud del sensor Suricata'; 'Wazuh + Suricata integration'='Integración Wazuh + Suricata'; 'Recent Wazuh agent signals:'='Señales recientes del agente Wazuh:'; 'Configure Wazuh manager'='Configurar manager Wazuh'; 'Integrate Suricata EVE with Wazuh'='Integrar EVE de Suricata con Wazuh'; 'Open graphical Defense Center'='Abrir Centro de Defensa gráfico';
+ 'Windows AD Defense Center - Suricata + Wazuh'='Centro de Defensa AD de Windows - Suricata + Wazuh'; 'Windows AD Control Plane - Suricata IDS'='Plano de control AD de Windows - IDS Suricata'; 'Blocks'='Bloqueos'; 'Alerts'='Alertas'; 'Refresh'='Actualizar'; 'Unblock'='Desbloquear'; 'Unblock all'='Desbloquear todo'; 'Block IP'='Bloquear IP'; 'Trust IP'='Confiar en IP'; 'Apply guarded response'='Aplicar respuesta controlada'; 'Close'='Cerrar'; 'Language / Idioma'='Idioma / Language'
+}
+function Get-UiText { param([Parameter(Mandatory=$true)][string]$Text) if($script:UiLanguage -eq 'es' -and $script:UiSpanish.ContainsKey($Text)){ return [string]$script:UiSpanish[$Text] }; return $Text }
+function Switch-UiLanguage { $script:UiLanguage = if($script:UiLanguage -eq 'en'){'es'}else{'en'} }
 
 function Test-IsInteractiveConsole {
     try {
@@ -171,7 +196,7 @@ function Write-Section {
 
     Write-Console ''
     Write-Rule
-    Write-Console ('  {0}' -f $Title.ToUpperInvariant()) White
+    Write-Console ('  {0}' -f (Get-UiText $Title).ToUpperInvariant()) White
     Write-Rule
 }
 
@@ -243,7 +268,13 @@ function Write-ContextPanel {
         $idsState = Get-ServiceBadge -Name 'suricata'
         $idsKind = if ($idsState -eq 'ONLINE') { 'Good' } elseif ($idsState -eq 'N/A') { 'Info' } else { 'Warn' }
         Write-Console 'IDS=' Gray -NoNewline
-        Write-Badge -Text $idsState -Kind $idsKind
+        Write-Badge -Text $idsState -Kind $idsKind -NoNewline
+        Write-Console ' ' -NoNewline
+
+        $extKind = if ($script:DnsExternalHealth -eq 'OK') { 'Good' } `
+            elseif ($script:DnsExternalHealth -eq 'CHECK') { 'Warn' } else { 'Info' }
+        Write-Console 'EXTDNS=' Gray -NoNewline
+        Write-Badge -Text $script:DnsExternalHealth -Kind $extKind
     }
 }
 
@@ -259,9 +290,9 @@ function Write-MenuHeader {
     Write-Rule
     Write-ContextPanel
     Write-Rule
-    Write-Console ('  {0}' -f $Title.ToUpperInvariant()) White
+    Write-Console ('  {0}' -f (Get-UiText $Title).ToUpperInvariant()) White
     if ($Subtitle) {
-        Write-Console ('  {0}' -f $Subtitle) Gray
+        Write-Console ('  {0}' -f (Get-UiText $Subtitle)) Gray
     }
     Write-Console ''
 }
@@ -280,11 +311,11 @@ function Write-WorkspaceRow {
     )
 
     Write-Console ('  [{0}] ' -f $Key1) $Color1 -NoNewline
-    Write-Console ('{0,-31}' -f $Title1) White -NoNewline
+    Write-Console ('{0,-31}' -f (Get-UiText $Title1)) White -NoNewline
 
     if ($Key2) {
         Write-Console ('[{0}] ' -f $Key2) $Color2 -NoNewline
-        Write-Console $Title2 White
+        Write-Console (Get-UiText $Title2) White
     }
     else {
         Write-Console ''
@@ -321,8 +352,8 @@ function Write-MenuItem {
     }
 
     Write-Console ('  [{0,2}]  ' -f $Key) Gray -NoNewline
-    Write-Console ('{0,-31}' -f $Title) $color -NoNewline
-    Write-Console $Description Gray
+    Write-Console ('{0,-31}' -f (Get-UiText $Title)) $color -NoNewline
+    Write-Console (Get-UiText $Description) Gray
 }
 
 
@@ -340,14 +371,14 @@ function Read-MenuChoice {
     )
 
     if ($Default) {
-        $value = (Read-Host ('{0} [{1}]' -f $Prompt, $Default)).Trim()
+        $value = (Read-Host ('{0} [{1}]' -f (Get-UiText $Prompt), $Default)).Trim()
         if ([string]::IsNullOrWhiteSpace($value)) {
             return $Default
         }
         return $value
     }
 
-    return (Read-Host $Prompt).Trim()
+    return (Read-Host (Get-UiText $Prompt)).Trim()
 }
 
 
@@ -360,7 +391,7 @@ function Read-BooleanChoice {
     $suffix = if ($Default) { '[Y/n]' } else { '[y/N]' }
 
     while ($true) {
-        $answer = (Read-Host ("{0} {1}" -f $Prompt, $suffix)).Trim().ToUpperInvariant()
+        $answer = (Read-Host ("{0} {1}" -f (Get-UiText $Prompt), $suffix)).Trim().ToUpperInvariant()
         if ([string]::IsNullOrWhiteSpace($answer)) { return $Default }
         if ($answer -in @('Y','YES','S','SI','SÍ')) { return $true }
         if ($answer -in @('N','NO')) { return $false }
@@ -384,7 +415,7 @@ function Pause-ControlPlane {
     if (Test-IsInteractiveConsole) {
         Write-Console ''
         Write-Rule
-        [void](Read-Host 'Press ENTER to continue')
+        [void](Read-Host (Get-UiText 'Press ENTER to continue'))
     }
 }
 
@@ -2097,6 +2128,182 @@ function Test-ReplicationHealth {
     }
 }
 
+
+function Test-WindowsDnsExternalResolution {
+    param(
+        [string]$Server = '127.0.0.1',
+        [string]$ProbeName = $script:DnsExternalProbeName
+    )
+
+    try {
+        $answers = @(Resolve-DnsName -Name $ProbeName -Type A -Server $Server `
+            -DnsOnly -QuickTimeout -ErrorAction Stop |
+            Where-Object { $_.Type -eq 'A' -and $_.IPAddress })
+        return ($answers.Count -gt 0)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-DnsForwarderSnapshot {
+    if (-not (Test-Command 'Get-DnsServerForwarder')) { return $null }
+    try { return Get-DnsServerForwarder -ErrorAction Stop }
+    catch { return $null }
+}
+
+function Show-DnsExternalResolutionHealth {
+    Write-Section 'DNS external resolution / forwarders'
+
+    Assert-DnsServerModule
+
+    $forwarder = Get-DnsForwarderSnapshot
+    if ($forwarder) {
+        $ips = @($forwarder.IPAddress | ForEach-Object { [string]$_ })
+        Write-Console ("  Forwarders     : {0}" -f $(if ($ips.Count) { $ips -join ', ' } else { '(none)' }))
+        if ($forwarder.PSObject.Properties['UseRootHint']) {
+            Write-Console ("  Use root hints : {0}" -f $forwarder.UseRootHint)
+        }
+        if ($forwarder.PSObject.Properties['Timeout']) {
+            Write-Console ("  Timeout        : {0}s" -f $forwarder.Timeout)
+        }
+
+        foreach ($ip in $ips) {
+            if (Test-WindowsDnsExternalResolution -Server $ip) {
+                Write-Badge -Text ("UPSTREAM {0} OK" -f $ip) -Kind Good
+            }
+            else {
+                Write-Badge -Text ("UPSTREAM {0} FAIL" -f $ip) -Kind Warn
+            }
+        }
+    }
+    else {
+        Write-Console '  Forwarder state could not be read or no forwarders are configured.' Yellow
+    }
+
+    $localOk = Test-WindowsDnsExternalResolution -Server '127.0.0.1'
+    $script:DnsExternalHealth = if ($localOk) { 'OK' } else { 'CHECK' }
+    $script:DnsExternalHealthChecked = Get-Date
+
+    if ($localOk) {
+        Write-Badge -Text 'LOCAL DNS EXTERNAL RESOLUTION OK' -Kind Good
+        Add-Result 'DNS' 'External recursive resolution' 'PASS' `
+            ("{0} resolved through local DNS" -f $script:DnsExternalProbeName) `
+            'External names resolvable when Internet access is expected'
+    }
+    else {
+        Write-Badge -Text 'LOCAL DNS EXTERNAL RESOLUTION FAILED' -Kind Bad
+        Write-Console '  AD zones may still work while clients lose Internet name resolution.' Yellow
+        Write-Console '  If this is not an isolated environment, inspect forwarders/root hints and outbound DNS policy.' Yellow
+        Add-Result 'DNS' 'External recursive resolution' 'WARN' `
+            ("{0} did not resolve through local DNS" -f $script:DnsExternalProbeName) `
+            'External names resolvable when Internet access is expected'
+    }
+
+    return $localOk
+}
+
+function Convert-ToIpAddressArray {
+    param([Parameter(Mandatory=$true)][string]$Text)
+
+    $values = @($Text -split '[,;\s]+' | Where-Object { $_ })
+    $parsed = New-Object 'System.Collections.Generic.List[System.Net.IPAddress]'
+    foreach ($value in $values) {
+        $ip = $null
+        if (-not [System.Net.IPAddress]::TryParse($value, [ref]$ip)) {
+            throw ("Invalid DNS forwarder IP address: {0}" -f $value)
+        }
+        $parsed.Add($ip)
+    }
+    return @($parsed)
+}
+
+function Repair-DnsForwardersInteractive {
+    Assert-DnsServerModule
+
+    $current = Get-DnsForwarderSnapshot
+    $currentIps = @()
+    if ($current) {
+        $currentIps = @($current.IPAddress | ForEach-Object { [string]$_ })
+    }
+
+    Write-Section 'Repair DNS forwarders'
+    if (Test-WindowsDnsExternalResolution -Server '127.0.0.1') {
+        Write-Console 'Local DNS already resolves external names. No forwarder repair is required.' Green
+        if (-not (Read-BooleanChoice -Prompt 'Change forwarders anyway?' -Default $false)) {
+            $script:DnsExternalHealth = 'OK'
+            return
+        }
+    }
+
+    Write-Console ("Current forwarders: {0}" -f $(if ($currentIps.Count) { $currentIps -join ', ' } else { '(none)' }))
+    Write-Console 'Enter only DNS servers that this DC is intentionally allowed to use for recursion.' Yellow
+    $raw = (Read-Host 'New forwarder IPs (comma separated)').Trim()
+    if (-not $raw) { return }
+
+    try { $newIps = @(Convert-ToIpAddressArray -Text $raw) }
+    catch {
+        Write-Console $_.Exception.Message Red
+        return
+    }
+    if ($newIps.Count -eq 0) { return }
+
+    foreach ($ip in $newIps) {
+        if (-not (Test-WindowsDnsExternalResolution -Server ([string]$ip))) {
+            Write-Console ("Forwarder {0} did not resolve {1}; no DNS change was made." -f `
+                $ip,$script:DnsExternalProbeName) Red
+            return
+        }
+    }
+
+    if (-not (Confirm-Action `
+        -Action ("Replace DNS forwarders with: {0}" -f (($newIps | ForEach-Object { [string]$_ }) -join ', ')) `
+        -Reason 'Restore external DNS resolution for domain clients while keeping AD DNS authoritative internally.' `
+        -Impact MEDIUM)) {
+        return
+    }
+
+    $backup = Join-Path $script:RunPath 'dns-forwarders-before.json'
+    if ($current) {
+        $current | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $backup -Encoding UTF8
+    }
+
+    try {
+        Set-DnsServerForwarder -IPAddress $newIps -PassThru -ErrorAction Stop | Out-Host
+        Clear-DnsServerCache -Force -ErrorAction SilentlyContinue
+
+        if (Test-WindowsDnsExternalResolution -Server '127.0.0.1') {
+            $script:DnsExternalHealth = 'OK'
+            $script:DnsExternalHealthChecked = Get-Date
+            Write-Log 'DNS forwarders updated and external resolution validated.' CHANGE
+            return
+        }
+
+        throw 'Local DNS still cannot resolve the external probe after changing forwarders.'
+    }
+    catch {
+        Write-Console ("Forwarder repair failed validation: {0}" -f $_.Exception.Message) Red
+        Write-Console 'Attempting to restore the previous forwarder list.' Yellow
+        try {
+            if ($currentIps.Count -gt 0) {
+                $restoreIps = @($currentIps | ForEach-Object { [System.Net.IPAddress]$_ })
+                Set-DnsServerForwarder -IPAddress $restoreIps -ErrorAction Stop | Out-Null
+            }
+            elseif (Test-Command 'Remove-DnsServerForwarder') {
+                Remove-DnsServerForwarder -IPAddress $newIps -Force -ErrorAction Stop | Out-Null
+            }
+            Write-Console 'Previous forwarder state restored.' Green
+        }
+        catch {
+            Write-Console ("Automatic forwarder rollback failed: {0}" -f $_.Exception.Message) Red
+            if (Test-Path -LiteralPath $backup) {
+                Write-Console ("Backup metadata: {0}" -f $backup) Yellow
+            }
+        }
+        $script:DnsExternalHealth = 'CHECK'
+    }
+}
+
 function Test-DcDnsHealth {
     if (-not (Test-Command 'Resolve-DnsName')) {
         Add-Result 'DNS' 'Resolve-DnsName' 'ERROR' 'Cmdlet unavailable' 'Available'
@@ -2121,6 +2328,8 @@ function Test-DcDnsHealth {
     catch {
         Add-Result 'DNS' 'AD DNS records' 'FAIL' $_.Exception.Message 'Resolvable SRV records'
     }
+
+    [void](Show-DnsExternalResolutionHealth)
 
     if (Test-Command 'Get-DnsServerZone') {
         try {
@@ -5747,6 +5956,99 @@ function Set-WindowsSuricataEvePath {
     Write-Log ("Stored Suricata EVE integration path: {0}" -f $path) CHANGE
 }
 
+
+function Write-WindowsSuricataConfigDiagnosis {
+    param([Parameter(Mandatory=$true)][string[]]$Output)
+
+    $joined = $Output -join "`n"
+    if ($joined -match '(?i)No rule files match|rule files.*not found') {
+        Write-Console '  Diagnosis: the configured Suricata ruleset is missing or does not match rule-files.' Yellow
+        Write-Console '  Run the rule updater, then test the configuration again.' Yellow
+    }
+    if ($joined -match '(?i)Configuration node .* redefined') {
+        Write-Console '  Diagnosis: the YAML configuration redefines a node. Review custom includes/overlays.' Yellow
+    }
+    if ($joined -match '(?i)Variable .* is not defined') {
+        Write-Console '  Diagnosis: a rule variable expected by the active rules/configuration is missing.' Yellow
+        Write-Console '  The Windows assistant will not rewrite third-party Suricata YAML automatically.' Yellow
+    }
+}
+
+function Invoke-ExternalProcessWithHeartbeat {
+    param(
+        [Parameter(Mandatory=$true)][string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [Parameter(Mandatory=$true)][string]$Activity,
+        [int]$TimeoutSeconds = 1200,
+        [int]$HeartbeatSeconds = 30
+    )
+
+    $stdout = Join-Path $script:RunPath ("process-{0}-stdout.txt" -f ([guid]::NewGuid().ToString('N')))
+    $stderr = Join-Path $script:RunPath ("process-{0}-stderr.txt" -f ([guid]::NewGuid().ToString('N')))
+
+    $startParams = @{
+        FilePath               = $FilePath
+        NoNewWindow            = $true
+        PassThru               = $true
+        RedirectStandardOutput = $stdout
+        RedirectStandardError  = $stderr
+    }
+    if ($ArgumentList.Count -gt 0) {
+        $startParams.ArgumentList = $ArgumentList
+    }
+    $proc = Start-Process @startParams
+
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $nextHeartbeat = $HeartbeatSeconds
+    $timedOut = $false
+
+    while (-not $proc.HasExited) {
+        Start-Sleep -Seconds 2
+        $proc.Refresh()
+
+        if ($watch.Elapsed.TotalSeconds -ge $nextHeartbeat) {
+            Write-Console ("  {0} still running · {1:mm\:ss}" -f $Activity,$watch.Elapsed) Gray
+            $nextHeartbeat += $HeartbeatSeconds
+        }
+
+        if ($watch.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+            $timedOut = $true
+            Write-Console ("  {0} exceeded {1} minutes; stopping the updater." -f `
+                $Activity,[math]::Round($TimeoutSeconds / 60,0)) Red
+            try { $proc.Kill() } catch {}
+            break
+        }
+    }
+
+    try { $proc.WaitForExit() } catch {}
+    $watch.Stop()
+
+    $output = New-Object 'System.Collections.Generic.List[string]'
+    if (Test-Path -LiteralPath $stdout) {
+        foreach ($line in Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue) {
+            $output.Add([string]$line)
+        }
+    }
+    if (Test-Path -LiteralPath $stderr) {
+        foreach ($line in Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue) {
+            $output.Add([string]$line)
+        }
+    }
+
+    $output | Select-Object -Last 60 | ForEach-Object { Write-Console ([string]$_) Gray }
+
+    $exitCode = if ($timedOut) { -1 } else {
+        try { [int]$proc.ExitCode } catch { -1 }
+    }
+
+    [pscustomobject]@{
+        ExitCode = $exitCode
+        TimedOut = $timedOut
+        Elapsed  = $watch.Elapsed
+        Output   = @($output)
+    }
+}
+
 function Test-WindowsSuricataConfiguration {
     $info = Get-WindowsSuricataInfo
     if (-not $info.Executable) {
@@ -5768,6 +6070,7 @@ function Test-WindowsSuricataConfiguration {
         return $true
     }
 
+    Write-WindowsSuricataConfigDiagnosis -Output @($output)
     Add-Result 'IDS' 'Suricata configuration' 'FAIL' ("exit={0}" -f $exit) 'Valid'
     return $false
 }
@@ -5839,12 +6142,21 @@ function Get-WindowsIdsSummary {
     $alertSeverity = @{}
     $alertSignatures = @{}
     $alertSources = @{}
+    $dnsSources = @{}
     $krbEncryption = @{}
+    $krbClients = @{}
+    $krbSources = @{}
+    $krbErrors = @{}
+    $ldapOperations = @{}
+    $ldapSources = @{}
+    $ldapResultCodes = @{}
     $smbDialects = @{}
     $ntlmUsers = @{}
     $ntlmHosts = @{}
 
     $weakKerberos = New-Object 'System.Collections.Generic.List[object]'
+    $recentKrbErrors = New-Object 'System.Collections.Generic.List[object]'
+    $recentLdapFailures = New-Object 'System.Collections.Generic.List[object]'
     $recentAlerts = New-Object 'System.Collections.Generic.List[object]'
     $latestStats = $null
     $latestTimestamp = $null
@@ -5876,54 +6188,108 @@ function Get-WindowsIdsSummary {
             if (-not $type) { $type = 'unknown' }
             Add-CounterValue -Table $eventTypes -Key $type
 
+            $srcIp = Get-ObjectPropertyValue -Object $event -Name 'src_ip'
+
             switch ([string]$type) {
                 'alert' {
                     $alert = Get-ObjectPropertyValue -Object $event -Name 'alert'
                     $sig = Get-ObjectPropertyValue -Object $alert -Name 'signature'
                     $severity = Get-ObjectPropertyValue -Object $alert -Name 'severity'
-                    $src = Get-ObjectPropertyValue -Object $event -Name 'src_ip'
                     $dst = Get-ObjectPropertyValue -Object $event -Name 'dest_ip'
 
                     Add-CounterValue -Table $alertSignatures -Key $sig
                     Add-CounterValue -Table $alertSeverity -Key $severity
-                    Add-CounterValue -Table $alertSources -Key $src
+                    Add-CounterValue -Table $alertSources -Key $srcIp
 
                     $recentAlerts.Add([pscustomobject]@{
-                        Timestamp = [string]$rawTimestamp
-                        Severity  = [string]$severity
-                        Source    = [string]$src
+                        Timestamp   = [string]$rawTimestamp
+                        Severity    = [string]$severity
+                        Source      = [string]$srcIp
                         Destination = [string]$dst
-                        Signature = [string]$sig
+                        Signature   = [string]$sig
                     })
                     while ($recentAlerts.Count -gt $MaxRecentAlerts) {
                         $recentAlerts.RemoveAt(0)
                     }
                 }
+
                 'dns' {
                     $dnsEvents++
+                    Add-CounterValue -Table $dnsSources -Key $srcIp
                     $dns = Get-ObjectPropertyValue -Object $event -Name 'dns'
                     $rcode = Get-ObjectPropertyValue -Object $dns -Name 'rcode_name'
                     if (-not $rcode) { $rcode = Get-ObjectPropertyValue -Object $dns -Name 'rcode' }
                     if (([string]$rcode).ToUpperInvariant() -match 'NXDOMAIN|^3$') { $nxdomain++ }
                 }
+
                 'krb5' {
+                    Add-CounterValue -Table $krbSources -Key $srcIp
                     $krb = Get-ObjectPropertyValue -Object $event -Name 'krb5'
                     $enc = Get-ObjectPropertyValue -Object $krb -Name 'ticket_encryption'
                     if (-not $enc) { $enc = Get-ObjectPropertyValue -Object $krb -Name 'encryption' }
                     Add-CounterValue -Table $krbEncryption -Key $enc
+
+                    $client = Get-ObjectPropertyValue -Object $krb -Name 'cname'
+                    Add-CounterValue -Table $krbClients -Key $client
+
+                    $errorCode = Get-ObjectPropertyValue -Object $krb -Name 'error_code'
+                    if ($null -ne $errorCode -and [string]$errorCode -ne '') {
+                        Add-CounterValue -Table $krbErrors -Key $errorCode
+                        $recentKrbErrors.Add([pscustomobject]@{
+                            Timestamp = [string]$rawTimestamp
+                            Source    = [string]$srcIp
+                            Client    = [string]$client
+                            Service   = [string](Get-ObjectPropertyValue -Object $krb -Name 'sname')
+                            ErrorCode = [string]$errorCode
+                        })
+                        while ($recentKrbErrors.Count -gt 100) { $recentKrbErrors.RemoveAt(0) }
+                    }
 
                     $weak = Get-ObjectPropertyValue -Object $krb -Name 'weak_encryption'
                     $ticketWeak = Get-ObjectPropertyValue -Object $krb -Name 'ticket_weak_encryption'
                     if ($weak -eq $true -or $ticketWeak -eq $true) {
                         $weakKerberos.Add([pscustomobject]@{
                             Timestamp  = [string]$rawTimestamp
-                            Source     = [string](Get-ObjectPropertyValue -Object $event -Name 'src_ip')
-                            Client     = [string](Get-ObjectPropertyValue -Object $krb -Name 'cname')
+                            Source     = [string]$srcIp
+                            Client     = [string]$client
                             Service    = [string](Get-ObjectPropertyValue -Object $krb -Name 'sname')
                             Encryption = [string]$enc
                         })
                     }
                 }
+
+                'ldap' {
+                    Add-CounterValue -Table $ldapSources -Key $srcIp
+                    $ldap = Get-ObjectPropertyValue -Object $event -Name 'ldap'
+                    $requests = @(Get-ObjectPropertyValue -Object $ldap -Name 'requests')
+                    foreach ($req in $requests) {
+                        if ($null -eq $req) { continue }
+                        $op = Get-ObjectPropertyValue -Object $req -Name 'operation'
+                        if (-not $op) { $op = Get-ObjectPropertyValue -Object $req -Name 'type' }
+                        Add-CounterValue -Table $ldapOperations -Key $op
+                    }
+
+                    $responses = @(Get-ObjectPropertyValue -Object $ldap -Name 'responses')
+                    foreach ($resp in $responses) {
+                        if ($null -eq $resp) { continue }
+                        $code = Get-ObjectPropertyValue -Object $resp -Name 'result_code'
+                        if ($null -eq $code) { $code = Get-ObjectPropertyValue -Object $resp -Name 'resultCode' }
+                        Add-CounterValue -Table $ldapResultCodes -Key $code
+
+                        $codeText = [string]$code
+                        if ($codeText -and $codeText -notmatch '^(0|success)$') {
+                            $recentLdapFailures.Add([pscustomobject]@{
+                                Timestamp  = [string]$rawTimestamp
+                                Source     = [string]$srcIp
+                                ResultCode = $codeText
+                            })
+                            while ($recentLdapFailures.Count -gt 100) {
+                                $recentLdapFailures.RemoveAt(0)
+                            }
+                        }
+                    }
+                }
+
                 'smb' {
                     $smb = Get-ObjectPropertyValue -Object $event -Name 'smb'
                     $dialect = Get-ObjectPropertyValue -Object $smb -Name 'dialect'
@@ -5933,11 +6299,12 @@ function Get-WindowsIdsSummary {
                     if ($ntlm) {
                         $user = Get-ObjectPropertyValue -Object $ntlm -Name 'user'
                         $host = Get-ObjectPropertyValue -Object $ntlm -Name 'host'
-                        if (-not $host) { $host = Get-ObjectPropertyValue -Object $event -Name 'src_ip' }
+                        if (-not $host) { $host = $srcIp }
                         Add-CounterValue -Table $ntlmUsers -Key $(if ($user) { $user } else { '<unknown>' })
                         Add-CounterValue -Table $ntlmHosts -Key $(if ($host) { $host } else { '<unknown>' })
                     }
                 }
+
                 'stats' {
                     $latestStats = Get-ObjectPropertyValue -Object $event -Name 'stats'
                 }
@@ -5970,6 +6337,14 @@ function Get-WindowsIdsSummary {
         if ($alertSeverity.ContainsKey($key)) { $severity12 += [int]$alertSeverity[$key] }
     }
 
+    # KRB5 error 25 / PREAUTH_REQUIRED is commonly part of normal negotiation.
+    $actionableKrbErrors = 0
+    foreach ($key in $krbErrors.Keys) {
+        if ([string]$key -notmatch '^(25|KDC_ERR_PREAUTH_REQUIRED|PREAUTH_REQUIRED)$') {
+            $actionableKrbErrors += [int]$krbErrors[$key]
+        }
+    }
+
     $actions = New-Object 'System.Collections.Generic.List[string]'
     if ($dropRate -gt 1.0) {
         $actions.Add(("HIGH sensor packet loss: kernel drop rate {0:N3}%" -f $dropRate))
@@ -5979,6 +6354,12 @@ function Get-WindowsIdsSummary {
     }
     if ($weakKerberos.Count -gt 0) {
         $actions.Add(("REVIEW {0} weak Kerberos observation(s) before AES-only enforcement" -f $weakKerberos.Count))
+    }
+    if ($actionableKrbErrors -gt 0) {
+        $actions.Add(("INVESTIGATE {0} actionable Kerberos error observation(s)" -f $actionableKrbErrors))
+    }
+    if ($recentLdapFailures.Count -gt 0) {
+        $actions.Add(("INVESTIGATE {0} LDAP non-success response observation(s)" -f $recentLdapFailures.Count))
     }
     if ($smb1 -gt 0) {
         $actions.Add(("REVIEW {0} SMB1 observation(s); identify legacy clients" -f $smb1))
@@ -6003,8 +6384,17 @@ function Get-WindowsIdsSummary {
         RecentAlerts        = @($recentAlerts)
         DnsEvents           = $dnsEvents
         NxDomain            = $nxdomain
+        DnsSources          = @(Convert-CounterToRows -Table $dnsSources -KeyName 'Source' -Limit 20)
         KerberosEncryption  = @(Convert-CounterToRows -Table $krbEncryption -KeyName 'Encryption' -Limit 20)
+        KerberosClients     = @(Convert-CounterToRows -Table $krbClients -KeyName 'Client' -Limit 20)
+        KerberosSources     = @(Convert-CounterToRows -Table $krbSources -KeyName 'Source' -Limit 20)
+        KerberosErrors      = @(Convert-CounterToRows -Table $krbErrors -KeyName 'ErrorCode' -Limit 20)
+        RecentKrbErrors     = @($recentKrbErrors)
         WeakKerberos        = @($weakKerberos)
+        LdapOperations      = @(Convert-CounterToRows -Table $ldapOperations -KeyName 'Operation' -Limit 20)
+        LdapSources         = @(Convert-CounterToRows -Table $ldapSources -KeyName 'Source' -Limit 20)
+        LdapResultCodes     = @(Convert-CounterToRows -Table $ldapResultCodes -KeyName 'ResultCode' -Limit 20)
+        RecentLdapFailures  = @($recentLdapFailures)
         SmbDialects         = @(Convert-CounterToRows -Table $smbDialects -KeyName 'Dialect' -Limit 20)
         NtlmUsers           = @(Convert-CounterToRows -Table $ntlmUsers -KeyName 'User' -Limit 20)
         NtlmHosts           = @(Convert-CounterToRows -Table $ntlmHosts -KeyName 'Host' -Limit 20)
@@ -6031,20 +6421,31 @@ function Format-WindowsIdsSummaryText {
     [void]$sb.AppendLine(("Kernel drop rate         {0:N3}%" -f $Summary.KernelDropRate))
     [void]$sb.AppendLine(("DNS events               {0}" -f $Summary.DnsEvents))
     [void]$sb.AppendLine(("DNS NXDOMAIN             {0}" -f $Summary.NxDomain))
+    [void]$sb.AppendLine(("Kerberos errors          {0}" -f (($Summary.KerberosErrors | Measure-Object Count -Sum).Sum)))
     [void]$sb.AppendLine(("Weak Kerberos            {0}" -f $Summary.WeakKerberos.Count))
+    [void]$sb.AppendLine(("LDAP failures observed   {0}" -f $Summary.RecentLdapFailures.Count))
     [void]$sb.AppendLine(("SMB1 observations        {0}" -f $Summary.Smb1Observations))
     [void]$sb.AppendLine(("NTLMSSP observations     {0}" -f (($Summary.NtlmUsers | Measure-Object Count -Sum).Sum)))
-    [void]$sb.AppendLine('')
 
+    [void]$sb.AppendLine('')
     [void]$sb.AppendLine('TOP ALERTS')
     foreach ($row in $Summary.TopAlerts) {
         [void]$sb.AppendLine(("{0,6}  {1}" -f $row.Count, $row.Signature))
     }
 
     [void]$sb.AppendLine('')
-    [void]$sb.AppendLine('KERBEROS ENCRYPTION')
-    foreach ($row in $Summary.KerberosEncryption) {
-        [void]$sb.AppendLine(("{0,6}  {1}" -f $row.Count, $row.Encryption))
+    [void]$sb.AppendLine('KERBEROS CLIENTS / ERRORS')
+    foreach ($row in $Summary.KerberosClients) {
+        [void]$sb.AppendLine(("{0,6}  client {1}" -f $row.Count, $row.Client))
+    }
+    foreach ($row in $Summary.KerberosErrors) {
+        [void]$sb.AppendLine(("{0,6}  error  {1}" -f $row.Count, $row.ErrorCode))
+    }
+
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine('LDAP RESULT CODES')
+    foreach ($row in $Summary.LdapResultCodes) {
+        [void]$sb.AppendLine(("{0,6}  {1}" -f $row.Count, $row.ResultCode))
     }
 
     [void]$sb.AppendLine('')
@@ -6203,7 +6604,7 @@ function Show-WindowsIdsDashboardGui {
     }
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'Windows AD Control Plane - Suricata IDS'
+    $form.Text = (Get-UiText 'Windows AD Control Plane - Suricata IDS')
     $form.Width = 1180
     $form.Height = 760
     $form.StartPosition = 'CenterScreen'
@@ -6307,9 +6708,24 @@ function Show-WindowsIdsDashboardGui {
                 Select-Object -First 100)
 
             $sb = New-Object System.Text.StringBuilder
+            [void]$sb.AppendLine('KERBEROS CLIENTS')
+            foreach ($row in $summary.KerberosClients) {
+                [void]$sb.AppendLine(("{0,7}  {1}" -f $row.Count, $row.Client))
+            }
+            [void]$sb.AppendLine('')
+            [void]$sb.AppendLine('KERBEROS ERRORS')
+            foreach ($row in $summary.KerberosErrors) {
+                [void]$sb.AppendLine(("{0,7}  {1}" -f $row.Count, $row.ErrorCode))
+            }
+            [void]$sb.AppendLine('')
             [void]$sb.AppendLine('KERBEROS ENCRYPTION')
             foreach ($row in $summary.KerberosEncryption) {
                 [void]$sb.AppendLine(("{0,7}  {1}" -f $row.Count, $row.Encryption))
+            }
+            [void]$sb.AppendLine('')
+            [void]$sb.AppendLine('LDAP RESULT CODES')
+            foreach ($row in $summary.LdapResultCodes) {
+                [void]$sb.AppendLine(("{0,7}  {1}" -f $row.Count, $row.ResultCode))
             }
             [void]$sb.AppendLine('')
             [void]$sb.AppendLine(("WEAK KERBEROS: {0}" -f $summary.WeakKerberos.Count))
@@ -6378,17 +6794,32 @@ function Invoke-WindowsSuricataRuleUpdate {
 
     if (-not (Confirm-Action `
         -Action 'Update Suricata detection rules' `
-        -Reason 'Refresh IDS signatures, then validate the configuration.' `
+        -Reason 'Refresh IDS signatures, show progress while the updater works, then validate the configuration.' `
         -Impact MEDIUM)) {
         return
     }
 
     Write-Console ("Running: {0}" -f $info.SuricataUpdate) Cyan
-    & $info.SuricataUpdate
-    if ($LASTEXITCODE -ne 0) {
-        Write-Console ("suricata-update failed with exit code {0}." -f $LASTEXITCODE) Red
+    Write-Console ("Timeout safety: {0} minutes. A heartbeat is printed every 30 seconds." -f `
+        [math]::Round($script:SuricataUpdateTimeoutSeconds / 60,0)) Gray
+
+    $run = Invoke-ExternalProcessWithHeartbeat `
+        -FilePath $info.SuricataUpdate `
+        -Activity 'Suricata rule update' `
+        -TimeoutSeconds $script:SuricataUpdateTimeoutSeconds `
+        -HeartbeatSeconds 30
+
+    if ($run.TimedOut) {
+        Write-Console 'suricata-update was stopped after exceeding the safety timeout.' Red
+        Write-Console 'Existing rules/configuration were not replaced by the control plane.' Yellow
         return
     }
+    if ($run.ExitCode -ne 0) {
+        Write-Console ("suricata-update failed with exit code {0}." -f $run.ExitCode) Red
+        return
+    }
+
+    Write-Console ("Rule update completed in {0:mm\:ss}." -f $run.Elapsed) Green
 
     if (-not (Test-WindowsSuricataConfiguration)) {
         Write-Console 'Rules were updated but the configuration test failed. Service restart was not attempted.' Red
@@ -6570,6 +7001,784 @@ function Read-IdsAnalysisHours {
     }
 }
 
+# ===========================================================================
+# Wazuh + Suricata unified defense / guarded IPS
+# ===========================================================================
+
+function Get-WazuhWindowsInfo {
+    $service = $null
+    foreach ($name in @('WazuhSvc','wazuh','ossec-agent')) {
+        try {
+            $service = Get-CimInstance Win32_Service -Filter ("Name='{0}'" -f $name) -ErrorAction Stop
+            if ($service) { break }
+        }
+        catch {}
+    }
+    if (-not $service) {
+        try {
+            $service = Get-CimInstance Win32_Service -ErrorAction Stop |
+                Where-Object { $_.Name -match '(?i)wazuh|ossec' -or $_.DisplayName -match '(?i)wazuh|ossec' } |
+                Select-Object -First 1
+        }
+        catch {}
+    }
+
+    $roots = @(
+        "${env:ProgramFiles(x86)}\ossec-agent",
+        "$env:ProgramFiles\Wazuh Agent",
+        "$env:ProgramFiles\ossec-agent",
+        'C:\Program Files (x86)\ossec-agent'
+    ) | Where-Object { $_ }
+
+    $root = $roots | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    $config = $null
+    $log = $null
+    if ($root) {
+        foreach ($candidate in @((Join-Path $root 'ossec.conf'),(Join-Path $root 'etc\ossec.conf'))) {
+            if (Test-Path -LiteralPath $candidate) { $config = $candidate; break }
+        }
+        foreach ($candidate in @((Join-Path $root 'ossec.log'),(Join-Path $root 'logs\ossec.log'))) {
+            if (Test-Path -LiteralPath $candidate) { $log = $candidate; break }
+        }
+    }
+
+    $manager = $null
+    $eveConfigured = $false
+    if ($config -and (Test-Path -LiteralPath $config)) {
+        try {
+            $raw = Get-Content -LiteralPath $config -Raw -ErrorAction Stop
+            if ($raw -match '(?is)<client>.*?<server>.*?<address>\s*([^<]+)\s*</address>') {
+                $manager = $Matches[1].Trim()
+            }
+            $suricata = Get-WindowsSuricataInfo
+            if ($suricata.EvePath -and $raw -match [regex]::Escape([string]$suricata.EvePath)) {
+                $eveConfigured = $true
+            }
+        }
+        catch {}
+    }
+
+    [pscustomobject]@{
+        Installed     = [bool]($service -or $root)
+        Service       = $service
+        ServiceName   = $(if ($service) { [string]$service.Name } else { $null })
+        ServiceState  = $(if ($service) { [string]$service.State } else { 'Not installed' })
+        Root          = $root
+        Config        = $config
+        Log           = $log
+        Manager       = $manager
+        EveConfigured = $eveConfigured
+    }
+}
+
+function Backup-SecurityIntegrationConfig {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $backupDir = Join-Path $script:IdsStatePath 'backups'
+    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+    $dest = Join-Path $backupDir ('{0}.{1}.bak' -f ([IO.Path]::GetFileName($Path)),(Get-Date -Format 'yyyyMMdd-HHmmss'))
+    Copy-Item -LiteralPath $Path -Destination $dest -Force
+    Write-Log ("Backed up security integration config: {0}" -f $dest) CHANGE
+    return $dest
+}
+
+function Set-WazuhManagerAddress {
+    $info = Get-WazuhWindowsInfo
+    if (-not $info.Config) {
+        Write-Console 'Wazuh agent configuration was not detected.' Yellow
+        return
+    }
+
+    Write-Console ("Current Wazuh manager: {0}" -f $(if ($info.Manager) { $info.Manager } else { 'not configured' })) Gray
+    $manager = (Read-Host 'Wazuh manager FQDN or IP').Trim()
+    if ([string]::IsNullOrWhiteSpace($manager)) { return }
+    if ($manager -notmatch '^[A-Za-z0-9._:-]+$') {
+        Write-Console 'Manager value contains unsupported characters.' Red
+        return
+    }
+
+    if (-not (Confirm-HighImpact -Action 'Change Wazuh manager address' -Reason ("Point the local Wazuh agent at {0}." -f $manager) -Impact 'The Wazuh service will restart.')) { return }
+
+    $backup = Backup-SecurityIntegrationConfig -Path $info.Config
+    try {
+        $raw = Get-Content -LiteralPath $info.Config -Raw -ErrorAction Stop
+        if ($raw -match '(?is)(<client>.*?<server>.*?<address>)(.*?)(</address>)') {
+            $updated = [regex]::Replace(
+                $raw,
+                '(?is)(<client>.*?<server>.*?<address>)(.*?)(</address>)',
+                ('$1' + $manager + '$3'),
+                1
+            )
+        }
+        else {
+            $block = "<ossec_config>`r`n  <client>`r`n    <server>`r`n      <address>$manager</address>`r`n    </server>`r`n  </client>`r`n</ossec_config>`r`n"
+            $updated = $raw.TrimEnd() + "`r`n" + $block
+        }
+
+        Set-Content -LiteralPath $info.Config -Value $updated -Encoding UTF8
+        if ($info.ServiceName) {
+            Restart-Service -Name $info.ServiceName -Force -ErrorAction Stop
+            Start-Sleep -Seconds 2
+            $svc = Get-Service -Name $info.ServiceName -ErrorAction Stop
+            if ($svc.Status -ne 'Running') { throw 'Wazuh service did not return to Running state.' }
+        }
+        Write-Console 'Wazuh manager configuration updated and service is healthy.' Green
+        Write-Log ("Wazuh manager changed to {0}." -f $manager) CHANGE
+    }
+    catch {
+        Write-Console ("Wazuh manager update failed: {0}" -f $_.Exception.Message) Red
+        if ($backup -and (Test-Path -LiteralPath $backup)) {
+            Copy-Item -LiteralPath $backup -Destination $info.Config -Force
+            if ($info.ServiceName) { try { Restart-Service -Name $info.ServiceName -Force -ErrorAction SilentlyContinue } catch {} }
+            Write-Console 'Original Wazuh configuration restored.' Yellow
+        }
+    }
+}
+
+function Enable-WazuhSuricataIngestion {
+    $wazuh = Get-WazuhWindowsInfo
+    $suricata = Get-WindowsSuricataInfo
+    if (-not $wazuh.Config) { Write-Console 'Wazuh agent is not installed/configured on this host.' Yellow; return }
+    if (-not $suricata.EvePath) { Write-Console 'Suricata EVE JSON was not detected. Configure the EVE path first.' Yellow; return }
+
+    $raw = Get-Content -LiteralPath $wazuh.Config -Raw -ErrorAction Stop
+    if ($raw -match [regex]::Escape([string]$suricata.EvePath)) {
+        Write-Console 'Wazuh already ingests the detected Suricata EVE file.' Green
+        return
+    }
+
+    if (-not (Confirm-HighImpact -Action 'Integrate Suricata EVE with Wazuh' -Reason 'Add the local Suricata JSON event stream to the Wazuh agent configuration.' -Impact 'The Wazuh configuration will be backed up and the agent restarted.')) { return }
+
+    $backup = Backup-SecurityIntegrationConfig -Path $wazuh.Config
+    try {
+        $block = "  <localfile>`r`n    <log_format>json</log_format>`r`n    <location>$($suricata.EvePath)</location>`r`n  </localfile>`r`n"
+        if ($raw -notmatch '(?i)</ossec_config>\s*$') { throw 'Wazuh ossec.conf does not contain a closing ossec_config element.' }
+        $updated = [regex]::Replace($raw,'(?i)</ossec_config>\s*$',($block + '</ossec_config>' + "`r`n"),1)
+        Set-Content -LiteralPath $wazuh.Config -Value $updated -Encoding UTF8
+        if ($wazuh.ServiceName) {
+            Restart-Service -Name $wazuh.ServiceName -Force -ErrorAction Stop
+            Start-Sleep -Seconds 2
+            $svc = Get-Service -Name $wazuh.ServiceName -ErrorAction Stop
+            if ($svc.Status -ne 'Running') { throw 'Wazuh service did not return to Running state.' }
+        }
+        [pscustomobject]@{ EvePath=[string]$suricata.EvePath; Configured=(Get-Date).ToString('o'); WazuhConfig=[string]$wazuh.Config } |
+            ConvertTo-Json | Set-Content -LiteralPath $script:WazuhIntegrationFile -Encoding UTF8
+        Write-Console 'Wazuh now ingests Suricata EVE JSON.' Green
+        Write-Log 'Enabled Wazuh ingestion of Suricata EVE JSON.' CHANGE
+    }
+    catch {
+        Write-Console ("Wazuh/Suricata integration failed: {0}" -f $_.Exception.Message) Red
+        if ($backup -and (Test-Path -LiteralPath $backup)) {
+            Copy-Item -LiteralPath $backup -Destination $wazuh.Config -Force
+            Write-Console 'Original Wazuh configuration restored.' Yellow
+        }
+    }
+}
+
+function Show-WazuhIntegrationStatus {
+    Write-Section 'Wazuh + Suricata integration'
+    $wazuh = Get-WazuhWindowsInfo
+    $suricata = Get-WindowsSuricataInfo
+    Write-Console ("Wazuh installed : {0}" -f $wazuh.Installed)
+    Write-Console ("Wazuh service   : {0}" -f $wazuh.ServiceState)
+    Write-Console ("Wazuh manager   : {0}" -f $(if ($wazuh.Manager) { $wazuh.Manager } else { 'not detected' }))
+    Write-Console ("Wazuh config    : {0}" -f $(if ($wazuh.Config) { $wazuh.Config } else { 'not detected' }))
+    Write-Console ("Suricata        : {0}" -f $(if ($suricata.Installed) { 'installed' } else { 'not detected' }))
+    Write-Console ("Suricata EVE    : {0}" -f $(if ($suricata.EvePath) { $suricata.EvePath } else { 'not detected' }))
+    Write-Console ("EVE -> Wazuh    : {0}" -f $(if ($wazuh.EveConfigured) { 'configured' } else { 'not configured' }))
+    if ($wazuh.Log -and (Test-Path -LiteralPath $wazuh.Log)) {
+        Write-Console ''
+        Write-Console 'Recent Wazuh agent signals:' Cyan
+        Get-Content -LiteralPath $wazuh.Log -Tail 20 -ErrorAction SilentlyContinue | ForEach-Object { Write-Console ("  {0}" -f $_) Gray }
+    }
+    Write-Console ''
+    Write-Console 'Recommended posture: passive Suricata IDS + Wazuh correlation + guarded temporary firewall response.' Cyan
+    Write-Console 'Inline Suricata/WinDivert blocking remains disabled by default on a Domain Controller.' Yellow
+}
+
+function Get-GuardedIpsState {
+    Initialize-IdsState
+    if (-not (Test-Path -LiteralPath $script:GuardedIpsStateFile)) {
+        return [pscustomobject]@{ Enabled=$false; BlockMinutes=30; MaxRules=20; LastRun=$null; Rules=@() }
+    }
+    try { return Get-Content -LiteralPath $script:GuardedIpsStateFile -Raw -ErrorAction Stop | ConvertFrom-Json }
+    catch { return [pscustomobject]@{ Enabled=$false; BlockMinutes=30; MaxRules=20; LastRun=$null; Rules=@() } }
+}
+
+function Save-GuardedIpsState {
+    param([Parameter(Mandatory=$true)]$State)
+    $State | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:GuardedIpsStateFile -Encoding UTF8
+}
+
+function Test-PublicIpForGuardedIps {
+    param([Parameter(Mandatory=$true)][string]$Address)
+    if (Test-DefenseIpTrusted -Address $Address) { return $false }
+    $ip = $null
+    if (-not [Net.IPAddress]::TryParse($Address,[ref]$ip)) { return $false }
+    if ($ip.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) { return $false }
+    $b = $ip.GetAddressBytes()
+    if ($b[0] -eq 10 -or $b[0] -eq 127) { return $false }
+    if ($b[0] -eq 169 -and $b[1] -eq 254) { return $false }
+    if ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) { return $false }
+    if ($b[0] -eq 192 -and $b[1] -eq 168) { return $false }
+    if ($b[0] -eq 224 -or $b[0] -ge 240) { return $false }
+    try {
+        $local = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress)
+        if ($local -contains $Address) { return $false }
+    }
+    catch {}
+    return $true
+}
+
+function Get-GuardedIpsCandidates {
+    param([int]$Hours=1,[int]$MaxEvents=5000)
+    $info = Get-WindowsSuricataInfo
+    if (-not $info.EvePath) { return @() }
+    $cutoff = (Get-Date).ToUniversalTime().AddHours(-1 * $Hours)
+    $events = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($line in Get-Content -LiteralPath $info.EvePath -Tail $MaxEvents -ErrorAction SilentlyContinue) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try { $evt = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+        if ($evt.event_type -ne 'alert' -or -not $evt.alert) { continue }
+        $severity = 99
+        try { $severity = [int]$evt.alert.severity } catch {}
+        if ($severity -gt 1) { continue }
+        $ts = $null
+        try { $ts = ([datetime]$evt.timestamp).ToUniversalTime() } catch {}
+        if ($ts -and $ts -lt $cutoff) { continue }
+        $src = [string]$evt.src_ip
+        if (-not (Test-PublicIpForGuardedIps -Address $src)) { continue }
+        $events.Add([pscustomobject]@{ SourceIp=$src; Signature=[string]$evt.alert.signature; Severity=$severity; Timestamp=[string]$evt.timestamp })
+    }
+    return @($events | Group-Object SourceIp | Sort-Object Count -Descending | ForEach-Object {
+        $sample = $_.Group | Select-Object -First 1
+        [pscustomobject]@{ SourceIp=$_.Name; Count=$_.Count; Signature=$sample.Signature; Severity=$sample.Severity }
+    })
+}
+
+function Remove-ExpiredGuardedIpsRules {
+    $state = Get-GuardedIpsState
+    $now = Get-Date
+    $keep = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($entry in @($state.Rules)) {
+        $expires = $null
+        try { $expires = [datetime]$entry.Expires } catch {}
+        if (-not $expires -or $expires -le $now) {
+            try { Remove-NetFirewallRule -Name ([string]$entry.RuleName) -ErrorAction SilentlyContinue } catch {}
+        }
+        else { $keep.Add($entry) }
+    }
+    $state.Rules = @($keep)
+    $state.LastRun = (Get-Date).ToString('o')
+    Save-GuardedIpsState -State $state
+    return $keep.Count
+}
+
+function Register-GuardedIpsCleanupTask {
+    if (-not (Test-Command 'Register-ScheduledTask')) { return }
+    $scriptPath = $PSCommandPath
+    if (-not $scriptPath -or -not (Test-Path -LiteralPath $scriptPath)) { return }
+    try {
+        $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -Mode IDSResponseCleanup -NoColor -ExportPath "{1}"' -f $scriptPath,$ExportPath)
+        $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 3650)
+        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+        Register-ScheduledTask -TaskName $script:GuardedIpsTaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+    }
+    catch { Write-Log ("Could not register guarded IPS cleanup task: {0}" -f $_.Exception.Message) WARN }
+}
+
+function Invoke-GuardedIpsResponse {
+    param([switch]$NonInteractive)
+    [void](Remove-ExpiredGuardedIpsRules)
+    $state = Get-GuardedIpsState
+    if (-not $state.Enabled) { if (-not $NonInteractive) { Write-Console 'Guarded IPS is disabled.' Yellow }; return }
+    $candidates = @(Get-GuardedIpsCandidates -Hours 1)
+    if ($candidates.Count -eq 0) { if (-not $NonInteractive) { Write-Console 'No high-confidence public-source candidates were found.' Green }; return }
+    $activeIps = @($state.Rules | ForEach-Object { [string]$_.SourceIp })
+    $remaining = [math]::Max(0,[int]$state.MaxRules - @($state.Rules).Count)
+    $newRules = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($candidate in $candidates) {
+        if ($remaining -le 0) { break }
+        if ($activeIps -contains [string]$candidate.SourceIp) { continue }
+        $safeIp = ([string]$candidate.SourceIp) -replace '[^0-9A-Fa-f\.:]','_'
+        $ruleName = '{0}{1}-{2}' -f $script:GuardedIpsRulePrefix,$safeIp,([guid]::NewGuid().ToString('N').Substring(0,8))
+        $expires = (Get-Date).AddMinutes([int]$state.BlockMinutes)
+        try {
+            New-NetFirewallRule -Name $ruleName -DisplayName ("Windows AD Guarded IPS - {0}" -f $candidate.SourceIp) -Description ("Temporary Suricata severity-1 response; expires {0}; {1}" -f $expires.ToString('o'),$candidate.Signature) -Direction Inbound -Action Block -RemoteAddress ([string]$candidate.SourceIp) -Profile Any -ErrorAction Stop | Out-Null
+            $newRules.Add([pscustomobject]@{ RuleName=$ruleName; SourceIp=[string]$candidate.SourceIp; Created=(Get-Date).ToString('o'); Expires=$expires.ToString('o'); Signature=[string]$candidate.Signature; AlertCount=[int]$candidate.Count })
+            $remaining--
+            Write-Log ("Guarded IPS temporarily blocked {0}; signature={1}" -f $candidate.SourceIp,$candidate.Signature) CHANGE
+        }
+        catch { Write-Log ("Guarded IPS could not block {0}: {1}" -f $candidate.SourceIp,$_.Exception.Message) WARN }
+    }
+    $state.Rules = @($state.Rules) + @($newRules)
+    $state.LastRun = (Get-Date).ToString('o')
+    Save-GuardedIpsState -State $state
+    if (-not $NonInteractive) { Write-Console ("Created {0} temporary firewall block rule(s)." -f $newRules.Count) Green }
+}
+
+function Enable-GuardedIps {
+    $suricata = Get-WindowsSuricataInfo
+    if (-not $suricata.EvePath) { Write-Console 'Suricata EVE JSON is required before guarded IPS can be enabled.' Yellow; return }
+    Write-Section 'Guarded IPS safety profile'
+    Write-Console 'Only Suricata severity-1 alerts from public IPv4 sources are eligible.' Cyan
+    Write-Console 'Private/local/domain infrastructure is never auto-blocked. Rules expire after 30 minutes.' Gray
+    Write-Console 'At most 20 assistant-managed block rules may coexist.' Gray
+    Write-Console 'Inline Suricata/WinDivert blocking remains disabled on the Domain Controller.' Yellow
+    $preview = @(Get-GuardedIpsCandidates -Hours 1)
+    Write-Console ("Current eligible candidates: {0}" -f $preview.Count) Gray
+    $preview | Select-Object -First 10 | ForEach-Object { Write-Console ("  {0,-16} alerts={1,-3} {2}" -f $_.SourceIp,$_.Count,$_.Signature) Gray }
+    if (-not (Confirm-HighImpact -Action 'Enable guarded IPS response' -Reason 'Permit temporary Windows Firewall blocks derived from high-confidence Suricata alerts.' -Impact 'A false positive could temporarily block an external source; managed rules expire and can be disabled immediately.')) { return }
+    $state = Get-GuardedIpsState
+    $state.Enabled = $true
+    $cfg = Get-DefenseOpsConfig
+    $state.BlockMinutes = [int]$cfg.BlockMinutes
+    $state.MaxRules = 20
+    Save-GuardedIpsState -State $state
+    Register-GuardedIpsCleanupTask
+    Invoke-GuardedIpsResponse
+    Write-Console 'Guarded IPS response enabled.' Green
+}
+
+function Disable-GuardedIps {
+    $state = Get-GuardedIpsState
+    $state.Enabled = $false
+    foreach ($entry in @($state.Rules)) { try { Remove-NetFirewallRule -Name ([string]$entry.RuleName) -ErrorAction SilentlyContinue } catch {} }
+    $state.Rules = @()
+    Save-GuardedIpsState -State $state
+    try { Unregister-ScheduledTask -TaskName $script:GuardedIpsTaskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+    Write-Console 'Guarded IPS disabled and assistant-managed firewall blocks removed.' Green
+}
+
+function Show-GuardedIpsStatus {
+    [void](Remove-ExpiredGuardedIpsRules)
+    $state = Get-GuardedIpsState
+    Write-Section 'Guarded IPS status'
+    Write-Console ("Enabled       : {0}" -f $state.Enabled)
+    Write-Console ("Block TTL     : {0} minutes" -f $state.BlockMinutes)
+    Write-Console ("Rule ceiling  : {0}" -f $state.MaxRules)
+    Write-Console ("Active blocks : {0}" -f @($state.Rules).Count)
+    Write-Console ("Last run      : {0}" -f $(if ($state.LastRun) { $state.LastRun } else { 'never' }))
+    foreach ($rule in @($state.Rules)) { Write-Console ("  {0,-16} expires={1}  {2}" -f $rule.SourceIp,$rule.Expires,$rule.Signature) Gray }
+}
+
+
+function Get-DefenseOpsConfig {
+    Initialize-IdsState
+    $defaults = [ordered]@{
+        SchemaVersion=1
+        BusinessStart='08:00'
+        BusinessEnd='18:00'
+        BusinessDays=@('Monday','Tuesday','Wednesday','Thursday','Friday')
+        DayAlertSeverity=1
+        AfterHoursAlertSeverity=2
+        DayWindowHours=1
+        AfterHoursWindowHours=4
+        BlockMinutes=30
+        TelegramEnabled=$false
+        TelegramChatId=''
+        TrustedIps=@()
+        LastAlertFingerprint=''
+        LastAlertSentAt=$null
+    }
+    if (-not (Test-Path -LiteralPath $script:DefenseOpsConfigFile)) {
+        [pscustomobject]$defaults | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:DefenseOpsConfigFile -Encoding UTF8
+        return [pscustomobject]$defaults
+    }
+    try {
+        $cfg = Get-Content -LiteralPath $script:DefenseOpsConfigFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        foreach($k in $defaults.Keys) {
+            if (-not $cfg.PSObject.Properties[$k]) {
+                $cfg | Add-Member -NotePropertyName $k -NotePropertyValue $defaults[$k]
+            }
+        }
+        return $cfg
+    }
+    catch {
+        Write-Log ("Defense operations config unreadable; using defaults: {0}" -f $_.Exception.Message) WARN
+        return [pscustomobject]$defaults
+    }
+}
+
+function Save-DefenseOpsConfig {
+    param([Parameter(Mandatory=$true)]$Config)
+    Initialize-IdsState
+    $Config | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:DefenseOpsConfigFile -Encoding UTF8
+}
+
+function Test-DefenseIpTrusted {
+    param([Parameter(Mandatory=$true)][string]$Address)
+    $cfg=Get-DefenseOpsConfig
+    return (@($cfg.TrustedIps) -contains $Address)
+}
+
+function Test-DefenseBusinessHours {
+    param([datetime]$Now=(Get-Date))
+    $cfg=Get-DefenseOpsConfig
+    if (@($cfg.BusinessDays) -notcontains $Now.DayOfWeek.ToString()) { return $false }
+    try {
+        $start=[TimeSpan]::Parse([string]$cfg.BusinessStart)
+        $end=[TimeSpan]::Parse([string]$cfg.BusinessEnd)
+        $t=$Now.TimeOfDay
+        if($start -le $end){ return ($t -ge $start -and $t -lt $end) }
+        return ($t -ge $start -or $t -lt $end)
+    } catch { return $true }
+}
+
+function Get-DefenseAwarenessProfile {
+    $cfg=Get-DefenseOpsConfig
+    $business=Test-DefenseBusinessHours
+    if($business){
+        return [pscustomobject]@{BusinessHours=$true;Severity=[int]$cfg.DayAlertSeverity;WindowHours=[int]$cfg.DayWindowHours;Label='business-hours'}
+    }
+    return [pscustomobject]@{BusinessHours=$false;Severity=[int]$cfg.AfterHoursAlertSeverity;WindowHours=[int]$cfg.AfterHoursWindowHours;Label='after-hours'}
+}
+
+function Protect-DefenseSecret {
+    param([Parameter(Mandatory=$true)][string]$PlainText)
+    $bytes=[Text.Encoding]::UTF8.GetBytes($PlainText)
+    $protected=[Security.Cryptography.ProtectedData]::Protect($bytes,$null,[Security.Cryptography.DataProtectionScope]::LocalMachine)
+    return [Convert]::ToBase64String($protected)
+}
+
+function Unprotect-DefenseSecret {
+    param([Parameter(Mandatory=$true)][string]$Encoded)
+    try{
+        $bytes=[Convert]::FromBase64String($Encoded)
+        $plain=[Security.Cryptography.ProtectedData]::Unprotect($bytes,$null,[Security.Cryptography.DataProtectionScope]::LocalMachine)
+        return [Text.Encoding]::UTF8.GetString($plain)
+    }catch{return $null}
+}
+
+function Set-DefenseTelegramHook {
+    Initialize-IdsState
+    $cfg=Get-DefenseOpsConfig
+    $chat=(Read-Host ("Telegram chat/channel ID [{0}]" -f $(if($cfg.TelegramChatId){$cfg.TelegramChatId}else{'not configured'}))).Trim()
+    if([string]::IsNullOrWhiteSpace($chat)){ $chat=[string]$cfg.TelegramChatId }
+    $secure=Read-Host 'Telegram bot token (input hidden; leave blank to keep current)' -AsSecureString
+    $token=''
+    $ptr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try{ $token=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
+    if($token){
+        (Protect-DefenseSecret -PlainText $token) | Set-Content -LiteralPath $script:TelegramTokenFile -Encoding ASCII
+    }
+    if(-not (Test-Path -LiteralPath $script:TelegramTokenFile)){
+        Write-Console 'No Telegram bot token is stored; hook was not enabled.' Yellow
+        return
+    }
+    $cfg.TelegramChatId=$chat
+    $cfg.TelegramEnabled=$true
+    Save-DefenseOpsConfig -Config $cfg
+    Write-Console 'Telegram alert hook enabled. The token is protected with Windows DPAPI (LocalMachine).' Green
+}
+
+function Get-DefenseTelegramToken {
+    if(-not(Test-Path -LiteralPath $script:TelegramTokenFile)){return $null}
+    $encoded=(Get-Content -LiteralPath $script:TelegramTokenFile -Raw -ErrorAction SilentlyContinue).Trim()
+    if(-not $encoded){return $null}
+    return Unprotect-DefenseSecret -Encoded $encoded
+}
+
+function Send-DefenseTelegramMessage {
+    param([Parameter(Mandatory=$true)][string]$Text,[switch]$Quiet)
+    $cfg=Get-DefenseOpsConfig
+    if(-not $cfg.TelegramEnabled){if(-not $Quiet){Write-Console 'Telegram notifications are disabled.' Yellow};return $false}
+    if([string]::IsNullOrWhiteSpace([string]$cfg.TelegramChatId)){if(-not $Quiet){Write-Console 'Telegram chat ID is not configured.' Yellow};return $false}
+    $token=Get-DefenseTelegramToken
+    if(-not $token){if(-not $Quiet){Write-Console 'Telegram bot token could not be read.' Yellow};return $false}
+    try{
+        $uri='https://api.telegram.org/bot{0}/sendMessage' -f $token
+        $body=@{chat_id=[string]$cfg.TelegramChatId;text=$Text;disable_web_page_preview='true'}
+        [void](Invoke-RestMethod -Method Post -Uri $uri -Body $body -TimeoutSec 15 -ErrorAction Stop)
+        return $true
+    }catch{
+        Write-Log ("Telegram notification failed: {0}" -f $_.Exception.Message) WARN
+        if(-not $Quiet){Write-Console ("Telegram notification failed: {0}" -f $_.Exception.Message) Yellow}
+        return $false
+    }
+}
+
+function Get-DefenseAwarenessAlerts {
+    param([int]$Hours=0,[int]$Severity=0,[int]$MaxEvents=8000)
+    $profile=Get-DefenseAwarenessProfile
+    if($Hours -le 0){$Hours=[int]$profile.WindowHours}
+    if($Severity -le 0){$Severity=[int]$profile.Severity}
+    $info=Get-WindowsSuricataInfo
+    if(-not $info.EvePath){return @()}
+    $cutoff=(Get-Date).ToUniversalTime().AddHours(-1*$Hours)
+    $rows=New-Object 'System.Collections.Generic.List[object]'
+    foreach($line in Get-Content -LiteralPath $info.EvePath -Tail $MaxEvents -ErrorAction SilentlyContinue){
+        if([string]::IsNullOrWhiteSpace($line)){continue}
+        try{$evt=$line|ConvertFrom-Json -ErrorAction Stop}catch{continue}
+        if($evt.event_type -ne 'alert' -or -not $evt.alert){continue}
+        $sev=99;try{$sev=[int]$evt.alert.severity}catch{}
+        if($sev -gt $Severity){continue}
+        $ts=$null;try{$ts=([datetime]$evt.timestamp).ToUniversalTime()}catch{}
+        if($ts -and $ts -lt $cutoff){continue}
+        $src=[string]$evt.src_ip
+        if(-not $src){continue}
+        $rows.Add([pscustomobject]@{Timestamp=[string]$evt.timestamp;SourceIp=$src;DestinationIp=[string]$evt.dest_ip;Severity=$sev;Signature=[string]$evt.alert.signature;Category=[string]$evt.alert.category;Action=[string]$evt.alert.action})
+    }
+    return @($rows|Sort-Object Timestamp -Descending)
+}
+
+function Invoke-DefenseAwarenessCheck {
+    param([switch]$Notify)
+    $profile=Get-DefenseAwarenessProfile
+    $alerts=@(Get-DefenseAwarenessAlerts -Hours $profile.WindowHours -Severity $profile.Severity)
+    Write-Section ("Defense awareness - {0}" -f $profile.Label)
+    Write-Console ("Window       : {0}h" -f $profile.WindowHours)
+    Write-Console ("Alert level  : severity <= {0}" -f $profile.Severity)
+    Write-Console ("Matching     : {0}" -f $alerts.Count)
+    $alerts|Select-Object -First 20|ForEach-Object{
+        $trusted=if(Test-DefenseIpTrusted -Address $_.SourceIp){' TRUSTED'}else{''}
+        Write-Console ("  sev={0} {1,-16} {2}{3}" -f $_.Severity,$_.SourceIp,$_.Signature,$trusted) Gray
+    }
+    if($Notify -and $alerts.Count -gt 0){
+        $top=@($alerts|Group-Object SourceIp|Sort-Object Count -Descending|Select-Object -First 5)
+        $fp=($top|ForEach-Object{"$($_.Name):$($_.Count)"}) -join '|'
+        $cfg=Get-DefenseOpsConfig
+        if($fp -ne [string]$cfg.LastAlertFingerprint){
+            $lines=@(
+                "Windows AD defense alert ($($profile.Label))",
+                "Host: $env:COMPUTERNAME",
+                "Window: $($profile.WindowHours)h | Matches: $($alerts.Count)",
+                "Review manually in IDS > Suricata + Wazuh defense."
+            )
+            foreach($g in $top){$lines+=("Source {0}: {1} alert(s)" -f $g.Name,$g.Count)}
+            if(Send-DefenseTelegramMessage -Text ($lines -join "`n") -Quiet){
+                $cfg.LastAlertFingerprint=$fp;$cfg.LastAlertSentAt=(Get-Date).ToString('o');Save-DefenseOpsConfig -Config $cfg
+                Write-Console 'Telegram alert sent.' Green
+            }
+        } else { Write-Console 'Alert fingerprint already notified; duplicate notification suppressed.' Gray }
+    }
+}
+
+function Add-GuardedIpsManualBlock {
+    param([string]$Address,[int]$Minutes=0)
+    if(-not $Address){$Address=(Read-Host 'IPv4 address to block').Trim()}
+    $ip=$null
+    if(-not [Net.IPAddress]::TryParse($Address,[ref]$ip) -or $ip.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork){Write-Console 'Invalid IPv4 address.' Yellow;return}
+    if(Test-DefenseIpTrusted -Address $Address){Write-Console 'This address is in the trusted-IP list. Remove it from trusted IPs before blocking.' Yellow;return}
+    $cfg=Get-DefenseOpsConfig
+    if($Minutes -le 0){$Minutes=[int]$cfg.BlockMinutes}
+    $state=Get-GuardedIpsState
+    if(@($state.Rules|ForEach-Object{$_.SourceIp}) -contains $Address){Write-Console 'Address is already blocked by the assistant.' Yellow;return}
+    $safeIp=$Address -replace '[^0-9A-Fa-f\.:]','_'
+    $ruleName='{0}{1}-{2}' -f $script:GuardedIpsRulePrefix,$safeIp,([guid]::NewGuid().ToString('N').Substring(0,8))
+    $expires=(Get-Date).AddMinutes($Minutes)
+    New-NetFirewallRule -Name $ruleName -DisplayName ("Windows AD Manual IPS - {0}" -f $Address) -Description ("Operator temporary block; expires {0}" -f $expires.ToString('o')) -Direction Inbound -Action Block -RemoteAddress $Address -Profile Any -ErrorAction Stop|Out-Null
+    $entry=[pscustomobject]@{RuleName=$ruleName;SourceIp=$Address;Created=(Get-Date).ToString('o');Expires=$expires.ToString('o');Signature='Manual operator block';AlertCount=0}
+    $state.Rules=@($state.Rules)+@($entry);Save-GuardedIpsState -State $state
+    Write-Log ("Operator temporarily blocked {0} for {1} minutes." -f $Address,$Minutes) CHANGE
+    Write-Console ("Blocked {0} for {1} minutes." -f $Address,$Minutes) Green
+}
+
+function Remove-GuardedIpsBlock {
+    param([string]$Address)
+    [void](Remove-ExpiredGuardedIpsRules)
+    $state=Get-GuardedIpsState
+    if(-not $Address){$Address=(Read-Host 'IPv4 address to unblock').Trim()}
+    $matches=@($state.Rules|Where-Object{[string]$_.SourceIp -eq $Address})
+    if($matches.Count -eq 0){Write-Console 'No assistant-managed active block was found for that address.' Yellow;return}
+    foreach($entry in $matches){try{Remove-NetFirewallRule -Name ([string]$entry.RuleName) -ErrorAction SilentlyContinue}catch{}}
+    $state.Rules=@($state.Rules|Where-Object{[string]$_.SourceIp -ne $Address})
+    Save-GuardedIpsState -State $state
+    Write-Log ("Operator unblocked {0}." -f $Address) CHANGE
+    Write-Console ("Unblocked {0}." -f $Address) Green
+}
+
+function Remove-AllGuardedIpsBlocks {
+    $state=Get-GuardedIpsState
+    foreach($entry in @($state.Rules)){try{Remove-NetFirewallRule -Name ([string]$entry.RuleName) -ErrorAction SilentlyContinue}catch{}}
+    $state.Rules=@();Save-GuardedIpsState -State $state
+    Write-Log 'Operator removed all assistant-managed IPS block rules.' CHANGE
+    Write-Console 'All assistant-managed temporary blocks were removed.' Green
+}
+
+function Add-DefenseTrustedIp {
+    param([string]$Address)
+    if(-not $Address){$Address=(Read-Host 'IPv4 address to trust').Trim()}
+    $ip=$null
+    if(-not [Net.IPAddress]::TryParse($Address,[ref]$ip) -or $ip.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork){Write-Console 'Invalid IPv4 address.' Yellow;return}
+    $cfg=Get-DefenseOpsConfig
+    $trusted=@($cfg.TrustedIps)
+    if($trusted -notcontains $Address){$cfg.TrustedIps=@($trusted+$Address);Save-DefenseOpsConfig -Config $cfg}
+    Remove-GuardedIpsBlock -Address $Address
+    Write-Console ("Trusted IP added: {0}" -f $Address) Green
+}
+
+function Remove-DefenseTrustedIp {
+    $cfg=Get-DefenseOpsConfig
+    if(@($cfg.TrustedIps).Count -eq 0){Write-Console 'Trusted-IP list is empty.' Gray;return}
+    @($cfg.TrustedIps)|ForEach-Object{Write-Console ("  {0}" -f $_) Gray}
+    $address=(Read-Host 'IPv4 address to remove from trusted list').Trim()
+    $cfg.TrustedIps=@($cfg.TrustedIps|Where-Object{$_ -ne $address});Save-DefenseOpsConfig -Config $cfg
+    Write-Console ("Trusted IP removed: {0}" -f $address) Green
+}
+
+function Register-DefenseAwarenessTask {
+    if (-not (Test-Command 'Register-ScheduledTask')) { Write-Console 'Scheduled Task cmdlets are unavailable.' Yellow; return }
+    if (-not $PSCommandPath) { Write-Console 'The current script path is unavailable.' Yellow; return }
+    $name='WindowsADControlPlane-DefenseAwareness'
+    try{
+        $action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -Mode IDSAwarenessCheck -NoColor -ExportPath "{1}"' -f $PSCommandPath,$ExportPath)
+        $trigger=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 3650)
+        $principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+        Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Principal $principal -Force|Out-Null
+        Write-Console 'Defense awareness notification task enabled (every 15 minutes).' Green
+    }catch{Write-Console ("Could not register awareness task: {0}" -f $_.Exception.Message) Yellow}
+}
+
+function Set-DefenseAwarenessSchedule {
+    $cfg=Get-DefenseOpsConfig
+    Write-Section 'IDS / IPS awareness schedule'
+    Write-Console 'Outside business hours the assistant expands the review window and can notify on lower-severity Suricata alerts.' Cyan
+    Write-Console 'Automatic firewall blocking remains severity-1 only unless you manually block an address.' Yellow
+    $start=(Read-Host ("Business start HH:mm [{0}]" -f $cfg.BusinessStart)).Trim();if(-not $start){$start=[string]$cfg.BusinessStart}
+    $end=(Read-Host ("Business end HH:mm [{0}]" -f $cfg.BusinessEnd)).Trim();if(-not $end){$end=[string]$cfg.BusinessEnd}
+    try{[void][TimeSpan]::Parse($start);[void][TimeSpan]::Parse($end)}catch{Write-Console 'Invalid time value.' Yellow;return}
+    $dayWin=(Read-Host ("Business-hours review window (hours) [{0}]" -f $cfg.DayWindowHours)).Trim();if(-not $dayWin){$dayWin=[string]$cfg.DayWindowHours}
+    $nightWin=(Read-Host ("After-hours review window (hours) [{0}]" -f $cfg.AfterHoursWindowHours)).Trim();if(-not $nightWin){$nightWin=[string]$cfg.AfterHoursWindowHours}
+    $ttl=(Read-Host ("Temporary block duration (minutes) [{0}]" -f $cfg.BlockMinutes)).Trim();if(-not $ttl){$ttl=[string]$cfg.BlockMinutes}
+    $cfg.BusinessStart=$start;$cfg.BusinessEnd=$end;$cfg.DayWindowHours=[math]::Max(1,[int]$dayWin);$cfg.AfterHoursWindowHours=[math]::Max(1,[int]$nightWin);$cfg.BlockMinutes=[math]::Max(1,[int]$ttl)
+    Save-DefenseOpsConfig -Config $cfg
+    $ips=Get-GuardedIpsState;$ips.BlockMinutes=[int]$cfg.BlockMinutes;Save-GuardedIpsState -State $ips
+    Write-Console 'Awareness schedule updated.' Green
+}
+
+function Show-DefenseBlockManagement {
+    while($true){
+        [void](Remove-ExpiredGuardedIpsRules)
+        $state=Get-GuardedIpsState;$cfg=Get-DefenseOpsConfig
+        Write-Section 'Blocked / trusted IP management'
+        Write-Console ("Active temporary blocks: {0}" -f @($state.Rules).Count)
+        foreach($r in @($state.Rules)){Write-Console ("  {0,-16} expires={1}  {2}" -f $r.SourceIp,$r.Expires,$r.Signature) Gray}
+        Write-Console ("Trusted IPs: {0}" -f $(if(@($cfg.TrustedIps).Count){(@($cfg.TrustedIps)-join ', ')}else{'none'})) Gray
+        Write-Console ''
+        Write-Console '  [1] Unblock one IP'
+        Write-Console '  [2] Unblock all assistant-managed IPs'
+        Write-Console '  [3] Add manual temporary block'
+        Write-Console '  [4] Trust IP (also unblocks it)'
+        Write-Console '  [5] Remove trusted IP'
+        Write-Console '  [0] Back'
+        switch((Read-Host 'Select operation').Trim().ToUpperInvariant()){
+            '1'{Remove-GuardedIpsBlock}
+            '2'{if(Read-BooleanChoice -Prompt 'Remove all assistant-managed block rules now?' -Default $false){Remove-AllGuardedIpsBlocks}}
+            '3'{Add-GuardedIpsManualBlock}
+            '4'{Add-DefenseTrustedIp}
+            '5'{Remove-DefenseTrustedIp}
+            '0'{return}
+            default{Write-Console 'Invalid option.' Yellow}
+        }
+    }
+}
+
+function Show-DefenseOperationsGui {
+    if(-not(Test-WindowsFormsAvailable)){Write-Console 'Windows Forms is unavailable; opening console management.' Yellow;Show-DefenseBlockManagement;return}
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    $form=New-Object System.Windows.Forms.Form
+    $form.Text=(Get-UiText 'Windows AD Defense Center - Suricata + Wazuh')
+    $form.Width=1180;$form.Height=760;$form.StartPosition='CenterScreen'
+    $status=New-Object System.Windows.Forms.Label;$status.Dock='Top';$status.Height=55;$status.Padding=New-Object System.Windows.Forms.Padding(10)
+    $tabs=New-Object System.Windows.Forms.TabControl;$tabs.Dock='Fill'
+    $blockTab=New-Object System.Windows.Forms.TabPage;$blockTab.Text='Blocked / trusted IPs'
+    $grid=New-Object System.Windows.Forms.DataGridView;$grid.Dock='Fill';$grid.ReadOnly=$true;$grid.SelectionMode='FullRowSelect';$grid.AutoSizeColumnsMode='Fill';$grid.AllowUserToAddRows=$false
+    $buttons=New-Object System.Windows.Forms.FlowLayoutPanel;$buttons.Dock='Bottom';$buttons.Height=48
+    foreach($spec in @(
+        @('Refresh','refresh'),@('Unblock selected','unblock'),@('Unblock all','unblockall'),@('Block IP','block'),@('Trust selected','trust'),@('Run IPS now','runips')
+    )){
+        $b=New-Object System.Windows.Forms.Button;$b.Text=$spec[0];$b.Tag=$spec[1];$b.AutoSize=$true;[void]$buttons.Controls.Add($b)
+    }
+    [void]$blockTab.Controls.Add($grid);[void]$blockTab.Controls.Add($buttons)
+    $alertTab=New-Object System.Windows.Forms.TabPage;$alertTab.Text='Awareness alerts'
+    $alertGrid=New-Object System.Windows.Forms.DataGridView;$alertGrid.Dock='Fill';$alertGrid.ReadOnly=$true;$alertGrid.AutoSizeColumnsMode='Fill';$alertGrid.AllowUserToAddRows=$false
+    [void]$alertTab.Controls.Add($alertGrid)
+    $helpTab=New-Object System.Windows.Forms.TabPage;$helpTab.Text='Operations'
+    $help=New-Object System.Windows.Forms.TextBox;$help.Dock='Fill';$help.Multiline=$true;$help.ReadOnly=$true;$help.ScrollBars='Vertical'
+    $help.Text="Use this window for fast response.`r`n`r`n- Unblock false positives immediately.`r`n- Trust known partner/public IPs to prevent future assistant auto-blocks.`r`n- Manual blocks use the configured TTL.`r`n- After-hours awareness expands the detection window and notification threshold.`r`n- Wazuh is the correlation/agent layer; Suricata remains the network sensor."
+    [void]$helpTab.Controls.Add($help)
+    [void]$tabs.TabPages.Add($blockTab);[void]$tabs.TabPages.Add($alertTab);[void]$tabs.TabPages.Add($helpTab)
+    [void]$form.Controls.Add($tabs);[void]$form.Controls.Add($status)
+    $refreshAction={
+        [void](Remove-ExpiredGuardedIpsRules)
+        $state=Get-GuardedIpsState;$cfg=Get-DefenseOpsConfig;$profile=Get-DefenseAwarenessProfile;$w=Get-WazuhWindowsInfo;$s=Get-WindowsSuricataInfo
+        $status.Text=("Suricata={0} | Wazuh={1} | GuardedIPS={2} | {3}: {4}h / sev<={5}" -f $s.ServiceState,$w.ServiceState,$state.Enabled,$profile.Label,$profile.WindowHours,$profile.Severity)
+        $grid.DataSource=$null;$grid.DataSource=@($state.Rules|Select-Object SourceIp,Created,Expires,Signature,AlertCount)
+        $alertGrid.DataSource=$null;$alertGrid.DataSource=@(Get-DefenseAwarenessAlerts -Hours $profile.WindowHours -Severity $profile.Severity|Select-Object -First 200)
+    }.GetNewClosure()
+    foreach($ctrl in @($buttons.Controls)){
+        $ctrl.Add_Click({
+            $action=[string]$this.Tag
+            try{
+                switch($action){
+                    'refresh'{}
+                    'unblock'{if($grid.SelectedRows.Count -gt 0){Remove-GuardedIpsBlock -Address ([string]$grid.SelectedRows[0].Cells['SourceIp'].Value)}}
+                    'unblockall'{if([System.Windows.Forms.MessageBox]::Show('Remove all assistant-managed blocks now?','Confirm','YesNo','Warning') -eq 'Yes'){Remove-AllGuardedIpsBlocks}}
+                    'block'{
+                        Add-Type -AssemblyName Microsoft.VisualBasic
+                        $ip=[Microsoft.VisualBasic.Interaction]::InputBox('IPv4 address to block temporarily','Manual block','')
+                        if($ip){Add-GuardedIpsManualBlock -Address $ip}
+                    }
+                    'trust'{if($grid.SelectedRows.Count -gt 0){Add-DefenseTrustedIp -Address ([string]$grid.SelectedRows[0].Cells['SourceIp'].Value)}}
+                    'runips'{Invoke-GuardedIpsResponse -NonInteractive}
+                }
+                & $refreshAction
+            }catch{[System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'Defense operation','OK','Error')|Out-Null}
+        }.GetNewClosure())
+    }
+    & $refreshAction
+    [void]$form.ShowDialog();$form.Dispose()
+}
+
+function Show-WazuhDefenseMenu {
+    while ($true) {
+        Write-MenuHeader 'SURICATA + WAZUH DEFENSE' 'Telemetry, rapid unblock/trust actions, awareness scheduling and guarded response'
+        Write-MenuItem '1' 'Unified status' 'Suricata sensor + Wazuh agent + EVE ingestion'
+        Write-MenuItem '2' 'Configure Wazuh manager' 'Change the local agent manager address with backup/rollback' Warn
+        Write-MenuItem '3' 'Enable EVE ingestion' 'Feed Suricata JSON events into the Wazuh agent' Good
+        Write-MenuItem '4' 'Guarded IPS status' 'Temporary firewall response state and active blocks'
+        Write-MenuItem '5' 'Enable guarded IPS' 'High-confidence public-source temporary blocks' Warn
+        Write-MenuItem '6' 'Run guarded IPS now' 'Evaluate recent Suricata severity-1 alerts'
+        Write-MenuItem '7' 'Disable guarded IPS' 'Remove assistant-managed response rules' Danger
+        Write-MenuItem '8' 'Wazuh install guidance' 'Use the official Wazuh Windows agent package'
+        Write-MenuItem '9' 'Defense GUI' 'GUI for alerts, blocks, rapid unblock and trusted IP actions' Good
+        Write-MenuItem '10' 'Blocked / trusted IPs' 'Console management for false positives and temporary blocks'
+        Write-MenuItem '11' 'Awareness schedule' 'Business hours, after-hours review window and block duration'
+        Write-MenuItem '12' 'Telegram alert hook' 'Configure/test admin notifications without automatic chat-side changes'
+        Write-MenuItem '13' 'Run awareness check' 'Review current window and optionally notify Telegram'
+        Write-MenuNavigation
+        Write-Rule
+        switch ((Read-MenuChoice -Default '1').ToUpperInvariant()) {
+            '1' { Show-WazuhIntegrationStatus; Pause-ControlPlane }
+            '2' { Set-WazuhManagerAddress; Pause-ControlPlane }
+            '3' { Enable-WazuhSuricataIngestion; Pause-ControlPlane }
+            '4' { Show-GuardedIpsStatus; Pause-ControlPlane }
+            '5' { Enable-GuardedIps; Pause-ControlPlane }
+            '6' { Invoke-GuardedIpsResponse; Pause-ControlPlane }
+            '7' { if (Read-BooleanChoice -Prompt 'Disable guarded IPS and remove all assistant-managed block rules?' -Default $false) { Disable-GuardedIps }; Pause-ControlPlane }
+            '8' { Write-Section 'Wazuh Windows agent installation'; Write-Console 'Install the official Wazuh Windows agent package, then return here.' Cyan; Write-Console 'The assistant never downloads or executes third-party installers silently.' Gray; Pause-ControlPlane }
+            '9' { Show-DefenseOperationsGui }
+            '10' { Show-DefenseBlockManagement; Pause-ControlPlane }
+            '11' { Set-DefenseAwarenessSchedule; Pause-ControlPlane }
+            '12' {
+                Write-Section 'Telegram alert hook'
+                Write-Console 'The bot token is encrypted with Windows DPAPI and never written to logs.' Gray
+                Write-Console 'Telegram notifications are advisory. Blocking/unblocking remains an explicit assistant action.' Cyan
+                if(Read-BooleanChoice -Prompt 'Configure or replace the Telegram hook?' -Default $true){Set-DefenseTelegramHook}
+                if(Read-BooleanChoice -Prompt 'Send a test notification now?' -Default $false){[void](Send-DefenseTelegramMessage -Text ("Windows AD Control Plane test alert from {0} at {1}" -f $env:COMPUTERNAME,(Get-Date)))}
+                if(Read-BooleanChoice -Prompt 'Enable the 15-minute defense awareness notification task?' -Default $true){Register-DefenseAwarenessTask}
+                Pause-ControlPlane
+            }
+            '13' { Invoke-DefenseAwarenessCheck -Notify; Pause-ControlPlane }
+            'H' { $script:MainMenuRequested = $true; return }
+            '0' { return }
+            default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
+        }
+    }
+}
+
 function Show-WindowsIdsMenu {
     while ($true) {
         if ($script:MainMenuRequested) { return }
@@ -6585,6 +7794,7 @@ function Show-WindowsIdsMenu {
         Write-MenuItem '8' 'Update rules' 'Use detected suricata-update, validate config and restart service' Warn
         Write-MenuItem '9' 'Daily reports' 'Generate/view reports or register a SYSTEM scheduled task'
         Write-MenuItem '10' 'Installation guidance' 'Official Suricata installer + explicit Npcap driver installation'
+        Write-MenuItem '11' 'Suricata + Wazuh defense' 'Unified telemetry, EVE correlation and guarded IPS response' Good
         Write-MenuNavigation
         Write-Rule
 
@@ -6640,6 +7850,7 @@ function Show-WindowsIdsMenu {
                 Pause-ControlPlane
             }
             '10' { Show-WindowsIdsInstallationGuidance; Pause-ControlPlane }
+            '11' { Show-WazuhDefenseMenu }
             'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
@@ -7672,7 +8883,9 @@ function Show-DnsMenu {
         Write-MenuItem '2' 'List records' 'Display records in one zone/node'
         Write-MenuItem '3' 'Create A record' 'Add IPv4 host record' Good
         Write-MenuItem '4' 'Delete record' 'Delete one unambiguous resource record' Danger
-        Write-MenuItem '5' 'AD DNS health' 'Validate locator and Kerberos SRV records'
+        Write-MenuItem '5' 'AD DNS health' 'Validate AD records plus external recursive resolution'
+        Write-MenuItem '6' 'External resolution' 'Inspect forwarders/root-hint posture and Internet DNS health' Good
+        Write-MenuItem '7' 'Repair forwarders' 'Replace forwarders only after direct validation and rollback protection' Warn
         Write-MenuNavigation
         Write-Rule
 
@@ -7682,6 +8895,8 @@ function Show-DnsMenu {
             '3' { Add-DnsARecordInteractive; Pause-ControlPlane }
             '4' { Remove-DnsRecordInteractive; Pause-ControlPlane }
             '5' { $script:Results.Clear(); Test-DcDnsHealth; Pause-ControlPlane }
+            '6' { $script:Results.Clear(); [void](Show-DnsExternalResolutionHealth); Pause-ControlPlane }
+            '7' { Repair-DnsForwardersInteractive; Pause-ControlPlane }
             'H' { $script:MainMenuRequested = $true; return }
             '0' { return }
             default { Write-Console 'Invalid option.' Yellow; Pause-ControlPlane }
@@ -7945,6 +9160,7 @@ function Show-MainMenu {
         Write-WorkspaceRow 'P' 'Policy / DNS' Magenta 'S' 'Security' Red
         Write-WorkspaceRow 'R' 'Remote operations' DarkCyan 'I' 'Insights / IDS' Yellow
         Write-WorkspaceRow 'M' 'Maintenance' Cyan 'A' 'All modules' Gray
+        Write-MenuItem 'L' 'Language / Idioma' ("EN / ES [{0}]" -f $script:UiLanguage.ToUpperInvariant()) Normal
         Write-MenuItem '0' 'Exit' 'Close control plane' Danger
         Write-Rule
 
@@ -7980,6 +9196,7 @@ function Show-MainMenu {
                 }
                 'M' { Show-MaintenanceWorkspace }
                 'A' { Show-AllModulesMenu }
+                'L' { Switch-UiLanguage }
                 '0' { return }
                 default { Write-Console 'Invalid workspace.' Yellow; Pause-ControlPlane }
             }
@@ -8167,6 +9384,27 @@ try {
             }
         }
 
+        'IDSResponseCleanup' {
+            try {
+                [void](Remove-ExpiredGuardedIpsRules)
+                Invoke-GuardedIpsResponse -NonInteractive
+                Write-Log 'Scheduled guarded IPS cleanup/response cycle completed.' OK
+            }
+            catch {
+                Write-Log ("Guarded IPS scheduled cycle failed: {0}" -f $_.Exception.Message) ERROR
+            }
+        }
+
+        'IDSAwarenessCheck' {
+            try {
+                Invoke-DefenseAwarenessCheck -Notify
+                Write-Log 'Scheduled defense awareness cycle completed.' OK
+            }
+            catch {
+                Write-Log ("Defense awareness scheduled cycle failed: {0}" -f $_.Exception.Message) ERROR
+            }
+        }
+
         default {
             $script:Results.Clear()
             Invoke-HostAudit
@@ -8184,7 +9422,7 @@ try {
         Show-MainMenu
     }
 
-    if (-not $script:ResetCompleted -and $Mode -ne 'IDSReport') {
+    if (-not $script:ResetCompleted -and $Mode -notin @('IDSReport','IDSResponseCleanup','IDSAwarenessCheck')) {
         Write-Report
         Show-Summary
     }

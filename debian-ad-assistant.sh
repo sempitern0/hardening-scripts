@@ -45,7 +45,7 @@ umask 077
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_NAME="DEBIAN AD Assistant"
-SCRIPT_VERSION="5.4.0-operations-quality-polish"
+SCRIPT_VERSION="5.4.1-defense-response-awareness"
 
 MODE="interactive"
 FORCE_NO_COLOR=0
@@ -82,6 +82,12 @@ IDS_LEGACY_LOCAL_RULES="/etc/suricata/rules/debian-ad-assistant.rules"
 IDS_RULE_PROFILE_STATE="${IDS_STATE_DIR}/rule-profile.env"
 IDS_RULE_UPDATE_SERVICE="/etc/systemd/system/debian-ad-suricata-rules.service"
 IDS_RULE_UPDATE_TIMER="/etc/systemd/system/debian-ad-suricata-rules.timer"
+IDS_RESPONSE_DIR="${IDS_STATE_DIR}/response"
+IDS_RESPONSE_CONFIG="${IDS_RESPONSE_DIR}/config.env"
+IDS_TELEGRAM_TOKEN_FILE="${IDS_RESPONSE_DIR}/telegram.token"
+IDS_ALERT_WATCH_SERVICE="/etc/systemd/system/debian-ad-ids-alert-watch.service"
+IDS_ALERT_WATCH_TIMER="/etc/systemd/system/debian-ad-ids-alert-watch.timer"
+IDS_RESPONSE_NFT_TABLE="debian_ad_guarded_ips"
 
 SAMBA_HEALTH_HELPER="/usr/local/libexec/debian-ad-samba-health"
 SAMBA_HEALTH_SERVICE="/etc/systemd/system/debian-ad-samba-health.service"
@@ -815,6 +821,7 @@ parse_args() {
             --ids-daily) MODE="ids-daily" ;;
             --domain-daily) MODE="domain-daily" ;;
             --ids-rules-update) MODE="ids-rules-update" ;;
+            --ids-alert-watch) MODE="ids-alert-watch" ;;
             --install-cli) MODE="install-cli" ;;
             --cli-info|--tools) MODE="cli-info" ;;
             --lang)
@@ -11196,16 +11203,439 @@ ids_disable_integration() {
     result PASS "IDS integration" "disabled; packages retained" "clean host integration"
 }
 
+
+ids_response_prepare() {
+    mkdir -p "$IDS_RESPONSE_DIR"
+    chmod 700 "$IDS_RESPONSE_DIR"
+    if [[ ! -f "$IDS_RESPONSE_CONFIG" ]]; then
+        cat >"$IDS_RESPONSE_CONFIG" <<'EOF'
+BUSINESS_START=08:00
+BUSINESS_END=18:00
+BUSINESS_DAYS=1,2,3,4,5
+DAY_ALERT_SEVERITY=1
+AFTER_ALERT_SEVERITY=2
+DAY_WINDOW_HOURS=1
+AFTER_WINDOW_HOURS=4
+BLOCK_MINUTES=30
+TELEGRAM_ENABLED=0
+TELEGRAM_CHAT_ID=
+TRUSTED_IPS=
+LAST_ALERT_FINGERPRINT=
+EOF
+        chmod 600 "$IDS_RESPONSE_CONFIG"
+    fi
+}
+
+ids_response_cfg_get() {
+    local key="$1"
+    ids_response_prepare
+    awk -F= -v k="$key" '$1==k {sub(/^[^=]*=/,""); print; exit}' "$IDS_RESPONSE_CONFIG"
+}
+
+ids_response_cfg_set() {
+    local key="$1" value="$2" tmp
+    ids_response_prepare
+    tmp="${IDS_RESPONSE_CONFIG}.tmp.$$"
+    awk -F= -v k="$key" -v v="$value" '
+        BEGIN{done=0}
+        $1==k {print k "=" v; done=1; next}
+        {print}
+        END{if(!done) print k "=" v}
+    ' "$IDS_RESPONSE_CONFIG" >"$tmp"
+    chmod 600 "$tmp"
+    mv -f "$tmp" "$IDS_RESPONSE_CONFIG"
+}
+
+ids_response_valid_ipv4() {
+    python3 - "$1" <<'PY' >/dev/null 2>&1
+import ipaddress,sys
+try:
+    ip=ipaddress.ip_address(sys.argv[1])
+    raise SystemExit(0 if ip.version==4 else 1)
+except Exception:
+    raise SystemExit(1)
+PY
+}
+
+ids_response_public_ipv4() {
+    python3 - "$1" <<'PY' >/dev/null 2>&1
+import ipaddress,sys
+try:
+    ip=ipaddress.ip_address(sys.argv[1])
+    ok=(ip.version==4 and not(ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified))
+    raise SystemExit(0 if ok else 1)
+except Exception:
+    raise SystemExit(1)
+PY
+}
+
+ids_response_is_trusted() {
+    local ip="$1" trusted=",${2:-$(ids_response_cfg_get TRUSTED_IPS)},"
+    [[ "$trusted" == *",$ip,"* ]]
+}
+
+ids_response_nft_ensure() {
+    command_exists nft || { msg_warn "nftables is unavailable; guarded response cannot manage blocks."; return 1; }
+    if nft list table inet "$IDS_RESPONSE_NFT_TABLE" >/dev/null 2>&1; then
+        return 0
+    fi
+    nft -f - <<EOF
+table inet ${IDS_RESPONSE_NFT_TABLE} {
+    set blocked_v4 {
+        type ipv4_addr
+        flags timeout
+    }
+    chain input {
+        type filter hook input priority -5; policy accept;
+        ip saddr @blocked_v4 drop
+    }
+}
+EOF
+}
+
+ids_response_list_blocks() {
+    ui_rule
+    printf '%bACTIVE ASSISTANT-MANAGED BLOCKS%b\n\n' "$C_BOLD" "$C_RESET"
+    if ! ids_response_nft_ensure; then return 1; fi
+    local raw
+    raw="$(nft -a list set inet "$IDS_RESPONSE_NFT_TABLE" blocked_v4 2>/dev/null || true)"
+    if ! grep -q 'elements =' <<<"$raw"; then
+        printf '  none\n'
+        return 0
+    fi
+    sed -n '/elements = {/,/}/p' <<<"$raw" | sed '1s/.*elements = {//;$s/}.*//;s/,/\n/g;s/^[[:space:]]*/  /'
+}
+
+ids_response_block_ip() {
+    local ip="${1:-}" minutes="${2:-}"
+    [[ -n "$ip" ]] || ip="$(ask 'IPv4 address to block temporarily' '')"
+    ids_response_valid_ipv4 "$ip" || { msg_warn "Invalid IPv4 address."; return 1; }
+    if ids_response_is_trusted "$ip"; then
+        msg_warn "$ip is in the trusted-IP list. Remove it from trusted IPs before blocking."
+        return 1
+    fi
+    [[ -n "$minutes" ]] || minutes="$(ids_response_cfg_get BLOCK_MINUTES)"
+    [[ "$minutes" =~ ^[0-9]+$ ]] || minutes=30
+    (( minutes < 1 )) && minutes=1
+    ids_response_nft_ensure || return 1
+    if nft add element inet "$IDS_RESPONSE_NFT_TABLE" blocked_v4 "{ $ip timeout ${minutes}m }" 2>/dev/null; then
+        change APPLIED "Temporary IDS/IPS block ip=$ip ttl=${minutes}m"
+        result PASS "Temporary IP block" "$ip / ${minutes}m" "active"
+        return 0
+    fi
+    msg_warn "Could not add $ip to the guarded-response nftables set."
+    return 1
+}
+
+ids_response_unblock_ip() {
+    local ip="${1:-}"
+    [[ -n "$ip" ]] || ip="$(ask 'IPv4 address to unblock' '')"
+    ids_response_valid_ipv4 "$ip" || { msg_warn "Invalid IPv4 address."; return 1; }
+    ids_response_nft_ensure || return 1
+    nft delete element inet "$IDS_RESPONSE_NFT_TABLE" blocked_v4 "{ $ip }" >/dev/null 2>&1 || true
+    change APPLIED "Operator unblocked IP $ip"
+    result PASS "IP unblock" "$ip" "removed from assistant-managed block set"
+}
+
+ids_response_unblock_all() {
+    ids_response_nft_ensure || return 1
+    confirm "Remove all assistant-managed temporary IP blocks now?" N || return 0
+    nft flush set inet "$IDS_RESPONSE_NFT_TABLE" blocked_v4 >/dev/null 2>&1 || true
+    change APPLIED "Operator cleared all assistant-managed IDS/IPS blocks"
+    result PASS "Guarded response blocks" "cleared" "no assistant-managed temporary blocks"
+}
+
+ids_response_add_trusted() {
+    local ip trusted
+    ip="$(ask 'IPv4 address to trust' '')"
+    ids_response_valid_ipv4 "$ip" || { msg_warn "Invalid IPv4 address."; return 1; }
+    trusted="$(ids_response_cfg_get TRUSTED_IPS)"
+    if ! ids_response_is_trusted "$ip" "$trusted"; then
+        trusted="${trusted:+$trusted,}$ip"
+        ids_response_cfg_set TRUSTED_IPS "$trusted"
+    fi
+    ids_response_unblock_ip "$ip" || true
+    result PASS "Trusted IP" "$ip" "excluded from assistant recommendations/auto-response"
+}
+
+ids_response_remove_trusted() {
+    local trusted ip new
+    trusted="$(ids_response_cfg_get TRUSTED_IPS)"
+    [[ -n "$trusted" ]] || { msg_info "Trusted-IP list is empty."; return 0; }
+    printf 'Trusted IPs: %s\n' "$trusted"
+    ip="$(ask 'IPv4 address to remove from trusted list' '')"
+    new="$(python3 - "$trusted" "$ip" <<'PY'
+import sys
+vals=[x for x in sys.argv[1].split(',') if x and x!=sys.argv[2]]
+print(','.join(vals))
+PY
+)"
+    ids_response_cfg_set TRUSTED_IPS "$new"
+    result PASS "Trusted IP removed" "$ip" "normal response rules may apply again"
+}
+
+ids_response_awareness_profile() {
+    ids_response_prepare
+    local now_day now_hm start end days business=0
+    now_day="$(date +%u)"
+    now_hm="$(date +%H:%M)"
+    start="$(ids_response_cfg_get BUSINESS_START)"
+    end="$(ids_response_cfg_get BUSINESS_END)"
+    days=",${2:-$(ids_response_cfg_get BUSINESS_DAYS)},"
+    if [[ "$days" == *",$now_day,"* ]]; then
+        if [[ "$start" < "$end" || "$start" == "$end" ]]; then
+            [[ "$now_hm" > "$start" || "$now_hm" == "$start" ]] && [[ "$now_hm" < "$end" ]] && business=1
+        else
+            { [[ "$now_hm" > "$start" || "$now_hm" == "$start" ]] || [[ "$now_hm" < "$end" ]]; } && business=1
+        fi
+    fi
+    if (( business )); then
+        printf 'business|%s|%s\n' "$(ids_response_cfg_get DAY_WINDOW_HOURS)" "$(ids_response_cfg_get DAY_ALERT_SEVERITY)"
+    else
+        printf 'after-hours|%s|%s\n' "$(ids_response_cfg_get AFTER_WINDOW_HOURS)" "$(ids_response_cfg_get AFTER_ALERT_SEVERITY)"
+    fi
+}
+
+ids_response_collect_alerts() {
+    local hours="$1" severity="$2" limit="${3:-200}"
+    local eve
+    eve="$(ids_latest_eve_file 2>/dev/null || true)"
+    [[ -n "$eve" && -r "$eve" ]] || return 0
+    python3 - "$eve" "$hours" "$severity" "$limit" <<'PY'
+import json,sys,datetime,ipaddress
+path,hours,severity,limit=sys.argv[1],float(sys.argv[2]),int(sys.argv[3]),int(sys.argv[4])
+cut=datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=hours)
+out=[]
+with open(path,'r',encoding='utf-8',errors='ignore') as f:
+    for line in f:
+        try:e=json.loads(line)
+        except Exception:continue
+        if e.get('event_type')!='alert' or not isinstance(e.get('alert'),dict):continue
+        try:sev=int(e['alert'].get('severity',99))
+        except Exception:sev=99
+        if sev>severity:continue
+        ts=e.get('timestamp','')
+        try:
+            t=datetime.datetime.fromisoformat(ts.replace('Z','+00:00'))
+            if t.tzinfo is None:t=t.replace(tzinfo=datetime.timezone.utc)
+            if t.astimezone(datetime.timezone.utc)<cut:continue
+        except Exception:pass
+        out.append((ts,str(e.get('src_ip','')),str(e.get('dest_ip','')),sev,str(e['alert'].get('signature','')),str(e['alert'].get('category','')),str(e['alert'].get('action',''))))
+for row in out[-limit:][::-1]:
+    print('\t'.join(str(x).replace('\t',' ') for x in row))
+PY
+}
+
+ids_response_send_telegram() {
+    local text="$1" enabled chat token response
+    enabled="$(ids_response_cfg_get TELEGRAM_ENABLED)"
+    [[ "$enabled" == 1 ]] || return 1
+    chat="$(ids_response_cfg_get TELEGRAM_CHAT_ID)"
+    [[ -n "$chat" && -r "$IDS_TELEGRAM_TOKEN_FILE" ]] || return 1
+    token="$(<"$IDS_TELEGRAM_TOKEN_FILE")"
+    [[ -n "$token" ]] || return 1
+    response="$(curl -fsS --max-time 15 -X POST \
+        --data-urlencode "chat_id=$chat" \
+        --data-urlencode "text=$text" \
+        --data-urlencode "disable_web_page_preview=true" \
+        "https://api.telegram.org/bot${token}/sendMessage" 2>/dev/null || true)"
+    grep -q '"ok":true' <<<"$response"
+}
+
+ids_response_configure_telegram() {
+    ids_response_prepare
+    local chat token
+    chat="$(ask 'Telegram chat/channel ID' "$(ids_response_cfg_get TELEGRAM_CHAT_ID)")"
+    printf 'Telegram bot token (input hidden; blank keeps current): '
+    IFS= read -r -s token <"$INPUT_FD" || token=""
+    printf '\n'
+    if [[ -n "$token" ]]; then
+        printf '%s' "$token" >"$IDS_TELEGRAM_TOKEN_FILE"
+        chmod 600 "$IDS_TELEGRAM_TOKEN_FILE"
+    fi
+    [[ -r "$IDS_TELEGRAM_TOKEN_FILE" ]] || { msg_warn "No Telegram bot token is stored."; return 1; }
+    ids_response_cfg_set TELEGRAM_CHAT_ID "$chat"
+    ids_response_cfg_set TELEGRAM_ENABLED 1
+    result PASS "Telegram alert hook" "$chat" "enabled; token stored root-only"
+    if confirm "Send a test notification now?" N; then
+        ids_response_send_telegram "Debian AD Assistant test alert from $(hostname -f 2>/dev/null || hostname) at $(date +'%Y-%m-%d %H:%M')" \
+            && msg_ok "Telegram test notification sent." \
+            || msg_warn "Telegram test notification failed."
+    fi
+}
+
+ids_response_configure_awareness() {
+    ids_response_prepare
+    local start end dayw afterw ttl
+    printf '\nOutside business hours the assistant expands the review window and notifies on severity <=2 by default.\n'
+    printf 'Automatic/recommended blocking remains restricted to public severity-1 sources.\n\n'
+    start="$(ask 'Business start (HH:MM)' "$(ids_response_cfg_get BUSINESS_START)")"
+    end="$(ask 'Business end (HH:MM)' "$(ids_response_cfg_get BUSINESS_END)")"
+    [[ "$start" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ && "$end" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || { msg_warn "Invalid HH:MM value."; return 1; }
+    dayw="$(ask 'Business-hours review window (hours)' "$(ids_response_cfg_get DAY_WINDOW_HOURS)")"
+    afterw="$(ask 'After-hours review window (hours)' "$(ids_response_cfg_get AFTER_WINDOW_HOURS)")"
+    ttl="$(ask 'Temporary block duration (minutes)' "$(ids_response_cfg_get BLOCK_MINUTES)")"
+    [[ "$dayw" =~ ^[0-9]+$ && "$afterw" =~ ^[0-9]+$ && "$ttl" =~ ^[0-9]+$ ]] || { msg_warn "Windows/TTL must be numeric."; return 1; }
+    ids_response_cfg_set BUSINESS_START "$start"
+    ids_response_cfg_set BUSINESS_END "$end"
+    ids_response_cfg_set DAY_WINDOW_HOURS "$dayw"
+    ids_response_cfg_set AFTER_WINDOW_HOURS "$afterw"
+    ids_response_cfg_set BLOCK_MINUTES "$ttl"
+    result PASS "Defense awareness schedule" "$start-$end / business=${dayw}h / after=${afterw}h / block=${ttl}m" "configured"
+}
+
+ids_response_review_notify() {
+    local notify="${1:-0}" profile label hours severity rows count fingerprint trusted top msg
+    profile="$(ids_response_awareness_profile)"
+    IFS='|' read -r label hours severity <<<"$profile"
+    rows="$(ids_response_collect_alerts "$hours" "$severity" 200 || true)"
+    count="$(grep -c . <<<"$rows" 2>/dev/null || true)"
+    [[ -n "$rows" ]] || count=0
+    ui_rule
+    printf '%bDEFENSE AWARENESS — %s%b\n\n' "$C_BOLD" "${label^^}" "$C_RESET"
+    printf '  Window      : %sh\n' "$hours"
+    printf '  Alert level : severity <= %s\n' "$severity"
+    printf '  Matches     : %s\n\n' "$count"
+    if [[ -n "$rows" ]]; then
+        printf '%-20s %-16s %-4s %s\n' "TIME" "SOURCE" "SEV" "SIGNATURE"
+        awk -F'\t' 'NR<=30{printf "%-20.20s %-16s %-4s %s\n",$1,$2,$4,$5}' <<<"$rows"
+    else
+        printf 'No matching alerts in the current awareness window.\n'
+    fi
+    if [[ "$notify" == 1 && -n "$rows" ]]; then
+        top="$(awk -F'\t' '{c[$2]++} END{for(i in c) print c[i],i}' <<<"$rows" | sort -nr | head -5)"
+        fingerprint="$(sha256sum <<<"$top" | awk '{print $1}')"
+        if [[ "$fingerprint" != "$(ids_response_cfg_get LAST_ALERT_FINGERPRINT)" ]]; then
+            msg="Debian AD defense alert (${label})
+Host: $(hostname -f 2>/dev/null || hostname)
+Window: ${hours}h | Matches: ${count}
+Review manually in Insights > Suricata > Response center.
+Top sources:
+${top}"
+            if ids_response_send_telegram "$msg"; then
+                ids_response_cfg_set LAST_ALERT_FINGERPRINT "$fingerprint"
+                msg_ok "Telegram alert sent."
+            else
+                msg_warn "Telegram notification was not sent (disabled or delivery failed)."
+            fi
+        else
+            msg_info "Duplicate alert fingerprint suppressed."
+        fi
+    fi
+}
+
+ids_response_recommended_blocks() {
+    local rows candidates trusted ttl
+    rows="$(ids_response_collect_alerts 1 1 500 || true)"
+    [[ -n "$rows" ]] || { msg_info "No severity-1 alerts found in the last hour."; return 0; }
+    trusted="$(ids_response_cfg_get TRUSTED_IPS)"
+    candidates="$(awk -F'\t' '{print $2}' <<<"$rows" | sort | uniq -c | sort -nr | awk '{print $2"\t"$1}')"
+    printf '\nHigh-confidence public-source candidates (severity-1 only):\n'
+    local ip count
+    while IFS=$'\t' read -r ip count; do
+        [[ -n "$ip" ]] || continue
+        ids_response_public_ipv4 "$ip" || continue
+        ids_response_is_trusted "$ip" "$trusted" && continue
+        printf '  %-16s alerts=%s\n' "$ip" "$count"
+    done <<<"$candidates"
+    confirm "Apply temporary blocks to the listed public severity-1 sources?" N || return 0
+    ttl="$(ids_response_cfg_get BLOCK_MINUTES)"
+    while IFS=$'\t' read -r ip count; do
+        [[ -n "$ip" ]] || continue
+        ids_response_public_ipv4 "$ip" || continue
+        ids_response_is_trusted "$ip" "$trusted" && continue
+        ids_response_block_ip "$ip" "$ttl" || true
+    done <<<"$candidates"
+}
+
+ids_response_install_watch_timer() {
+    ids_response_prepare
+    local script_path
+    script_path="$(readlink -f "$0")"
+    cat >"$IDS_ALERT_WATCH_SERVICE" <<EOF
+[Unit]
+Description=Debian AD Assistant IDS awareness notification check
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${script_path} --ids-alert-watch --no-color
+EOF
+    cat >"$IDS_ALERT_WATCH_TIMER" <<'EOF'
+[Unit]
+Description=Run Debian AD Assistant IDS awareness check every 15 minutes
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=15m
+RandomizedDelaySec=2m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now debian-ad-ids-alert-watch.timer >/dev/null
+    result PASS "IDS awareness timer" "every 15 minutes" "enabled"
+}
+
+ids_alert_watch_mode() {
+    ids_response_prepare
+    ids_response_review_notify 1 >/dev/null 2>&1 || true
+}
+
+ids_response_center_menu() {
+    while true; do
+        ui_menu_screen "IDS / IPS RESPONSE CENTER" "CLI-first response: quick unblock, trusted IPs, awareness windows and Telegram notifications"
+        ui_menu_item "1" "Status / active blocks" "Show awareness profile, trusted IPs and current nftables temporary blocks"
+        ui_menu_item "2" "Unblock IP now" "Immediately remove one assistant-managed block" "$C_GREEN"
+        ui_menu_item "3" "Unblock all" "Emergency clear of assistant-managed temporary blocks" "$C_YELLOW"
+        ui_menu_item "4" "Manual temporary block" "Block an IPv4 address for the configured TTL" "$C_RED"
+        ui_menu_item "5" "Trust IP" "Exclude a known partner/public IP and unblock it immediately" "$C_GREEN"
+        ui_menu_item "6" "Remove trusted IP" "Return an address to normal IDS/IPS handling"
+        ui_menu_item "7" "Recommended blocks" "Review severity-1 public sources and apply only after confirmation" "$C_YELLOW"
+        ui_menu_item "8" "Awareness schedule" "Business hours, after-hours analysis window and temporary block TTL"
+        ui_menu_item "9" "Telegram alert hook" "Root-only token storage; notifications lead back to manual assistant actions"
+        ui_menu_item "10" "Review + notify now" "Use current business/after-hours profile and send alert if new"
+        ui_menu_item "11" "Enable alert timer" "Run notification check every 15 minutes"
+        ui_menu_exit
+        ui_rule
+        local c profile label hours sev
+        c="$(ask 'Select response operation' '1')"
+        case "$c" in
+            1)
+                profile="$(ids_response_awareness_profile)"; IFS='|' read -r label hours sev <<<"$profile"
+                printf '\nProfile: %s | window=%sh | severity<=%s | block TTL=%sm\n' "$label" "$hours" "$sev" "$(ids_response_cfg_get BLOCK_MINUTES)"
+                printf 'Trusted IPs: %s\n\n' "$(ids_response_cfg_get TRUSTED_IPS)"
+                ids_response_list_blocks
+                ui_pause ;;
+            2) ids_response_list_blocks; ids_response_unblock_ip; ui_pause ;;
+            3) ids_response_unblock_all; ui_pause ;;
+            4) ids_response_block_ip; ui_pause ;;
+            5) ids_response_add_trusted; ui_pause ;;
+            6) ids_response_remove_trusted; ui_pause ;;
+            7) ids_response_recommended_blocks; ui_pause ;;
+            8) ids_response_configure_awareness; ui_pause ;;
+            9) ids_response_configure_telegram; ui_pause ;;
+            10) ids_response_review_notify 1; ui_pause ;;
+            11) ids_response_install_watch_timer; ui_pause ;;
+            0) return 0 ;;
+            *) msg_warn "Invalid response-center option."; ui_pause ;;
+        esac
+    done
+}
+
 ids_menu() {
     while true; do
         (( MENU_MAIN_REQUESTED )) && return 0
 
         ui_menu_screen "NETWORK DETECTION / SURICATA" \
-            "Stable shortcuts: O overview · T threats · P IDS/IPS posture · S sensor · R rules · G reports"
+            "Stable shortcuts: O overview · T threats · P posture · B response · S sensor · R rules · G reports"
         ui_menu_item "O" "Operator overview" "Plain-language traffic, contacts, services and explained alerts" "$C_CYAN"
         ui_menu_item "T" "Intrusion attempt review" "Filtered attack/recon/credential/exploit view with sources, actions and next steps" "$C_RED"
         ui_menu_item "A" "Recent alerts explained" "Signature meaning, endpoints, trust scope and recommended triage"
         ui_menu_item "P" "IDS / IPS posture" "Show passive vs inline enforcement posture and prevention guardrails" "$C_YELLOW"
+        ui_menu_item "B" "Response center" "Blocked IPs, rapid unblock, trusted IPs, awareness schedule and Telegram alerts" "$C_RED"
         ui_menu_item "S" "Sensor health" "Service, config, rules, EVE freshness and packet-drop telemetry" "$C_GREEN"
         ui_menu_item "N" "Connection activity" "Who connected to the DC and which service/protocol was used" "$C_CYAN"
         ui_menu_item "D" "AD protocol intelligence" "Kerberos, DNS, LDAP, SMB/NTLM and protocol errors"
@@ -11224,6 +11654,7 @@ ids_menu() {
             T) hours="$(ids_choose_window)" || { ui_pause; continue; }; ids_threat_review "$hours"; ui_pause ;;
             A|6) hours="$(ids_choose_window)" || { ui_pause; continue; }; ids_operator_alerts "$hours"; ui_pause ;;
             P|1) ids_prevention_posture; ui_pause ;;
+            B) ids_response_center_menu ;;
             S|4) ids_sensor_health; ui_pause ;;
             N|13) hours="$(ids_choose_window)" || { ui_pause; continue; }; ids_connection_activity "$hours"; ui_pause ;;
             D|7) hours="$(ids_choose_window)" || { ui_pause; continue; }; ids_ad_intelligence "$hours"; ui_pause ;;
@@ -14109,6 +14540,7 @@ main() {
         ids-daily) load_config || true; ids_daily_mode ;;
         domain-daily) load_config || true; domain_daily_mode ;;
         ids-rules-update) load_config || true; ids_rule_update_mode ;;
+        ids-alert-watch) load_config || true; ids_alert_watch_mode ;;
         install-cli) install_cli_commands ;;
         cli-info) show_cli_commands ;;
         interactive) interactive_mode ;;
