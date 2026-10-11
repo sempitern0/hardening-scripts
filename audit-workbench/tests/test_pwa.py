@@ -12,12 +12,13 @@ try:
   context=browser.new_context(service_workers='allow');page=context.new_page()
   errors=[];page.on('pageerror',lambda error: errors.append(str(error)))
   page.goto('http://127.0.0.1:%d/'%server.server_port)
-  page.locator('#navigation button').first.wait_for(timeout=15000)
+  page.locator('[data-new]').first.wait_for(timeout=15000)
   page.evaluate("navigator.serviceWorker.ready")
-  page.wait_for_function("async () => (await caches.keys()).some(k=>k.includes('shell-v4'))",timeout=10000)
+  page.wait_for_function("async () => (await caches.keys()).some(k=>k.includes('shell-v5'))",timeout=10000)
   context.set_offline(True)
   page.reload(wait_until='domcontentloaded',timeout=15000)
-  page.locator('#navigation button').first.wait_for(timeout=10000)
+  page.locator('[data-new]').first.wait_for(timeout=10000)
+  page.locator('[data-new]').click()
   page.locator('nav button[data-go="assets"]').click()
   assert page.get_by_text('Inventario de hardware').count()>0
   assert not errors,errors
