@@ -1,6 +1,6 @@
 /* Audit Workbench service worker: immutable local shell only. No audit data is cached. */
 'use strict';
-const CACHE_NAME = 'audit-workbench-shell-v8-fonts';
+const CACHE_NAME = 'audit-workbench-shell-v9-team-identity';
 const OPTIONAL_FONTS = ['Regular','Bold','Italic','BoldItalic'].map(weight => `./fonts/AtkinsonHyperlegible-${weight}.woff2`);
 const CORE = [
   './', './index.html', './styles.css', './app.js',

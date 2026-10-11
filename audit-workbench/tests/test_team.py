@@ -40,9 +40,12 @@ with sync_playwright() as p:
     page.locator('[data-member-field="name"]').nth(0).fill('María Pérez')
     page.locator('[data-member-field="role"]').nth(0).select_option('Responsable de auditoría')
     page.locator('[data-member-field="email"]').nth(0).fill('maria@example.org')
+    page.locator('[data-member-field="documentId"]').nth(0).fill('12345678Z')
     page.locator('#member-add').click()
     page.locator('[data-member-field="name"]').nth(1).fill('Carlos Bravo')
     page.locator('[data-member-field="role"]').nth(1).select_option('Auditor/a de redes')
+    page.locator('[data-member-field="idType"]').nth(1).select_option('NIE')
+    page.locator('[data-member-field="documentId"]').nth(1).fill('X1234567L')
     page.locator('[data-go="records"]').first.click()
     page.locator('[data-new]').click()
     assert page.locator('#f-meta-main-auditor').count()==0

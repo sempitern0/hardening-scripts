@@ -168,13 +168,15 @@
   }
   const TEAM_MAX=60;
   const TEAM_ROLES=['Auditor/a de sistemas','Auditor/a de redes','Auditor/a de ciberseguridad','Responsable de auditoría','Especialista forense','Consultor/a técnico/a','Otro'];
+  const MEMBER_DOCUMENT_TYPES=['DNI','NIE','Pasaporte / otro'];
   // Store immutable attribution snapshots in each audit. Global member updates must
   // not silently rewrite the author list of already issued reports.
   function normalizeMember(raw){
     if(!raw||typeof raw!=='object'||Array.isArray(raw))return null;
     const id=str(raw.id).slice(0,90),name=str(raw.name).trim().slice(0,160);
     if(!id||!name)return null;
-    return {id,name,role:str(raw.role).slice(0,120),email:str(raw.email).slice(0,254),phone:str(raw.phone).slice(0,40)};
+    const idType=MEMBER_DOCUMENT_TYPES.includes(raw.idType)?raw.idType:'DNI';
+    return {id,name,role:str(raw.role).slice(0,120),idType,documentId:normalizeId(raw.documentId).slice(0,32),email:str(raw.email).slice(0,254),phone:str(raw.phone).slice(0,40)};
   }
   function normalizeAuditTeam(raw){
     if(!Array.isArray(raw))return [];
@@ -289,6 +291,27 @@
     if(type==='Otro documento'&&v.length<4)return 'El documento parece demasiado corto.';
     return '';
   }
+  // Validation checks syntax/control digits only; identity must still be verified by the auditor.
+  function memberIdentityIssue(member){
+    const type=member.idType||'DNI',number=normalizeId(member.documentId);
+    if(!number)return 'El identificador personal es obligatorio para asignar al profesional.';
+    if(type==='DNI')return validateIdentity('DNI / NIF persona física',number);
+    if(type==='NIE')return validateIdentity('NIE',number);
+    if(type==='Pasaporte / otro')return /^[A-Z0-9]{4,32}$/.test(number)?'':'El documento debe contener de 4 a 32 letras o números.';
+    return 'Selecciona el tipo de identificación personal.';
+  }
+  function showMemberValidation(member){
+    if(!member)return;
+    const input=[...document.querySelectorAll('[data-member-field="documentId"]')].find(el=>el.dataset.memberId===member.id);
+    if(!input)return;
+    const issue=memberIdentityIssue(member),wrapper=input.closest('.field');
+    let message=wrapper.querySelector('.field-error');
+    if(!message){message=document.createElement('small');message.className='field-error';message.setAttribute('role','status');wrapper.append(message)}
+    message.textContent=issue;
+    input.setCustomValidity(issue);input.setAttribute('aria-invalid',issue?'true':'false');
+    const kind=[...document.querySelectorAll('[data-member-field="idType"]')].find(el=>el.dataset.memberId===member.id);
+    if(kind)kind.setAttribute('aria-invalid',issue?'true':'false');
+  }
   function validationError(block,field,value,obj){
     const v=str(value).trim();if(!v)return '';
     if(field==='clientTaxId')return validateIdentity(obj.clientIdType||'No indicado',v);
@@ -319,6 +342,10 @@
   }
   function invalidFields(){
     const problems=[];
+    for(const member of state.meta.auditTeam||[]){
+      const issue=memberIdentityIssue(member);
+      if(issue)problems.push('Profesional '+(member.name||'sin nombre')+': '+issue);
+    }
     for(const [name] of metaFields){const issue=validationError('meta',name,state.meta[name],state.meta);if(issue)problems.push(name+': '+issue)}
     for(const [block,def] of Object.entries(groups))for(const record of state[block])for(const [name] of def.fields){const issue=validationError(block,name,record[name],record);if(issue)problems.push(block+'/'+name+': '+issue)}
     return problems;
@@ -466,10 +493,12 @@
   ];
   function renderMemberDirectory(){
     const members=settings.members;
-    return `<section class="card"><div class="card-head"><div><h2>Equipo de auditores</h2><p class="subtle">Añade los profesionales que trabajan para tu consultora. Después podrás asignar uno o varios a cada expediente. Los nombres seleccionados quedan registrados en el propio informe.</p></div><button class="button accent" type="button" id="member-add" ${members.length>=TEAM_MAX?'disabled':''}>+ Añadir auditor/a</button></div>
+    return `<section class="card"><div class="card-head"><div><h2>Equipo de auditores</h2><p class="subtle">Registra nombre, función y documento identificativo de cada profesional. Estos datos se copian a los expedientes seleccionados y figuran en el PDF; custodia los backups como información personal.</p></div><button class="button accent" type="button" id="member-add" ${members.length>=TEAM_MAX?'disabled':''}>+ Añadir auditor/a</button></div>
     ${members.length?`<div class="member-directory">${members.map((member,i)=>`<section class="member-card" data-member-id="${html(member.id)}"><div class="member-card-head"><strong>Miembro ${i+1}${member.name?' · '+html(member.name):''}</strong><button type="button" class="button danger small" data-member-remove="${html(member.id)}">Eliminar</button></div><div class="fields">
     <div class="field"><label for="member-name-${i}">Nombre y apellidos</label><input id="member-name-${i}" data-member-id="${html(member.id)}" data-member-field="name" maxlength="160" autocomplete="off" value="${html(member.name)}" required></div>
     <div class="field"><label for="member-role-${i}">Función en las auditorías</label><select id="member-role-${i}" data-member-id="${html(member.id)}" data-member-field="role"><option value="">Seleccionar función…</option>${[...new Set([...TEAM_ROLES,member.role].filter(Boolean))].map(role=>`<option value="${html(role)}" ${role===member.role?'selected':''}>${html(role)}</option>`).join('')}</select></div>
+    <div class="field"><label for="member-id-type-${i}">Tipo de identificador personal</label><select id="member-id-type-${i}" data-member-id="${html(member.id)}" data-member-field="idType">${MEMBER_DOCUMENT_TYPES.map(type=>`<option value="${html(type)}" ${type===(member.idType||'DNI')?'selected':''}>${html(type)}</option>`).join('')}</select></div>
+    <div class="field"><label for="member-document-${i}">DNI / NIE / identificador personal <span class="required-mark">*</span></label><input id="member-document-${i}" data-member-id="${html(member.id)}" data-member-field="documentId" maxlength="32" autocomplete="off" autocapitalize="characters" spellcheck="false" value="${html(member.documentId||'')}" aria-describedby="member-help-${i}" required><small class="field-hint" id="member-help-${i}">Validación local de DNI/NIE. Para otro documento se comprueba el formato, no su autenticidad.</small></div>
     <div class="field"><label for="member-email-${i}">Correo profesional (opcional)</label><input id="member-email-${i}" type="email" data-member-id="${html(member.id)}" data-member-field="email" maxlength="254" value="${html(member.email)}"></div>
     <div class="field"><label for="member-phone-${i}">Teléfono profesional (opcional)</label><input id="member-phone-${i}" type="tel" data-member-id="${html(member.id)}" data-member-field="phone" maxlength="40" value="${html(member.phone)}"></div></div></section>`).join('')}</div>`:'<p class="empty">Todavía no hay auditores registrados. Añade un miembro para poder seleccionarlo en tus auditorías.</p>'}</section>`;
   }
@@ -477,7 +506,7 @@
     const team=state.meta.auditTeam||[];
     const seen=new Set(settings.members.map(m=>m.id));
     return `<section class="card"><h2>Profesionales asignados a esta auditoría</h2><p class="subtle">Selecciona los auditores que realizan el trabajo. Se pueden elegir varios. El equipo seleccionado se guarda dentro del expediente y se incorpora al PDF.</p>
-    ${settings.members.length?`<div class="auditor-choice-list">${settings.members.map(member=>`<label class="auditor-choice"><input type="checkbox" data-auditor-select="${html(member.id)}" ${team.some(x=>x.id===member.id)?'checked':''}><span><strong>${html(member.name)}</strong><small>${html(member.role||'Sin función definida')}${member.email?' · '+html(member.email):''}</small></span></label>`).join('')}</div>`:'<div class="notice warn">Configura primero los miembros de la consultora. <button type="button" class="button quiet small" data-go="settings">Añadir auditores</button></div>'}
+    ${settings.members.length?`<div class="auditor-choice-list">${settings.members.map(member=>`<label class="auditor-choice"><input type="checkbox" data-auditor-select="${html(member.id)}" ${team.some(x=>x.id===member.id)?'checked':''}><span><strong>${html(member.name)}</strong><small>${html(member.role||'Sin función definida')}${member.email?' · '+html(member.email):''} · ${memberIdentityIssue(member)?'Identificación pendiente':'Identidad documentada'}</small></span></label>`).join('')}</div>`:'<div class="notice warn">Configura primero los miembros de la consultora. <button type="button" class="button quiet small" data-go="settings">Añadir auditores</button></div>'}
     ${team.filter(member=>!seen.has(member.id)).map(member=>`<label class="auditor-choice archived"><input type="checkbox" data-auditor-select="${html(member.id)}" checked><span><strong>${html(member.name)}</strong><small>Profesional archivado en este informe; ya no figura en el directorio</small></span></label>`).join('')}
     <small class="subtle">Si actualizas el nombre o la función de un miembro del directorio, el expediente conserva sus datos anteriores hasta que lo desmarques y vuelvas a seleccionar.</small></section>`;
   }
@@ -595,8 +624,9 @@
     const t=e.target;
     if(t.dataset.memberField){
       const member=settings.members.find(m=>m.id===t.dataset.memberId);if(!member)return;
-      const field=t.dataset.memberField,limit=field==='name'?160:field==='email'?254:field==='role'?120:40;
-      member[field]=t.value.slice(0,limit);
+      const field=t.dataset.memberField,limit=field==='name'?160:field==='email'?254:field==='role'?120:field==='documentId'?32:40;
+      member[field]=field==='documentId'?normalizeId(t.value).slice(0,32):t.value.slice(0,limit);
+      if(field==='idType'||field==='documentId')showMemberValidation(member);
       if(field==='email'){const bad=Boolean(member.email)&&!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(member.email);t.setCustomValidity(bad?'Introduce un correo electrónico válido.':'');t.setAttribute('aria-invalid',String(bad));}
       const title=t.closest('.member-card')?.querySelector('.member-card-head strong');if(title&&field==='name')title.textContent='Auditor/a · '+(member.name||'Sin nombre');
       saveSettings();return;
@@ -615,6 +645,7 @@
     if(t.dataset.auditorSelect!==undefined){
       const id=t.dataset.auditorSelect;
       if(t.checked){const member=settings.members.find(x=>x.id===id);if(!member||!member.name.trim()){alert('Define primero un nombre para este auditor.');t.checked=false;return;}
+        const issue=memberIdentityIssue(member);if(issue){alert('Completa la identificación de '+member.name+' en Configuración: '+issue);t.checked=false;return;}
         if(!state.meta.auditTeam.some(x=>x.id===id))state.meta.auditTeam.push({...member});
       }else state.meta.auditTeam=state.meta.auditTeam.filter(x=>x.id!==id);
       state.meta.auditor=auditorNames({...state.meta,auditor:''});persist();return;
@@ -691,7 +722,7 @@
     if(b.id==='check-connectivity'){byId('online-status').textContent=navigator.onLine?'Conexión disponible según el navegador. La disponibilidad de servicios externos no se garantiza.':'Sin conexión según el navegador. No se ha contactado con ningún servidor.';return}
     if(b.id==='member-add'){
       if(settings.members.length>=TEAM_MAX){alert('Máximo de 60 profesionales por perfil.');return;}
-      const member={id:uid(),name:'',role:'',email:'',phone:''};settings.members.push(member);saveSettings();render();
+      const member={id:uid(),name:'',role:'',idType:'DNI',documentId:'',email:'',phone:''};settings.members.push(member);saveSettings();render();
       const last=byId('member-name-'+(settings.members.length-1));last?.focus();return;
     }
     if(b.dataset.memberRemove){
@@ -855,7 +886,7 @@
     const meta=state.meta,ending=state.final;
     const cover=`<div class="report-cover"><div class="sup">SYSADMIN / SECURITY · AUDIT REPORT <span class="report-theme-name">${html(selectedPalette)}</span></div>${meta.logo?`<img class="report-logo" src="${meta.logo}" alt="Logo corporativo">`:''}<h1>Informe de auditoría<br>informática</h1><h2>${html(meta.project||'Infraestructura, sistemas y ciberseguridad')}</h2><p class="classify">${html(meta.classification||'Confidencial')}</p><div class="cover-meta"><div><span class="report-number">CLIENTE</span><h3>${html(meta.client||'No indicado')}</h3><p>${html(meta.contact||'')}</p></div><div><span class="report-number">ENTREGA</span><h3>${html(today)}</h3><p>Ref. ${html(meta.reportId||'Sin referencia')} · Rev. ${html(meta.revision||'1.0')}</p><p>${html(auditorNames(meta)||'Equipo auditor pendiente de asignar')}</p><p>${html(settings.company||'')}</p><p>${html(settings.taxId||'')}</p></div></div></div>`;
     const legal=section(1,'Confidencialidad, alcance legal y custodia',`<p class="report-note">Cláusulas modelo que deben adaptarse al contrato específico y validarse antes de la entrega. RGPD (UE) 2016/679 y LOPDGDD 3/2018, según resulte aplicable.</p>${legalFields.map(([key,label])=>`<h3>${html(label)}</h3><p>${para(state.legal[key])}</p>`).join('')}<h3>Nota adicional del auditor</h3><p>${para(ending.disclaimer)}</p>`);
-    const teamTable=meta.auditTeam?.length?`<table class="report-table"><thead><tr><th>Profesional</th><th>Función</th><th>Contacto</th></tr></thead><tbody>${meta.auditTeam.map(m=>`<tr><td>${html(m.name)}</td><td>${html(m.role||'No indicada')}</td><td>${html(m.email||'No indicado')}</td></tr>`).join('')}</tbody></table>`:`<p>${html(auditorNames(meta)||'No se han asignado profesionales.')}</p>`;
+    const teamTable=meta.auditTeam?.length?`<table class="report-table"><thead><tr><th>Profesional</th><th>Documento</th><th>Función</th><th>Contacto</th></tr></thead><tbody>${meta.auditTeam.map(m=>`<tr><td>${html(m.name)}</td><td>${html(m.documentId?(m.idType||'DNI')+' · '+m.documentId:'No documentado')}</td><td>${html(m.role||'No indicada')}</td><td>${html(m.email||'No indicado')}</td></tr>`).join('')}</tbody></table>`:`<p>${html(auditorNames(meta)||'No se han asignado profesionales.')}</p>`;
     const identity=section(2,'Identificación, alcance y metodología',table(metaFields,meta)+`<h3>Equipo responsable de la auditoría</h3>${teamTable}`);
     const executive=section(3,'Resumen ejecutivo',`<p>${para(ending.executive)}</p><h3>Valoración del riesgo</h3><p>${para(ending.assessment)}</p><div class="report-stat-grid">${severity.map(s=>`<div><strong>${count[s]}</strong><small>${s}</small></div>`).join('')}</div><h3>Puntos fuertes</h3><p>${para(ending.strengths)}</p><h3>Debilidades principales</h3><p>${para(ending.weaknesses)}</p>`);
     const controls=section(8,'Controles y verificaciones',reportRows('controls'));

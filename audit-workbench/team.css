@@ -10,3 +10,57 @@
 .auditor-choice span{display:grid;gap:4px;min-width:0}.auditor-choice small{color:var(--muted);line-height:1.4}
 .auditor-choice.archived{border-style:dashed;margin:8px 0}.member-card .field input,.member-card .field select{max-width:100%}
 @media(max-width:720px){.member-card-head{flex-wrap:wrap}.auditor-choice-list{grid-template-columns:1fr}.member-card{padding:14px}}
+
+/* Form rhythm: consistent vertical spacing and tablet-friendly touch targets.
+   Scoped to the workspace so the printable report keeps its own layout. */
+#workspace { min-width: 0; }
+#workspace > .card { margin-block: 24px; }
+#workspace > .button + .card { margin-top: 24px; }
+#workspace .card { min-width: 0; }
+#workspace .card-head { align-items: flex-start; gap: 18px 22px; flex-wrap: wrap; }
+#workspace .card-head > div { min-width: 0; flex: 1 1 280px; }
+#workspace .card-head h2 { line-height: 1.35; margin-bottom: 8px; }
+#workspace .card-head .subtle { line-height: 1.6; margin: 0; max-width: 75ch; }
+#workspace .fields { column-gap: 22px; row-gap: 22px; }
+#workspace .field { min-width: 0; }
+#workspace .field label { display: block; line-height: 1.45; margin-bottom: 9px; overflow-wrap: anywhere; }
+#workspace .field :where(input, select, textarea) { width: 100%; max-width: 100%; min-width: 0; }
+#workspace .field :where(input, select) { min-height: 48px; }
+#workspace .field textarea { line-height: 1.55; }
+#workspace .field-hint { display: block; margin-top: 8px; line-height: 1.5; color: var(--muted); font-size: 0.84rem; }
+#workspace .field-error { display: block; margin-top: 7px; line-height: 1.5; color: #d64c65; font-size: 0.86rem; }
+#workspace .field-error:empty { display: none; }
+#workspace .required-mark { color: #d64c65; font-weight: 800; }
+#workspace .member-directory { gap: 20px; margin-block: 20px 8px; }
+#workspace .member-card { padding: clamp(18px, 2.5vw, 28px); }
+#workspace .member-card-head { align-items: center; gap: 12px 20px; margin-bottom: 22px; flex-wrap: wrap; }
+#workspace .member-card-head strong { line-height: 1.5; overflow-wrap: anywhere; }
+#workspace .member-card .fields { gap: 22px; }
+#workspace .auditor-choice-list { gap: 16px; margin-block: 22px; }
+#workspace .auditor-choice { gap: 16px; padding: 18px; align-items: flex-start; }
+#workspace .auditor-choice strong { line-height: 1.45; }
+#workspace .auditor-choice small { line-height: 1.55; overflow-wrap: anywhere; }
+#workspace .wizard-top { margin-top: 0; margin-bottom: 24px; gap: 14px 20px; flex-wrap: wrap; }
+#workspace .wizard-controls { margin-top: 30px; gap: 20px 24px; }
+#workspace .wizard-buttons { gap: 12px; }
+#workspace .wizard-jump { gap: 10px; flex-wrap: wrap; }
+#workspace .wizard-jump select { min-width: 0; }
+#workspace .notice, #workspace .lead { line-height: 1.65; }
+#workspace .notice { margin-block: 18px; }
+#workspace :where(.button, button) { min-height: 44px; }
+@media (max-width: 1100px) {
+  #workspace .wizard-controls { grid-template-columns: 1fr; }
+  #workspace .wizard-buttons { justify-content: flex-start; }
+}
+@media (max-width: 850px) {
+  #workspace .member-card .fields { grid-template-columns: 1fr; }
+  #workspace .card-head > .button { flex: 0 1 auto; }
+}
+@media (max-width: 540px) {
+  #workspace .fields { grid-template-columns: 1fr; row-gap: 20px; }
+  #workspace .field.full { grid-column: auto; }
+  #workspace .member-card-head .button { width: 100%; }
+  #workspace .wizard-buttons .button { flex: 1 1 100%; }
+  #workspace .wizard-jump { width: 100%; }
+  #workspace .wizard-jump select { width: 100%; max-width: none; flex: 1 1 100%; }
+}
