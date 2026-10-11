@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Audit Workbench · Auditoría offline</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <aside class="sidebar" aria-label="Navegación del expediente">
+      <div class="brand"><div class="brand-mark">AW<span>.</span></div><div><strong>Audit Workbench</strong><small>SYSADMIN / SECURITY</small></div></div>
+      <div class="side-caption">EXPEDIENTE</div>
+      <nav id="navigation" aria-label="Secciones"></nav>
+      <div class="side-bottom"><span class="dot"></span> Entorno local · Offline <small>Sin servicios externos ni telemetría</small></div>
+    </aside>
+    <div class="content-wrap">
+      <header class="topbar">
+        <div class="breadcrumb"><span>Workspace</span><b>/</b><strong id="current-section">Vista general</strong></div>
+        <div class="actions">
+          <span class="save-status" id="save-status" role="status">Preparando expediente</span>
+          <button type="button" id="btn-import" class="button quiet">Importar</button>
+          <button type="button" id="btn-export" class="button quiet">Guardar JSON</button>
+          <button type="button" id="btn-pdf" class="button accent">Generar PDF ↗</button>
+          <input type="file" id="input-import" accept=".json,application/json" hidden>
+        </div>
+      </header>
+      <main id="workspace" tabindex="-1"></main>
+      <footer class="app-footer">Audit Workbench · Los resultados deben ser revisados por el auditor · <span id="local-date"></span></footer>
+    </div>
+  </div>
+  <article id="report" aria-label="Informe final de auditoría"></article>
+  <script src="app.js" defer></script>
+</body>
+</html>
