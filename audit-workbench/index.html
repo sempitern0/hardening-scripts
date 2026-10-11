@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Audit Workbench · Auditoría offline</title>
+  <meta name="theme-color" content="#102a3b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; manifest-src 'self'; worker-src 'self'">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -19,6 +26,15 @@
       <header class="topbar">
         <div class="breadcrumb"><span>Workspace</span><b>/</b><strong id="current-section">Vista general</strong></div>
         <div class="actions">
+          <label class="theme-select" for="palette">Paleta
+            <select id="palette" aria-label="Paleta de color">
+              <option value="ocean">Océano</option>
+              <option value="forest">Bosque</option>
+              <option value="indigo">Índigo</option>
+              <option value="graphite">Grafito</option>
+            </select>
+          </label>
+          <button type="button" id="open-library" class="button quiet">Mis auditorías</button>
           <span class="save-status" id="save-status" role="status">Preparando expediente</span>
           <button type="button" id="btn-import" class="button quiet">Importar</button>
           <button type="button" id="btn-export" class="button quiet">Guardar JSON</button>

@@ -19,8 +19,8 @@ Uso: bash audit-workbench.sh [--dir RUTA] [--ref RAMA_O_SHA] [--update] [--no-op
   --no-open  Instalar sin abrir navegador
 
 Puedes definir AUDIT_WORKBENCH_REPO=owner/repo si cambias el nombre del repositorio.
-Si ejecutas el script desde un checkout que incluye audit-workbench/, usa esos
-archivos locales sin Internet. En caso contrario descarga 3 archivos por HTTPS
+Si ejecutas el script desde audit-workbench/ en un checkout, usa esos
+archivos locales sin Internet. En caso contrario descarga los recursos de la PWA por HTTPS
 (solo en la instalación inicial). La app no hace solicitudes de red al usarla.
 HELP
 }
@@ -41,8 +41,8 @@ if [[ ! "$REF" =~ ^[A-Za-z0-9._/-]+$ || "$REF" == *..* || "$REF" == //* ]]; then
   echo 'Ref de Git inválida.' >&2; exit 2
 fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-LOCAL_SOURCE="${SCRIPT_DIR}/audit-workbench"
-FILES=(index.html styles.css app.js)
+LOCAL_SOURCE="${SCRIPT_DIR}"
+FILES=(index.html styles.css app.js manifest.webmanifest sw.js icons/icon-192.png icons/icon-512.png)
 needs_install=0
 for f in "${FILES[@]}"; do
   [[ -s "${DEST}/${f}" ]] || needs_install=1
@@ -52,6 +52,7 @@ if ((UPDATE || needs_install)); then
   stage="$(mktemp -d "${DEST}/.staging.XXXXXXXX")"
   trap 'rm -rf -- "$stage"' EXIT
   for file in "${FILES[@]}"; do
+    mkdir -p -- "$(dirname -- "${stage}/${file}")"
     if [[ -s "${LOCAL_SOURCE}/${file}" ]]; then
       cp -- "${LOCAL_SOURCE}/${file}" "${stage}/${file}"
     else
@@ -69,8 +70,7 @@ if ((UPDATE || needs_install)); then
   grep -q 'Audit Workbench' "${stage}/index.html" && grep -q 'sysadmin-tools:audit-workbench:v2' "${stage}/app.js" || {
     echo 'La descarga no parece corresponder con Audit Workbench; no se instala.' >&2; exit 1;
   }
-  for file in "${FILES[@]}"; do mv -f -- "${stage}/${file}" "${DEST}/${file}"; done
-  chmod 600 -- "${DEST}/"{index.html,styles.css,app.js}
+  for file in "${FILES[@]}"; do mkdir -p -- "$(dirname -- "${DEST}/${file}")"; mv -f -- "${stage}/${file}" "${DEST}/${file}"; chmod 600 -- "${DEST}/${file}"; done
   echo "[OK] Aplicación instalada en: ${DEST}"
 fi
 html="${DEST}/index.html"

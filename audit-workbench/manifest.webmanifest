@@ -1,0 +1,16 @@
+{
+  "name": "Audit Workbench · Auditorías informáticas",
+  "short_name": "Audit Workbench",
+  "description": "Auditorías de sistemas, seguridad e infraestructura. Edición, evidencias e informes PDF sin conexión.",
+  "id": "./",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f3f6fa",
+  "theme_color": "#102a3b",
+  "lang": "es",
+  "icons": [
+    {"src":"./icons/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any maskable"},
+    {"src":"./icons/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}
+  ]
+}

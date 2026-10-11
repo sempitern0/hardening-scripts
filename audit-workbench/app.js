@@ -2,10 +2,24 @@
 'use strict';
 (() => {
   const VERSION = 2;
-  const STORE = 'sysadmin-tools:audit-workbench:v2';
+  const LEGACY_STORE = 'sysadmin-tools:audit-workbench:v2';
+  const ACTIVE_KEY = 'sysadmin-tools:audit-workbench:active:v3';
+  const FALLBACK_KEY = 'sysadmin-tools:audit-workbench:records:v3';
+  const PALETTE_KEY = 'sysadmin-tools:audit-workbench:palette:v1';
+  const palettes = ['ocean', 'forest', 'indigo', 'graphite'];
+  const presets = {
+    hardware: ['Servidor físico', 'Servidor virtual', 'Estación de trabajo', 'Portátil', 'Tablet', 'Firewall', 'Switch', 'Router', 'Access point', 'NAS / SAN', 'Impresora', 'Hypervisor', 'UPS / SAI', 'IoT / OT'],
+    operating: ['Windows 11', 'Windows Server 2025', 'Windows Server 2022', 'Windows Server 2019', 'Debian 13', 'Debian 12', 'Ubuntu Server 24.04 LTS', 'Ubuntu Desktop', 'Rocky Linux 9', 'AlmaLinux 9', 'macOS', 'Android', 'iPadOS', 'Firmware propietario'],
+    function: ['Usuarios', 'Administración', 'Servidores', 'DMZ', 'Wi-Fi corporativa', 'Wi-Fi invitados', 'Voz / VoIP', 'Backups', 'IoT / OT', 'Almacenamiento', 'Interconexión', 'Gestión de hipervisores'],
+    support: ['Vigente', 'EOL / Fuera de soporte', 'Soporte extendido', 'Pendiente de verificar', 'No aplica'],
+    license: ['Libre / Open source', 'Propietaria', 'Suscripción', 'OEM', 'Sin licencia acreditada', 'No aplica', 'Pendiente de revisar'],
+    exposure: ['Interno', 'Perimetral', 'Internet / Pública', 'VPN', 'Segmentada', 'Sin exposición', 'Pendiente de revisar'],
+    risk: ['Crítico', 'Alto', 'Medio', 'Bajo', 'Sin evaluar'],
+    owner: ['Infraestructura', 'Seguridad / SOC', 'Sistemas', 'Redes', 'Desarrollo', 'Proveedor externo', 'Negocio', 'Pendiente de asignar']
+  };
   const LIMIT_ROWS = 500;
   const nav = [
-    ['dashboard','▦','Vista general'],['engagement','◈','Cliente y alcance'],
+    ['dashboard','▦','Vista general'],['records','▤','Auditorías guardadas'],['engagement','◈','Cliente y alcance'],
     ['assets','▤','Hardware'],['networks','◇','Redes'],['software','▧','Software'],
     ['controls','✓','Controles'],['findings','⚑','Hallazgos'],
     ['evidence','▣','Evidencias'],['delivery','▥','Informe final']
@@ -30,34 +44,34 @@
   ];
   const groups = {
     assets:{title:'Inventario de hardware',intro:'Hosts, servidores, dispositivos de red, periféricos e infraestructura física.',fields:[
-      ['name','Activo / hostname'],['type','Categoría / rol'],['vendor','Fabricante y modelo'],['serial','Número de serie'],
-      ['ip','IP / identificador'],['os','Sistema operativo / firmware'],['site','Ubicación / sede'],
-      ['owner','Responsable'],['criticality','Criticidad','select',['Sin valorar','Crítica','Alta','Media','Baja']],
+      ['name','Activo / hostname'],['type','Categoría / rol','picker',presets.hardware],['vendor','Fabricante y modelo'],['serial','Número de serie'],
+      ['ip','IP / identificador'],['os','Sistema operativo / firmware','picker',presets.operating],['site','Ubicación / sede'],
+      ['owner','Responsable','picker',presets.owner],['criticality','Criticidad','select',['Sin valorar','Crítica','Alta','Media','Baja']],
       ['state','Estado / ciclo de vida','select',['Por revisar','En servicio','Obsoleto','Fuera de servicio']],['notes','Observaciones','textarea']]},
     networks:{title:'Infraestructura de red',intro:'Segmentos, VLAN, equipamiento, servicios y exposición de red.',fields:[
       ['name','Segmento / equipo'],['cidr','Subred CIDR'],['vlan','VLAN'],['gateway','Gateway'],
-      ['dns','DNS / DHCP'],['purpose','Función / servicios'],['firewall','Firewall / controles'],
+      ['dns','DNS / DHCP'],['purpose','Función / servicios','picker',presets.function],['firewall','Firewall / controles'],
       ['exposure','Accesibilidad y segmentación','textarea'],['notes','Observaciones','textarea']]},
     software:{title:'Inventario de software y servicios',intro:'Aplicaciones instaladas, licencias, versiones, criticidad y mantenimiento.',fields:[
       ['name','Software / servicio'],['version','Versión'],['vendor','Fabricante'],['asset','Activo asociado'],
-      ['license','Licencia'],['support','Soporte / EOL'],['exposure','Exposición / función'],['notes','Observaciones','textarea']]},
+      ['license','Licencia','picker',presets.license],['support','Soporte / EOL','picker',presets.support],['exposure','Exposición / función','picker',presets.exposure],['notes','Observaciones','textarea']]},
     controls:{title:'Controles de seguridad',intro:'Registrar solo verificaciones realizadas. «No verificado» no equivale a «Conforme».',fields:[
       ['id','Identificador'],['category','Área','select',['Inventario','Identidad','Red','Sistemas','Parcheado','Backups','Monitorización','Continuidad','Protección de datos','Otro']],
-      ['name','Control / criterio'],['asset','Activo o alcance'],['status','Resultado','select',['Pendiente','Conforme','No conforme','No aplica','No verificado']],
+      ['name','Control / criterio'],['asset','Activo o alcance','picker',[]],['status','Resultado','select',['Pendiente','Conforme','No conforme','No aplica','No verificado']],
       ['method','Método de verificación','textarea'],['reference','Marco / referencia'],
       ['evidenceIds','ID(s) de evidencia'],['notes','Observaciones','textarea']]},
     findings:{title:'Hallazgos y recomendaciones',intro:'Una ficha por debilidad. La puntuación CVSS, si se indica, es manual y no implica cálculo ni validación automática.',fields:[
       ['id','Código del hallazgo'],['title','Título'],['severity','Severidad','select',['Crítica','Alta','Media','Baja','Informativa']],
       ['status','Seguimiento','select',['Abierto','En curso','Mitigado','Riesgo aceptado','Cerrado']],
-      ['asset','Activos / alcance afectados'],['cvss','CVSS (si corresponde)'],
+      ['asset','Activos / alcance afectados','picker',[]],['cvss','CVSS (si corresponde)'],
       ['likelihood','Probabilidad','select',['No evaluada','Muy alta','Alta','Media','Baja','Muy baja']],
       ['impact','Impacto','select',['No evaluado','Muy alto','Alto','Medio','Bajo','Muy bajo']],
       ['description','Descripción / situación observada','textarea'],['risk','Consecuencia y escenario de riesgo','textarea'],
       ['method','Método o herramientas utilizadas','textarea'],['evidenceIds','ID(s) de evidencia'],
       ['references','CVE / CIS / NIST / referencias','textarea'],['recommendation','Remediación propuesta','textarea'],
-      ['owner','Responsable'],['deadline','Fecha objetivo','date'],['residual','Riesgo residual / notas','textarea']]},
+      ['owner','Responsable','picker',presets.owner],['deadline','Fecha objetivo','date'],['residual','Riesgo residual / notas','textarea']]},
     evidence:{title:'Cadena documental de evidencias',intro:'Las imágenes se incrustan opcionalmente en el expediente JSON y en el PDF; conserva los originales de manera separada y segura.',fields:[
-      ['id','ID de evidencia'],['title','Título / descripción breve'],['asset','Activo / hallazgo relacionado'],
+      ['id','ID de evidencia'],['title','Título / descripción breve'],['asset','Activo / hallazgo relacionado','picker',[]],
       ['captured','Fecha de captura','date'],['source','Fuente / comando / ruta segura'],
       ['sha256','SHA-256 del original (opcional)'],['notes','Detalle, custodia y observaciones','textarea']]}
   };
@@ -92,30 +106,156 @@
     }
     return out;
   }
-  let state=fresh();let page='dashboard';let storageError=false;
-  const byId = id=>document.getElementById(id);
-  try{const stored=localStorage.getItem(STORE);if(stored)state=validate(JSON.parse(stored))}catch(e){console.warn('No se pudo cargar autoguardado',e);storageError=true}
-  function persist(){
-    try{localStorage.setItem(STORE,JSON.stringify(state));storageError=false;byId('save-status').textContent='● Autoguardado local';byId('save-status').classList.remove('warning')}
-    catch(e){storageError=true;byId('save-status').textContent='⚠ Guarda una copia JSON';byId('save-status').classList.add('warning')}
+  // Persistent multi-audit repository. IndexedDB is preferred for larger evidence images;
+  // localStorage fallback retains functionality in browsers where IDB is unavailable.
+  function openDatabase(){
+    return new Promise((resolve,reject)=>{
+      if(!('indexedDB' in globalThis))return reject(Error('IndexedDB no disponible'));
+      const request=indexedDB.open('audit-workbench-offline',1);
+      request.onupgradeneeded=()=>request.result.createObjectStore('audits',{keyPath:'id'});
+      request.onsuccess=()=>resolve(request.result);
+      request.onerror=()=>reject(request.error||Error('No se pudo abrir IndexedDB'));
+      request.onblocked=()=>reject(Error('Cierra las otras pestañas de la aplicación y reintenta.'));
+    });
+  }
+  function createRepository(){
+    let database=null;
+    const transaction=(kind,action)=>new Promise((resolve,reject)=>{
+      const tx=database.transaction('audits',kind),store=tx.objectStore('audits');
+      let result;
+      tx.oncomplete=()=>resolve(result);
+      tx.onerror=()=>reject(tx.error||Error('Error de almacenamiento'));
+      tx.onabort=()=>reject(tx.error||Error('Transacción cancelada'));
+      const req=action(store);
+      if(req)req.onsuccess=()=>{result=req.result};
+    });
+    const fallback=()=>JSON.parse(localStorage.getItem(FALLBACK_KEY)||'[]');
+    return {
+      get mode(){return database?'IndexedDB':'almacenamiento local'},
+      async init(){try{database=await openDatabase();return}catch(error){console.warn('IndexedDB no disponible; almacenamiento local alternativo:',error);localStorage.getItem(FALLBACK_KEY)}},
+      async list(){return database?transaction('readonly',s=>s.getAll()):fallback()},
+      async put(record){if(database)return transaction('readwrite',s=>s.put(record));const records=fallback().filter(r=>r.id!==record.id);records.push(record);localStorage.setItem(FALLBACK_KEY,JSON.stringify(records))},
+      async remove(id){if(database)return transaction('readwrite',s=>s.delete(id));localStorage.setItem(FALLBACK_KEY,JSON.stringify(fallback().filter(r=>r.id!==id)))}
+    };
+  }
+  const repository=createRepository();
+  const byId=id=>document.getElementById(id);
+  let state=fresh(),currentId='',page='dashboard',records=[],storageError=false,dirty=false,saveTimer=null,writeQueue=Promise.resolve();
+  let selectedPalette='ocean';
+  function updateStatus(message,warning=false){const node=byId('save-status');node.textContent=message;node.classList.toggle('warning',warning)}
+  function enqueue(action){writeQueue=writeQueue.catch(()=>{}).then(action);return writeQueue}
+  function selectPalette(value){
+    selectedPalette=palettes.includes(value)?value:'ocean';
+    document.documentElement.dataset.palette=selectedPalette;
+    byId('palette').value=selectedPalette;
+    try{localStorage.setItem(PALETTE_KEY,selectedPalette)}catch(_ignored){}
+  }
+  const newRecord=(audit=fresh())=>({id:uid(),createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),audit});
+  function setActive(record){
+    currentId=record.id;
+    state=validate(record.audit);
+    try{localStorage.setItem(ACTIVE_KEY,currentId)}catch(_ignored){}
+  }
+  function saveCurrent(){
+    clearTimeout(saveTimer);saveTimer=null;
+    if(!dirty)return writeQueue;
+    dirty=false;
+    const now=new Date().toISOString();
+    const existing=records.find(r=>r.id===currentId);
+    if(!existing)return writeQueue;
+    const snapshot={...existing,updatedAt:now,audit:structuredCloneSafe(state)};
+    updateStatus('Guardando…');
+    return enqueue(async()=>{
+      try{
+        await repository.put(snapshot);
+        const idx=records.findIndex(r=>r.id===snapshot.id);
+        if(idx>=0&&records[idx].updatedAt<=snapshot.updatedAt)records[idx]=snapshot;
+        storageError=false;
+        if(!dirty)updateStatus('● Guardado · '+repository.mode);
+      }catch(error){
+        console.error('No se pudo guardar el expediente',error);
+        dirty=true;storageError=true;
+        updateStatus('⚠ Sin guardar: exporta JSON',true);
+      }
+    });
+  }
+  function structuredCloneSafe(value){return JSON.parse(JSON.stringify(value))}
+  function persist(){dirty=true;updateStatus('Cambios pendientes…');clearTimeout(saveTimer);saveTimer=setTimeout(()=>void saveCurrent(),250)}
+  async function flush(){if(saveTimer){clearTimeout(saveTimer);saveTimer=null}await saveCurrent();await writeQueue;if(storageError)throw Error('El expediente no se pudo guardar. Exporta el JSON antes de cambiar de auditoría.')}
+  async function initialLoad(){
+    try{
+      await repository.init();
+      records=(await repository.list()).filter(r=>r&&typeof r.id==='string'&&r.audit&&r.audit.schemaVersion===VERSION);
+      if(records.length===0){
+        let audit=fresh();
+        try{const legacy=localStorage.getItem(LEGACY_STORE);if(legacy)audit=validate(JSON.parse(legacy))}catch(error){console.warn('No se pudo migrar el expediente antiguo',error)}
+        const first=newRecord(audit);await repository.put(first);records=[first];
+      }
+      let lastId='';try{lastId=localStorage.getItem(ACTIVE_KEY)||''}catch(_ignored){}
+      const active=records.find(r=>r.id===lastId)||[...records].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0];
+      setActive(active);updateStatus('● Guardado · '+repository.mode);
+    }catch(error){console.error('No se pudo inicializar la persistencia',error);storageError=true;currentId=uid();updateStatus('⚠ Sin almacenamiento · exporta JSON',true)}
+    render();
+  }
+  async function createAudit(audit=fresh()){
+    try{await flush();const record=newRecord(audit);await enqueue(()=>repository.put(record));records.push(record);setActive(record);move('engagement')}
+    catch(error){alert('No se ha creado la auditoría: '+error.message)}
+  }
+  async function switchAudit(id){
+    const record=records.find(r=>r.id===id);if(!record)return;
+    try{await flush();setActive(record);move('dashboard')}
+    catch(error){alert(error.message)}
+  }
+  async function deleteAudit(id){
+    const record=records.find(r=>r.id===id);if(!record||!confirm(`¿Eliminar definitivamente la auditoría "${record.audit?.meta?.project||record.audit?.meta?.client||'Sin título'}" de este navegador? Exporta el JSON antes de continuar.`))return;
+    try{
+      await flush();await enqueue(()=>repository.remove(id));records=records.filter(r=>r.id!==id);
+      if(currentId===id){
+        if(records.length===0){const freshRecord=newRecord();await enqueue(()=>repository.put(freshRecord));records.push(freshRecord)}
+        setActive([...records].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0]);
+      }
+      move('records');
+    }catch(error){alert('No se pudo eliminar: '+error.message)}
+  }
+  async function duplicateAudit(id){
+    const original=records.find(r=>r.id===id);if(!original)return;
+    const copy=structuredCloneSafe(original.audit);copy.meta.project=(copy.meta.project||'Auditoría')+' · Copia';
+    await createAudit(copy);
   }
   function download(filename,content,type){const url=URL.createObjectURL(new Blob([content],{type}));const a=document.createElement('a');a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),60000)}
   function renderField(obj,block,def,index){
-    const [name,label,type,choices]=def;const attributes=`data-block="${html(block)}" data-field="${html(name)}"`+(index===undefined?'':` data-index="${index}"`);
-    const value=str(obj[name]);const id='f-'+block+'-'+(index===undefined?'main':index)+'-'+name;
-    const control=type==='textarea'?`<textarea id="${id}" ${attributes}>${html(value)}</textarea>`:type==='select'?`<select id="${id}" ${attributes}>${choices.map(x=>`<option value="${html(x)}"${x===value?' selected':''}>${html(x)}</option>`).join('')}</select>`:`<input id="${id}" type="${type==='date'?'date':'text'}" ${attributes} value="${html(value)}" maxlength="20000">`;
+    const [name,label,type,choices]=def;
+    const attrs=`data-block="${html(block)}" data-field="${html(name)}"`+(index===undefined?'':` data-index="${index}"`);
+    const value=str(obj[name]),id='f-'+block+'-'+(index===undefined?'main':index)+'-'+name;
+    const key=/^(vlan|cvss|serial)$/.test(name)?'decimal':'text';
+    let control;
+    if(type==='textarea')control=`<textarea id="${id}" ${attrs} maxlength="20000">${html(value)}</textarea>`;
+    else if(type==='select')control=`<select id="${id}" ${attrs}>${choices.map(x=>`<option value="${html(x)}"${x===value?' selected':''}>${html(x)}</option>`).join('')}</select>`;
+    else if(type==='picker'){
+      // A native select is easier on touchscreens; unlisted values remain editable.
+      const options=name==='asset'?[...new Set(['Todo el alcance',...state.assets.map(a=>str(a.name)).filter(Boolean)])]:choices;
+      const custom=Boolean(value)&&!options.includes(value);
+      control=`<select id="${id}" ${attrs} data-preset="true" aria-label="${html(label)}"><option value="">Seleccionar…</option>${options.map(x=>`<option value="${html(x)}"${x===value?' selected':''}>${html(x)}</option>`).join('')}<option value="__custom__"${custom?' selected':''}>Otro / escribir…</option></select><input ${attrs} data-custom="true" aria-label="${html(label)} personalizado" placeholder="Especifica el valor" value="${custom?html(value):''}" maxlength="20000" ${custom?'':'hidden'}>`;
+    }else control=`<input id="${id}" type="${type==='date'?'date':'text'}" ${attrs} value="${html(value)}" maxlength="20000"${key==='decimal'?' inputmode="decimal"':''}>`;
     return `<div class="field${type==='textarea'?' full':''}"><label for="${id}">${html(label)}</label>${control}</div>`;
   }
   function pill(v){return `<span class="pill ${level(v)}">${html(v||'Sin clasificar')}</span>`}
   function metric(title,note,count){return `<div class="stat"><span class="metric">${count}</span><span class="metric-caption">${title}</span><span class="metric-foot">${note}</span></div>`}
   function renderOverview(){
     const counts=Object.fromEntries(severity.map(s=>[s,state.findings.filter(x=>x.severity===s).length]));
-    const all=Math.max(1,state.findings.length);
     return `<section class="hero"><span class="eyebrow">AUDIT / WORKSPACE</span><h2>${html(state.meta.project||'Tu próxima auditoría, bien documentada.')}</h2><p>Inventario técnico, evaluación de controles, gestión de hallazgos y un informe final coherente. Toda la información permanece en este navegador hasta que tú la exportes.</p><button class="button" data-go="engagement">Comenzar auditoría &rarr;</button></section>
       <section class="stats">${metric('Equipos inventariados','Hardware',state.assets.length)}${metric('Segmentos registrados','Infraestructura',state.networks.length)}${metric('Controles evaluados','Seguridad',state.controls.length)}${metric('Hallazgos','Gestión de riesgos',state.findings.length)}</section>
-      <div class="grid-two"><section class="card"><h2>Distribución de severidades</h2><p class="subtle">Se calcula únicamente a partir de los hallazgos documentados.</p><div class="severity-line">${severity.map(s=>`<span style="background:${counts[s]?({'Crítica':'#bd354c','Alta':'#ee9359','Media':'#e6bd58','Baja':'#66b8a0','Informativa':'#8bb8d8'})[s]:'#dce5ed'};opacity:${.3+.7*Math.min(1,counts[s]/all*3)}" title="${s}: ${counts[s]}"></span>`).join('')}</div><div class="severity-legend">${severity.map(s=>`<span><strong>${counts[s]}</strong> ${s}</span>`).join('')}</div></section>
+      <div class="grid-two"><section class="card"><h2>Distribución de severidades</h2><p class="subtle">Se calcula únicamente a partir de los hallazgos documentados.</p><div class="severity-line">${severity.map(s=>`<span class="sev-bar ${level(s)} ${counts[s]?'with-count':''}" title="${html(s)}: ${counts[s]}"></span>`).join('')}</div><div class="severity-legend">${severity.map(s=>`<span><strong>${counts[s]}</strong> ${s}</span>`).join('')}</div></section>
       <section class="card"><h2>Flujo recomendado</h2><div class="timeline"><div><b>01</b><span>Delimita objetivos, exclusiones y autorización<small>Cliente y alcance</small></span></div><div><b>02</b><span>Inventaría sistemas, aplicaciones y redes<small>Hardware · Redes · Software</small></span></div><div><b>03</b><span>Registra controles, evidencias y hallazgos<small>Pruebas verificadas y remediación</small></span></div><div><b>04</b><span>Revisa y entrega el informe final<small>Guardar JSON · Generar PDF</small></span></div></div></section></div>
       <div class="notice warn"><strong>Confidencialidad operativa.</strong> No introduzcas contraseñas, tokens ni hashes de autenticación sin tratar. Almacena el expediente JSON y los PDF en un disco cifrado. Exporta frecuentemente una copia: el autoguardado del navegador no constituye una copia de seguridad.</div>`;
+  }
+  function renderRecords(){
+    const search=(byId('record-filter')?.value||'').toLocaleLowerCase('es');
+    const items=[...records].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)).filter(r=>[r.audit.meta.client,r.audit.meta.project,r.audit.meta.reportId].some(v=>(v||'').toLocaleLowerCase('es').includes(search)));
+    return `<span class="eyebrow">BIBLIOTECA / EXPEDIENTES LOCALES</span><h1 class="page-title">Auditorías guardadas</h1><p class="lead">Cada expediente se guarda por separado en este navegador. Puedes abrirlo, duplicarlo, exportarlo o borrarlo.</p><section class="card"><div class="card-head"><div><h2>${records.length} auditorías</h2><p class="subtle">Almacenamiento ${html(repository.mode)} · No sincronizado entre dispositivos.</p></div><button class="button accent" data-new="true">+ Nueva auditoría</button></div><div class="library-toolbar"><label for="record-filter">Buscar por cliente, proyecto o referencia</label><input id="record-filter" type="search" value="${html(search)}" placeholder="Buscar auditorías…" autocomplete="off"></div><div id="record-list">${recordsMarkup(items)}</div></section><div class="notice warn">Una auditoría guardada en el navegador no equivale a una copia de seguridad. Exporta el JSON a un directorio cifrado antes de entregar el equipo o borrar los datos del navegador.</div>`;
+  }
+  function recordsMarkup(items){
+    return items.length?items.map(r=>`<article class="audit-row${r.id===currentId?' current':''}"><div class="audit-description"><span class="eyebrow">${r.id===currentId?'ABIERTA · ':''}${html(r.audit.meta.reportId||'SIN REFERENCIA')}</span><h3>${html(r.audit.meta.project||'Auditoría sin título')}</h3><p>${html(r.audit.meta.client||'Cliente por identificar')} · Actualizada ${html(new Date(r.updatedAt).toLocaleString('es-ES'))}</p><small>${r.audit.assets.length} equipos · ${r.audit.findings.length} hallazgos · ${r.audit.controls.length} controles</small></div><div class="audit-actions"><button class="button accent" data-open="${html(r.id)}">Editar</button><button class="button quiet" data-copy="${html(r.id)}">Duplicar</button><button class="button quiet" data-export-record="${html(r.id)}">JSON</button><button class="button danger" data-delete-record="${html(r.id)}">Borrar</button></div></article>`).join(''):'<div class="empty"><b>Sin resultados</b>Prueba otro nombre o crea una auditoría.</div>';
   }
   function renderForm(block,fields,title,intro){return `<span class="eyebrow">AUDITORÍA / DOCUMENTACIÓN</span><h1 class="page-title">${title}</h1><p class="lead">${intro}</p><section class="card"><div class="fields">${fields.map(f=>renderField(state[block],block,f)).join('')}</div></section>`}
   function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p><section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Cada dato registrado podrá aparecer en el informe y en la copia JSON.</p></div><button class="button accent" data-add="${block}">+ Añadir registro</button></div>${rows.length?rows.map((r,i)=>`<div class="entry"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="fields">${def.fields.map(f=>renderField(r,block,f,i)).join('')}</div>${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Captura opcional</strong> (PNG, JPG, WebP hasta 5 MiB; se optimiza localmente)</label><input type="file" accept="image/png,image/jpeg,image/webp" data-image-index="${i}" id="evidence-upload-${i}">${r.image?`<img class="evidence-preview" alt="Evidencia incrustada" src="${r.image}"><button class="button small danger" data-clear-image="${i}">Quitar imagen</button>`:''}</div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
@@ -123,30 +263,52 @@
   function render(){
     byId('navigation').innerHTML=nav.map(([id,symbol,name])=>`<button type="button" data-go="${id}" class="${page===id?'active':''}" ${page===id?'aria-current="page"':''}><span class="nav-mark">${symbol}</span>${name}</button>`).join('');
     byId('current-section').textContent=nav.find(n=>n[0]===page)[2];
-    byId('workspace').innerHTML=page==='dashboard'?renderOverview():page==='engagement'?renderForm('meta',metaFields,'Cliente y alcance','Contexto, autorización, alcance, metodología y limitaciones de la evaluación.'):page==='delivery'?renderDelivery():renderGroup(page);
+    byId('workspace').innerHTML=page==='dashboard'?renderOverview():page==='records'?renderRecords():page==='engagement'?renderForm('meta',metaFields,'Cliente y alcance','Contexto, autorización, alcance, metodología y limitaciones de la evaluación.'):page==='delivery'?renderDelivery():renderGroup(page);
   }
   function move(section){if(nav.some(n=>n[0]===section)){page=section;render();scrollTo(0,0)}}
   function fieldTarget(target){const {block,field,index}=target.dataset;if(!block||!field)return null;if(block==='meta'||block==='final')return state[block];if(groups[block]&&index!==undefined)return state[block][Number(index)];return null}
   const workspace=byId('workspace');
-  document.getElementById('navigation').addEventListener('click',e=>{const b=e.target.closest('[data-go]');if(b)move(b.dataset.go)});
-  workspace.addEventListener('input',e=>{const t=e.target;const obj=fieldTarget(t);if(obj){obj[t.dataset.field]=t.value;persist()}});
+  byId('navigation').addEventListener('click',e=>{const b=e.target.closest('[data-go]');if(b)move(b.dataset.go)});
+  workspace.addEventListener('input',e=>{
+    const t=e.target;
+    if(t.id==='record-filter'){
+      const term=t.value.toLocaleLowerCase('es');
+      const matches=[...records].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)).filter(r=>[r.audit.meta.client,r.audit.meta.project,r.audit.meta.reportId].some(v=>(v||'').toLocaleLowerCase('es').includes(term)));
+      byId('record-list').innerHTML=recordsMarkup(matches);return;
+    }
+    if(t.dataset.preset)return;
+    const obj=fieldTarget(t);if(obj){obj[t.dataset.field]=t.value;persist()}
+  });
   workspace.addEventListener('change',async e=>{
     const t=e.target;
     if(t.dataset.imageIndex!==undefined&&t.files?.length){
-      try{const image=await resizeImage(t.files[0]);state.evidence[Number(t.dataset.imageIndex)].image=image;persist();render()}
-      catch(err){alert('No se pudo incorporar la imagen: '+err.message);t.value=''}
-      return;
+      const id=currentId,recordKey=state.evidence[Number(t.dataset.imageIndex)]?._key;
+      try{const image=await resizeImage(t.files[0]);if(id!==currentId)throw Error('Ha cambiado el expediente.');const record=state.evidence.find(x=>x._key===recordKey);if(!record)throw Error('No se encontró la evidencia.');record.image=image;persist();render()}
+      catch(err){alert('No se pudo incorporar la imagen: '+err.message);t.value=''}return;
     }
-    const obj=fieldTarget(t);if(obj){obj[t.dataset.field]=t.value;persist()}
+    const obj=fieldTarget(t);if(!obj)return;
+    if(t.dataset.preset){
+      const custom=t.closest('.field').querySelector('[data-custom]');
+      const isOther=t.value==='__custom__';custom.hidden=!isOther;
+      obj[t.dataset.field]=isOther?custom.value:t.value;
+      if(isOther)custom.focus();persist();return;
+    }
+    obj[t.dataset.field]=t.value;persist();
   });
-  workspace.addEventListener('click',e=>{
+  workspace.addEventListener('click',async e=>{
     const b=e.target.closest('button');if(!b)return;
     if(b.dataset.go){move(b.dataset.go);return}
+    if(b.dataset.new){await createAudit();return}
+    if(b.dataset.open){await switchAudit(b.dataset.open);return}
+    if(b.dataset.copy){await duplicateAudit(b.dataset.copy);return}
+    if(b.dataset.deleteRecord){await deleteAudit(b.dataset.deleteRecord);return}
+    if(b.dataset.exportRecord){const r=records.find(r=>r.id===b.dataset.exportRecord);if(r)exportJson(r.id===currentId?state:r.audit);return}
     if(b.dataset.add){if(state[b.dataset.add].length>=LIMIT_ROWS)return alert('Límite de registros alcanzado.');const type=b.dataset.add;let row={_key:uid()};if(type==='findings')row={...row,id:'AUD-'+String(state.findings.length+1).padStart(3,'0'),severity:'Media',status:'Abierto'};if(type==='controls')row.status='Pendiente';if(type==='evidence')row.id='EVI-'+String(state.evidence.length+1).padStart(3,'0');state[type].push(row);persist();render();return}
     if(b.dataset.remove){const k=b.dataset.remove,i=Number(b.dataset.index);if(confirm('¿Eliminar este registro y su contenido?')){state[k].splice(i,1);persist();render()}return}
     if(b.dataset.clearImage!==undefined){if(confirm('¿Eliminar la imagen incrustada?')){state.evidence[Number(b.dataset.clearImage)].image='';persist();render()}return}
-    if(b.id==='delivery-pdf'){printReport();return}if(b.id==='delivery-json'){exportJson();return}
-    if(b.id==='delivery-reset'){reset();return}
+    if(b.id==='delivery-pdf'){printReport();return}
+    if(b.id==='delivery-json'){exportJson();return}
+    if(b.id==='delivery-reset'){await createAudit();return}
   });
   function resizeImage(file){
     if(!['image/png','image/jpeg','image/webp'].includes(file.type))return Promise.reject(Error('Formato no permitido.'));
@@ -157,14 +319,20 @@
       img.onerror=()=>{URL.revokeObjectURL(url);reject(Error('No se pudo abrir el archivo.'))};img.src=url;
     });
   }
-  function exportJson(){const name='auditoria-'+slug(state.meta.client)+'-'+new Date().toISOString().slice(0,10)+'.json';download(name,JSON.stringify(state,null,2),'application/json;charset=utf-8')}
-  async function importJson(file){try{if(file.size>20*1024*1024)throw Error('El archivo supera 20 MiB.');const loaded=validate(JSON.parse(await file.text()));if(!confirm('Se sustituirá el expediente actual. Exporta antes una copia si la necesitas. ¿Continuar?'))return;state=loaded;persist();move('dashboard')}catch(e){alert('No se pudo importar el JSON: '+e.message)}}
-  function reset(){if(!confirm('¿Crear un expediente vacío? Guarda antes el JSON del proyecto actual.'))return;state=fresh();persist();move('dashboard')}
+  function exportJson(audit=state){const name='auditoria-'+slug(audit.meta.client)+'-'+new Date().toISOString().slice(0,10)+'.json';download(name,JSON.stringify(audit,null,2),'application/json;charset=utf-8')}
+  async function importJson(file){
+    try{
+      if(file.size>20*1024*1024)throw Error('El archivo supera 20 MiB.');
+      const loaded=validate(JSON.parse(await file.text()));
+      if(!confirm('Se importará como una nueva auditoría sin sustituir los expedientes guardados. ¿Continuar?'))return;
+      await createAudit(loaded);
+    }catch(error){alert('No se pudo importar el JSON: '+error.message)}
+  }
   byId('btn-import').addEventListener('click',()=>byId('input-import').click());
   byId('input-import').addEventListener('change',async e=>{if(e.target.files?.[0])await importJson(e.target.files[0]);e.target.value=''});
   byId('btn-export').addEventListener('click',exportJson);
   byId('btn-pdf').addEventListener('click',printReport);
-  const table = (fields,row) => `<table class="report-table"><tbody>${fields.map(([name,label])=>`<tr><th style="width:29%">${html(label)}</th><td>${para(row[name])}</td></tr>`).join('')}</tbody></table>`;
+  const table = (fields,row) => `<table class="report-table"><tbody>${fields.map(([name,label])=>`<tr><th class="report-field-label">${html(label)}</th><td>${para(row[name])}</td></tr>`).join('')}</tbody></table>`;
   const section = (num,title,content) => `<section class="report-section"><h2>${num}. ${html(title)}</h2>${content}</section>`;
   function reportRows(k){const rows=state[k];return rows.length?rows.map((row,i)=>`<h3>${i+1}. ${html(row.title||row.name||row.id||'Registro')}</h3>${table(groups[k].fields,row)}${k==='evidence'&&row.image?`<figure><img class="report-evidence" alt="Evidencia ${html(row.id)}" src="${row.image}"><figcaption class="report-note">${html(row.id||'Evidencia')}: ${html(row.title||'Captura adjunta')}</figcaption></figure>`:''}`).join(''):'<p class="report-empty">Sin registros incluidos en esta categoría.</p>'}
   function buildReport(){
@@ -182,5 +350,14 @@
   }
   function printReport(){buildReport();window.print()}
   window.addEventListener('beforeprint',buildReport);
-  byId('local-date').textContent=new Date().toLocaleDateString('es-ES');render();if(storageError){byId('save-status').textContent='⚠ Exporta JSON (autoguardado no disponible)';byId('save-status').classList.add('warning')}else persist();
+  byId('palette').addEventListener('change',event=>selectPalette(event.target.value));
+  byId('open-library').addEventListener('click',async()=>{try{await flush();move('records')}catch(error){alert(error.message)}});
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')void saveCurrent()});
+  window.addEventListener('pagehide',()=>void saveCurrent());
+  byId('local-date').textContent=new Date().toLocaleDateString('es-ES');
+  try{selectPalette(localStorage.getItem(PALETTE_KEY)||'ocean')}catch(_ignored){selectPalette('ocean')}
+  void initialLoad();
+  if('serviceWorker' in navigator && ['https:','http:'].includes(location.protocol) && (location.protocol==='https:'||['localhost','127.0.0.1'].includes(location.hostname))){
+    window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js',{scope:'./'}).catch(error=>console.warn('PWA no disponible:',error)));
+  }
 })();

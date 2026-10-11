@@ -14,10 +14,10 @@ if ($Repository -notmatch '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$') { throw 'Reposito
 if ($Ref -notmatch '^[A-Za-z0-9._/-]+$' -or $Ref.Contains('..') -or $Ref.StartsWith('//')) {
     throw 'Ref de Git inválida.'
 }
-$files = @('index.html','styles.css','app.js')
+$files = @('index.html','styles.css','app.js','manifest.webmanifest','sw.js','icons/icon-192.png','icons/icon-512.png')
 # $PSScriptRoot is empty when executed via Invoke-Expression (irm ... | iex).
 # Local checkout takes precedence; piped one-liners download the app once.
-$source = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'audit-workbench' } else { $null }
+$source = if ($PSScriptRoot) { $PSScriptRoot } else { $null }
 $required = $Update.IsPresent
 foreach ($name in $files) {
     $path = Join-Path $OutputDirectory $name
@@ -33,6 +33,8 @@ if ($required) {
         foreach ($name in $files) {
             $sourceFile = if ($source) { Join-Path $source $name } else { $null }
             $stagedFile = Join-Path $stage $name
+            $parent = Split-Path -Parent $stagedFile
+            if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
             if ($source -and (Test-Path -LiteralPath $sourceFile -PathType Leaf)) {
                 Copy-Item -LiteralPath $sourceFile -Destination $stagedFile
             } else {
@@ -48,6 +50,8 @@ if ($required) {
             throw 'La descarga no corresponde con Audit Workbench.'
         }
         foreach ($name in $files) {
+            $destinationParent = Split-Path -Parent (Join-Path $OutputDirectory $name)
+            if (-not (Test-Path -LiteralPath $destinationParent)) { New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null }
             Move-Item -LiteralPath (Join-Path $stage $name) -Destination (Join-Path $OutputDirectory $name) -Force
         }
         Write-Host "[OK] Aplicación instalada: $OutputDirectory"
