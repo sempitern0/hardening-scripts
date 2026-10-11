@@ -8,9 +8,28 @@
   const PALETTE_KEY = 'sysadmin-tools:audit-workbench:palette:v1';
   const palettes = ['ocean', 'forest', 'indigo', 'graphite', 'midnight', 'obsidian', 'pine-dark', 'amethyst-dark', 'crimson-dark'];
   const CVE_PATTERN = /^CVE-(?:1999|2\d{3})-\d{4,}$/i;
-  const safeLogo = value => typeof value === 'string' && value.length <= 650000 && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(value) ? value : '';
+  const safeLogo = value => typeof value === 'string' && value.length <= 850000 && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(value) ? value : '';
   const hardwareVendors = ['Dell', 'HPE / Hewlett Packard Enterprise', 'HP', 'Lenovo', 'Cisco', 'Fortinet', 'Palo Alto Networks', 'Juniper', 'Ubiquiti', 'MikroTik', 'Aruba / HPE', 'Netgear', 'TP-Link', 'Synology', 'QNAP', 'Supermicro', 'IBM', 'Fujitsu', 'Huawei', 'ASUS', 'Acer', 'Apple', 'Samsung', 'Intel', 'AMD', 'VMware', 'Proxmox', 'Nutanix', 'APC / Schneider Electric', 'Eaton', 'Zyxel', 'Sophos', 'SonicWall', 'WatchGuard', 'Brother', 'Epson', 'Canon'];
   const hardwareModels = ['PowerEdge R350', 'PowerEdge R450', 'PowerEdge R550', 'PowerEdge R650', 'PowerEdge R750', 'PowerEdge R760', 'ProLiant DL360 Gen10', 'ProLiant DL380 Gen10', 'ProLiant DL360 Gen11', 'ProLiant DL380 Gen11', 'ThinkSystem SR630', 'ThinkSystem SR650', 'Catalyst 9200', 'Catalyst 9300', 'Catalyst 9500', 'FortiGate 40F', 'FortiGate 60F', 'FortiGate 80F', 'FortiGate 100F', 'FortiGate 200F', 'PA-440', 'PA-820', 'UniFi Dream Machine', 'UniFi Dream Machine Pro', 'UniFi Switch Pro', 'UniFi U6 Pro', 'UniFi U7 Pro', 'MikroTik CCR2004', 'MikroTik RB5009', 'Synology DS923+', 'Synology DS1522+', 'QNAP TS-464', 'QNAP TS-873A', 'Proxmox VE (VM)', 'VMware ESXi (VM)', 'Hyper-V (VM)', 'APC Smart-UPS', 'Eaton 9PX'];
+  // Exact family mapping: unknown vendors retain an explicit manual option.
+  // Do not infer compatibility or invent models from the global catalog.
+  const vendorModels = Object.freeze({
+    'Dell':['PowerEdge R350','PowerEdge R450','PowerEdge R550','PowerEdge R650','PowerEdge R750','PowerEdge R760'],
+    'HPE / Hewlett Packard Enterprise':['ProLiant DL360 Gen10','ProLiant DL380 Gen10','ProLiant DL360 Gen11','ProLiant DL380 Gen11'],
+    'Lenovo':['ThinkSystem SR630','ThinkSystem SR650'],
+    'Cisco':['Catalyst 9200','Catalyst 9300','Catalyst 9500'],
+    'Fortinet':['FortiGate 40F','FortiGate 60F','FortiGate 80F','FortiGate 100F','FortiGate 200F'],
+    'Palo Alto Networks':['PA-440','PA-820'],
+    'Ubiquiti':['UniFi Dream Machine','UniFi Dream Machine Pro','UniFi Switch Pro','UniFi U6 Pro','UniFi U7 Pro'],
+    'MikroTik':['MikroTik CCR2004','MikroTik RB5009'],
+    'Synology':['Synology DS923+','Synology DS1522+'],
+    'QNAP':['QNAP TS-464','QNAP TS-873A'],
+    'APC / Schneider Electric':['APC Smart-UPS'],
+    'Eaton':['Eaton 9PX'],
+    'VMware':['VMware ESXi (VM)'],
+    'Proxmox':['Proxmox VE (VM)'],
+    'Microsoft':['Hyper-V (VM)']
+  });
   const presets = {
     hardware: ['Servidor físico', 'Servidor virtual', 'Estación de trabajo', 'Portátil', 'Tablet', 'Firewall', 'Switch', 'Router', 'Access point', 'NAS / SAN', 'Impresora', 'Hypervisor', 'UPS / SAI', 'IoT / OT'],
     operating: ['Windows 11 Pro', 'Windows 11 Enterprise', 'Windows 10 (EOL)', 'Windows Server 2025', 'Windows Server 2022', 'Windows Server 2019', 'Windows Server 2016', 'Windows Server 2012 R2 (EOL)', 'Debian 13', 'Debian 12', 'Debian 11', 'Ubuntu Server 26.04 LTS', 'Ubuntu Server 24.04 LTS', 'Ubuntu Server 22.04 LTS', 'Ubuntu Desktop 24.04 LTS', 'RHEL 10', 'RHEL 9', 'RHEL 8', 'Rocky Linux 10', 'Rocky Linux 9', 'AlmaLinux 10', 'AlmaLinux 9', 'Fedora Server', 'CentOS Stream 10', 'SUSE Linux Enterprise 15', 'openSUSE Leap', 'Arch Linux', 'Alpine Linux', 'Proxmox VE 9', 'Proxmox VE 8', 'VMware ESXi 8', 'VMware ESXi 7', 'Hyper-V Server / Windows Hyper-V', 'TrueNAS SCALE', 'pfSense Plus', 'pfSense CE', 'OPNsense', 'FortiOS', 'Cisco IOS / IOS XE', 'Cisco NX-OS', 'RouterOS', 'UniFi OS', 'Synology DSM 7', 'QTS / QuTS hero', 'macOS Sequoia', 'macOS Tahoe', 'iOS', 'iPadOS', 'Android', 'ChromeOS', 'FreeBSD', 'OpenBSD', 'Firmware propietario', 'SO no identificado'],
@@ -27,7 +46,7 @@
   };
   const LIMIT_ROWS = 500;
   const nav = [
-    ['dashboard','▦','Vista general'],['records','▤','Auditorías guardadas'],['engagement','◈','Cliente y alcance'],
+    ['dashboard','▦','Resumen del expediente'],['engagement','◈','Cliente y alcance'],
     ['assets','▤','Hardware'],['networks','◇','Redes'],['software','▧','Software'],['cves','◉','Vulnerabilidades CVE'],
     ['controls','✓','Controles'],['findings','⚑','Hallazgos'],
     ['evidence','▣','Evidencias'],['legal','§','Cláusulas y privacidad'],['delivery','▥','Informe final']
@@ -174,14 +193,16 @@
   }
   const repository=createRepository();
   const byId=id=>document.getElementById(id);
-  let state=fresh(),currentId='',page='dashboard',records=[],storageError=false,dirty=false,saveTimer=null,writeQueue=Promise.resolve();
-  let selectedPalette='ocean';
+  let state=fresh(),currentId='',page='records',records=[],storageError=false,dirty=false,saveTimer=null,writeQueue=Promise.resolve();
+  let selectedPalette='ocean', deferredInstallPrompt=null;
   function updateStatus(message,warning=false){const node=byId('save-status');node.textContent=message;node.classList.toggle('warning',warning)}
   function enqueue(action){writeQueue=writeQueue.catch(()=>{}).then(action);return writeQueue}
   function selectPalette(value){
     selectedPalette=palettes.includes(value)?value:'ocean';
     document.documentElement.dataset.palette=selectedPalette;
     byId('palette').value=selectedPalette;
+    byId('report').dataset.palette=selectedPalette;
+    byId('pdf-theme').textContent=byId('palette').selectedOptions[0]?.textContent||selectedPalette;
     try{localStorage.setItem(PALETTE_KEY,selectedPalette)}catch(_ignored){}
   }
   const newRecord=(audit=fresh())=>({id:uid(),createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),audit});
@@ -221,13 +242,17 @@
       await repository.init();
       records=(await repository.list()).filter(r=>r&&typeof r.id==='string'&&r.audit&&r.audit.schemaVersion===VERSION);
       if(records.length===0){
-        let audit=fresh();
-        try{const legacy=localStorage.getItem(LEGACY_STORE);if(legacy)audit=validate(JSON.parse(legacy))}catch(error){console.warn('No se pudo migrar el expediente antiguo',error)}
-        const first=newRecord(audit);await repository.put(first);records=[first];
+        // No empty report is created implicitly. A new audit is an explicit action.
+        let legacy=null;
+        try{const input=localStorage.getItem(LEGACY_STORE);if(input)legacy=validate(JSON.parse(input))}catch(error){console.warn('No se pudo recuperar un expediente heredado',error)}
+        if(legacy){const first=newRecord(legacy);await repository.put(first);records=[first]}
       }
-      let lastId='';try{lastId=localStorage.getItem(ACTIVE_KEY)||''}catch(_ignored){}
-      const active=records.find(r=>r.id===lastId)||[...records].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0];
-      setActive(active);updateStatus('● Guardado · '+repository.mode);
+      if(records.length){
+        let lastId='';try{lastId=localStorage.getItem(ACTIVE_KEY)||''}catch(_ignored){}
+        const active=records.find(r=>r.id===lastId)||[...records].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0];
+        setActive(active);
+      }
+      updateStatus('● Biblioteca preparada · '+repository.mode);
     }catch(error){console.error('No se pudo inicializar la persistencia',error);storageError=true;currentId=uid();updateStatus('⚠ Sin almacenamiento · exporta JSON',true)}
     render();
   }
@@ -245,8 +270,8 @@
     try{
       await flush();await enqueue(()=>repository.remove(id));records=records.filter(r=>r.id!==id);
       if(currentId===id){
-        if(records.length===0){const freshRecord=newRecord();await enqueue(()=>repository.put(freshRecord));records.push(freshRecord)}
-        setActive([...records].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0]);
+        if(records.length){setActive([...records].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0])}
+        else{currentId='';state=fresh();try{localStorage.removeItem(ACTIVE_KEY)}catch(_ignored){}}
       }
       move('records');
     }catch(error){alert('No se pudo eliminar: '+error.message)}
@@ -267,7 +292,7 @@
     else if(type==='select')control=`<select id="${id}" ${attrs}>${choices.map(x=>`<option value="${html(x)}"${x===value?' selected':''}>${html(x)}</option>`).join('')}</select>`;
     else if(type==='picker'){
       // A native select is easier on touchscreens; unlisted values remain editable.
-      const options=name==='asset'?[...new Set(['Todo el alcance',...state.assets.map(a=>str(a.name)).filter(Boolean)])]:choices;
+      const options=name==='asset'?[...new Set(['Todo el alcance',...state.assets.map(a=>str(a.name)).filter(Boolean)])]:block==='assets'&&name==='model'?(vendorModels[obj.vendor]||[]):choices;
       const custom=Boolean(value)&&!options.includes(value);
       control=`<select id="${id}" ${attrs} data-preset="true" aria-label="${html(label)}"><option value="">Seleccionar…</option>${options.map(x=>`<option value="${html(x)}"${x===value?' selected':''}>${html(x)}</option>`).join('')}<option value="__custom__"${custom?' selected':''}>Otro / escribir…</option></select><input ${attrs} data-custom="true" aria-label="${html(label)} personalizado" placeholder="Especifica el valor" value="${custom?html(value):''}" maxlength="20000" ${custom?'':'hidden'}>`;
     }else control=`<input id="${id}" type="${type==='date'?'date':'text'}" ${attrs} value="${html(value)}" maxlength="20000"${key==='decimal'?' inputmode="decimal"':''}>`;
@@ -297,15 +322,34 @@
       `<section class="card"><h2>Identidad corporativa del informe</h2><p class="subtle">Adjunta tu logo o el de la consultora (PNG, JPEG o WebP; máximo 3 MiB). Se convierte a JPEG y se incluye en el JSON exportado y en la portada del PDF. No se sube a Internet.</p><input id="logo-upload" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Seleccionar logotipo corporativo">${state.meta.logo?`<div class="logo-preview"><img src="${state.meta.logo}" alt="Logotipo corporativo incorporado"><button type="button" class="button danger small" id="logo-remove">Eliminar logotipo</button></div>`:''}</section>`;
   }
   function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p><section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Cada dato registrado podrá aparecer en el informe y en la copia JSON.</p></div><button class="button accent" data-add="${block}">+ Añadir registro</button></div>${rows.length?rows.map((r,i)=>`<div class="entry"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="fields">${def.fields.map(f=>renderField(r,block,f,i)).join('')}</div>${block==='cves'?`<div class="cve-tools"><button class="button quiet small" type="button" data-cve-check="${i}">Consultar CVE online (opcional)</button><button class="button small" type="button" data-cve-link="${i}">Ver en CVE.org ↗</button><span class="subtle">Solo se envía el identificador CVE, nunca los datos del cliente.</span></div>`:''}${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Captura opcional</strong> (PNG, JPG, WebP hasta 5 MiB; se optimiza localmente)</label><input type="file" accept="image/png,image/jpeg,image/webp" data-image-index="${i}" id="evidence-upload-${i}">${r.image?`<img class="evidence-preview" alt="Evidencia incrustada" src="${r.image}"><button class="button small danger" data-clear-image="${i}">Quitar imagen</button>`:''}</div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
+  function renderOnline(){
+    const status=navigator.onLine?'El navegador declara conexión disponible.':'Sin conexión detectada. El expediente sigue siendo editable.';
+    return `<span class="eyebrow">CONECTIVIDAD / ENTREGA OPCIONAL</span><h1 class="page-title">Herramientas conectadas</h1>
+      <p class="lead">La auditoría no necesita Internet. Estas operaciones solo se ejecutan tras pulsar y confirmar, sin credenciales guardadas.</p>
+      <section class="card"><h2>Estado de conexión e instalación</h2><p id="online-status" role="status">${html(status)}</p><div class="action-row"><button class="button quiet" id="check-connectivity">Comprobar conectividad</button><button class="button accent" id="install-pwa" ${deferredInstallPrompt?'':'hidden'}>Instalar aplicación en este dispositivo</button><button class="button quiet" data-go="cves">Consultar CVE por identificador</button></div><p class="subtle" style="margin-top:14px">Para tablets: primero abre el sitio mediante HTTPS. Si el navegador no ofrece instalación directa, usa «Añadir a pantalla de inicio» desde su menú. Tras abrirla online, prueba la aplicación en modo avión.</p></section>
+      <section class="card"><h2>Entrega bajo control del auditor</h2><p class="subtle">No se realiza ningún envío automático. El PDF se adjunta manualmente después de revisarlo.</p><div class="action-row"><button class="button accent" id="open-email">Preparar correo</button><button class="button quiet" id="native-share-json">Compartir JSON con el sistema</button><button class="button quiet" id="delivery-pdf">Generar PDF</button></div></section>
+      <section class="card"><h2>Sincronización con nube</h2><p class="subtle">Google Drive, OneDrive, S3, Nextcloud y correo API requieren autorización, cifrado, autenticación y mecanismos de revocación. Todavía no están conectados. Exporta JSON y utiliza un cliente autorizado.</p></section>`;
+  }
   function renderDelivery(){const unresolved=state.controls.filter(x=>x.status==='Pendiente'||x.status==='No verificado').length;return `<span class="eyebrow">ENTREGA / REPORTING</span><h1 class="page-title">Informe final</h1><p class="lead">Última revisión editorial antes de entregar el resultado al cliente.</p><div class="notice">El PDF se crea con <strong>Imprimir → Guardar como PDF</strong> en tu navegador. No se necesita conexión, servidor ni librerías adicionales. Activa los gráficos de fondo si quieres conservar la composición visual.</div>${unresolved?`<div class="notice warn">Atención: hay ${unresolved} controles pendientes o no verificados. Se mostrarán así en el informe, no como conformes.</div>`:''}<section class="card"><div class="card-head"><div><h2>Conclusiones y cierre</h2><p class="subtle">Incluye un resumen ejecutivo entendible y un plan técnico accionable.</p></div></div><div class="fields">${finalFields.map(f=>renderField(state.final,'final',f)).join('')}</div></section><section class="card"><h2>Preparar entrega</h2><p class="subtle">El informe incorpora portada, confidencialidad, alcance, inventarios, controles, hallazgos, evidencias y recomendaciones.</p><div class="action-row"><button class="button accent" id="delivery-pdf">Generar informe PDF ↗</button><button class="button quiet" id="delivery-json">Guardar expediente JSON</button><button class="button danger" id="delivery-reset">Nuevo expediente</button><button class="button quiet" id="native-share-json">Compartir JSON (opcional)</button><button class="button quiet" id="open-email">Preparar correo (sin adjuntos)</button></div></section>`}
   function render(){
+    const inLibrary=page==='records'||(page==='online'&&!currentId);
+    byId('navigation').hidden=inLibrary;
+    byId('audit-context').hidden=inLibrary;
+    byId('workspace-label').textContent=inLibrary?'MENÚ PRINCIPAL':'EXPEDIENTE ABIERTO';
+    byId('audit-context-title').textContent=state.meta.project||state.meta.client||'Auditoría sin título';
+    byId('audit-context-ref').textContent=[state.meta.reportId||'SIN REFERENCIA',state.meta.client||'Cliente pendiente'].join(' · ');
     byId('navigation').innerHTML=nav.map(([id,symbol,name])=>`<button type="button" data-go="${id}" class="${page===id?'active':''}" ${page===id?'aria-current="page"':''}><span class="nav-mark">${symbol}</span>${name}</button>`).join('');
-    byId('current-section').textContent=nav.find(n=>n[0]===page)[2];
-    byId('workspace').innerHTML=page==='dashboard'?renderOverview():page==='records'?renderRecords():page==='engagement'?renderEngagement():page==='legal'?renderForm('legal',legalFields,'Cláusulas y privacidad','Modelos editables para auditorías en España. Revisa el contrato y solicita asesoramiento jurídico cuando corresponda.'):page==='delivery'?renderDelivery():renderGroup(page);
+    byId('current-section').textContent=inLibrary?'Biblioteca de auditorías':page==='online'?'Herramientas conectadas':nav.find(n=>n[0]===page)?.[2]||'Expediente';
+    byId('active-audit-label').textContent=inLibrary?'Selecciona una auditoría':(state.meta.reportId||'Sin referencia')+' · '+(state.meta.project||state.meta.client||'Sin título');
+    byId('btn-export').disabled=inLibrary;
+    byId('btn-pdf').disabled=inLibrary;
+
+    byId('workspace').innerHTML=page==='dashboard'?renderOverview():page==='records'?renderRecords():page==='online'?renderOnline():page==='engagement'?renderEngagement():page==='legal'?renderForm('legal',legalFields,'Cláusulas y privacidad','Modelos editables para auditorías en España. Revisa el contrato y solicita asesoramiento jurídico cuando corresponda.'):page==='delivery'?renderDelivery():renderGroup(page);
   }
-  function move(section){if(nav.some(n=>n[0]===section)){page=section;render();scrollTo(0,0)}}
+  function move(section){if(!['records','online'].includes(section)&&!currentId){alert('Primero crea o abre una auditoría desde la biblioteca.');return}if(['records','online'].includes(section)||nav.some(n=>n[0]===section)){page=section;render();scrollTo(0,0)}}
   function fieldTarget(target){const {block,field,index}=target.dataset;if(!block||!field)return null;if(block==='meta'||block==='final'||block==='legal')return state[block];if(groups[block]&&index!==undefined)return state[block][Number(index)];return null}
   const workspace=byId('workspace');
+  byId('global-navigation').addEventListener('click',e=>{const b=e.target.closest('[data-go]');if(b)move(b.dataset.go)});
   byId('navigation').addEventListener('click',e=>{const b=e.target.closest('[data-go]');if(b)move(b.dataset.go)});
   workspace.addEventListener('input',e=>{
     const t=e.target;
@@ -315,11 +359,19 @@
       byId('record-list').innerHTML=recordsMarkup(matches);return;
     }
     if(t.dataset.preset)return;
-    const obj=fieldTarget(t);if(obj){obj[t.dataset.field]=t.value;persist()}
+    const obj=fieldTarget(t);if(obj){obj[t.dataset.field]=t.value;if(t.dataset.block==='meta'&&['project','client','reportId'].includes(t.dataset.field)){byId('audit-context-title').textContent=state.meta.project||state.meta.client||'Auditoría sin título';byId('audit-context-ref').textContent=(state.meta.reportId||'SIN REFERENCIA')+' · '+(state.meta.client||'Cliente pendiente');byId('active-audit-label').textContent=(state.meta.reportId||'Sin referencia')+' · '+(state.meta.project||state.meta.client||'Sin título')}if(['title','name','id'].includes(t.dataset.field)){const heading=t.closest('.entry')?.querySelector('.entry-head strong');if(heading)heading.textContent=obj.title||obj.name||obj.id||'Registro'}persist()}
   });
   workspace.addEventListener('change',async e=>{
     const t=e.target;
-    if(t.id==='logo-upload'&&t.files?.length){try{const image=await resizeImage(t.files[0],500,0.86);if(image.length>650000)throw Error('Logo demasiado grande para el expediente.');state.meta.logo=image;persist();render()}catch(error){alert('Logo no válido: '+error.message)}return}
+    if(t.id==='logo-upload'&&t.files?.length){
+      const auditId=currentId;
+      try{
+        const image=await resizeImage(t.files[0],640,0.84,850000,3);
+        if(auditId!==currentId)throw Error('Ha cambiado el expediente; selecciona el logo de nuevo.');
+        state.meta.logo=image;persist();render();
+      }catch(error){alert('No se pudo incorporar el logo: '+error.message);t.value=''}
+      return;
+    }
     if(t.dataset.imageIndex!==undefined&&t.files?.length){
       const id=currentId,recordKey=state.evidence[Number(t.dataset.imageIndex)]?._key;
       try{const image=await resizeImage(t.files[0]);if(id!==currentId)throw Error('Ha cambiado el expediente.');const record=state.evidence.find(x=>x._key===recordKey);if(!record)throw Error('No se encontró la evidencia.');record.image=image;persist();render()}
@@ -330,13 +382,35 @@
       const custom=t.closest('.field').querySelector('[data-custom]');
       const isOther=t.value==='__custom__';custom.hidden=!isOther;
       obj[t.dataset.field]=isOther?custom.value:t.value;
+      if(t.dataset.block==='assets'&&t.dataset.field==='vendor'){
+        obj.model='';
+        const sibling=workspace.querySelector(`#f-assets-${t.dataset.index}-model`)?.closest('.field');
+        if(sibling)sibling.outerHTML=renderField(obj,'assets',groups.assets.fields.find(f=>f[0]==='model'),Number(t.dataset.index));
+      }
       if(isOther)custom.focus();persist();return;
     }
-    obj[t.dataset.field]=t.value;persist();
+    obj[t.dataset.field]=t.value;
+    if(t.dataset.block==='assets'&&t.dataset.field==='vendor'){
+      obj.model='';
+      const sibling=workspace.querySelector(`#f-assets-${t.dataset.index}-model`)?.closest('.field');
+      if(sibling)sibling.outerHTML=renderField(obj,'assets',groups.assets.fields.find(f=>f[0]==='model'),Number(t.dataset.index));
+    }
+    if(t.dataset.block==='findings'&&t.dataset.field==='severity'){
+      const badge=t.closest('.entry')?.querySelector('.entry-head .pill');
+      if(badge)badge.outerHTML=pill(obj.severity);
+    }
+    persist();
   });
   workspace.addEventListener('click',async e=>{
     const b=e.target.closest('button');if(!b)return;
     if(b.dataset.go){move(b.dataset.go);return}
+    if(b.id==='install-pwa'){
+      if(!deferredInstallPrompt){alert('Instala desde el menú del navegador. Requiere HTTPS o localhost y compatibilidad PWA.');return}
+      const prompt=deferredInstallPrompt;deferredInstallPrompt=null;
+      await prompt.prompt();await prompt.userChoice;
+      b.hidden=true;return;
+    }
+    if(b.id==='check-connectivity'){byId('online-status').textContent=navigator.onLine?'Conexión disponible según el navegador. La disponibilidad de servicios externos no se garantiza.':'Sin conexión según el navegador. No se ha contactado con ningún servidor.';return}
     if(b.dataset.new){await createAudit();return}
     if(b.dataset.backupAll){await backupAll();return}
     if(b.dataset.open){await switchAudit(b.dataset.open);return}
@@ -355,14 +429,39 @@
     if(b.id==='delivery-json'){exportJson();return}
     if(b.id==='delivery-reset'){await createAudit();return}
   });
-  function resizeImage(file,maxSize=1300,quality=.78){
-    if(!['image/png','image/jpeg','image/webp'].includes(file.type))return Promise.reject(Error('Formato no permitido.'));
-    if(file.size>(maxSize===500?3:5)*1024*1024)return Promise.reject(Error('El archivo supera el límite de tamaño.'));
-    return new Promise((resolve,reject)=>{
-      const url=URL.createObjectURL(file);const img=new Image();
-      img.onload=()=>{URL.revokeObjectURL(url);try{const ratio=Math.min(1,maxSize/Math.max(img.width,img.height));const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.width*ratio));canvas.height=Math.max(1,Math.round(img.height*ratio));const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(img,0,0,canvas.width,canvas.height);const out=canvas.toDataURL('image/jpeg',quality);if(out.length>1390000)throw Error('La imagen resultante es demasiado grande.');resolve(out)}catch(e){reject(e)}};
-      img.onerror=()=>{URL.revokeObjectURL(url);reject(Error('No se pudo abrir el archivo.'))};img.src=url;
+  /** Convert a user image to a bounded JPEG data URL without uploading or executing it.
+   *  FileReader data URLs avoid blob: restrictions under restrictive browser CSPs.
+   */
+  async function resizeImage(file,maxSize=1300,quality=.78,maxLength=1390000,maxMegabytes=5){
+    if(!['image/png','image/jpeg','image/webp'].includes(file.type))throw Error('Usa PNG, JPEG o WebP. SVG no se admite como contenido de cliente por seguridad.');
+    if(file.size>maxMegabytes*1024*1024)throw Error(`La imagen supera ${maxMegabytes} MiB.`);
+    const source=await new Promise((resolve,reject)=>{
+      const reader=new FileReader();
+      reader.onload=()=>resolve(reader.result);
+      reader.onerror=()=>reject(Error('No se pudo leer el archivo local.'));
+      reader.readAsDataURL(file);
     });
+    const image=await new Promise((resolve,reject)=>{
+      const picture=new Image();
+      picture.onload=()=>resolve(picture);
+      picture.onerror=()=>reject(Error('El navegador no ha podido decodificar la imagen.'));
+      picture.src=source;
+    });
+    if(!image.naturalWidth||!image.naturalHeight||image.naturalWidth*image.naturalHeight>40000000)throw Error('Dimensiones no válidas o imagen excesivamente grande.');
+    let side=maxSize;
+    for(let attempt=0;attempt<5;attempt++,side=Math.round(side*.75)){
+      const ratio=Math.min(1,side/Math.max(image.naturalWidth,image.naturalHeight));
+      const canvas=document.createElement('canvas');
+      canvas.width=Math.max(1,Math.round(image.naturalWidth*ratio));
+      canvas.height=Math.max(1,Math.round(image.naturalHeight*ratio));
+      const context=canvas.getContext('2d');
+      if(!context)throw Error('El dispositivo no admite conversión de imágenes.');
+      context.fillStyle='#fff';context.fillRect(0,0,canvas.width,canvas.height);
+      context.drawImage(image,0,0,canvas.width,canvas.height);
+      const encoded=canvas.toDataURL('image/jpeg',quality);
+      if(encoded.length<=maxLength)return encoded;
+    }
+    throw Error('No se pudo reducir el tamaño; prueba con otra imagen.');
   }
   async function lookupCve(index,button){
     const row=state.cves[index];if(!row)return;
@@ -437,10 +536,11 @@
   const section = (num,title,content) => `<section class="report-section"><h2>${num}. ${html(title)}</h2>${content}</section>`;
   function reportRows(k){const rows=state[k];return rows.length?rows.map((row,i)=>`<h3>${i+1}. ${html(row.title||row.name||row.id||'Registro')}</h3>${table(groups[k].fields,row)}${k==='evidence'&&row.image?`<figure><img class="report-evidence" alt="Evidencia ${html(row.id)}" src="${row.image}"><figcaption class="report-note">${html(row.id||'Evidencia')}: ${html(row.title||'Captura adjunta')}</figcaption></figure>`:''}`).join(''):'<p class="report-empty">Sin registros incluidos en esta categoría.</p>'}
   function buildReport(){
+    byId('report').dataset.palette=selectedPalette;
     const today=new Date().toLocaleDateString('es-ES');
     const count=Object.fromEntries(severity.map(s=>[s,state.findings.filter(x=>x.severity===s).length]));
     const meta=state.meta,ending=state.final;
-    const cover=`<div class="report-cover"><div class="sup">SYSADMIN / SECURITY · AUDIT REPORT</div>${meta.logo?`<img class="report-logo" src="${meta.logo}" alt="Logo corporativo">`:''}<h1>Informe de auditoría<br>informática</h1><h2>${html(meta.project||'Infraestructura, sistemas y ciberseguridad')}</h2><p class="classify">${html(meta.classification||'Confidencial')}</p><div class="cover-meta"><div><span class="report-number">CLIENTE</span><h3>${html(meta.client||'No indicado')}</h3><p>${html(meta.contact||'')}</p></div><div><span class="report-number">ENTREGA</span><h3>${html(today)}</h3><p>Ref. ${html(meta.reportId||'Sin referencia')} · Rev. ${html(meta.revision||'1.0')}</p><p>${html(meta.auditor||'')}</p></div></div></div>`;
+    const cover=`<div class="report-cover"><div class="sup">SYSADMIN / SECURITY · AUDIT REPORT <span class="report-theme-name">${html(selectedPalette)}</span></div>${meta.logo?`<img class="report-logo" src="${meta.logo}" alt="Logo corporativo">`:''}<h1>Informe de auditoría<br>informática</h1><h2>${html(meta.project||'Infraestructura, sistemas y ciberseguridad')}</h2><p class="classify">${html(meta.classification||'Confidencial')}</p><div class="cover-meta"><div><span class="report-number">CLIENTE</span><h3>${html(meta.client||'No indicado')}</h3><p>${html(meta.contact||'')}</p></div><div><span class="report-number">ENTREGA</span><h3>${html(today)}</h3><p>Ref. ${html(meta.reportId||'Sin referencia')} · Rev. ${html(meta.revision||'1.0')}</p><p>${html(meta.auditor||'')}</p></div></div></div>`;
     const legal=section(1,'Confidencialidad, alcance legal y custodia',`<p class="report-note">Cláusulas modelo que deben adaptarse al contrato específico y validarse antes de la entrega. RGPD (UE) 2016/679 y LOPDGDD 3/2018, según resulte aplicable.</p>${legalFields.map(([key,label])=>`<h3>${html(label)}</h3><p>${para(state.legal[key])}</p>`).join('')}<h3>Nota adicional del auditor</h3><p>${para(ending.disclaimer)}</p>`);
     const identity=section(2,'Identificación, alcance y metodología',table(metaFields,meta));
     const executive=section(3,'Resumen ejecutivo',`<p>${para(ending.executive)}</p><h3>Valoración del riesgo</h3><p>${para(ending.assessment)}</p><div class="report-stat-grid">${severity.map(s=>`<div><strong>${count[s]}</strong><small>${s}</small></div>`).join('')}</div><h3>Puntos fuertes</h3><p>${para(ending.strengths)}</p><h3>Debilidades principales</h3><p>${para(ending.weaknesses)}</p>`);
@@ -458,6 +558,14 @@
   byId('local-date').textContent=new Date().toLocaleDateString('es-ES');
   try{selectPalette(localStorage.getItem(PALETTE_KEY)||'ocean')}catch(_ignored){selectPalette('ocean')}
   void initialLoad();
+  window.addEventListener('beforeinstallprompt',event=>{
+    event.preventDefault();deferredInstallPrompt=event;
+    if(page==='online')render();
+  });
+  window.addEventListener('appinstalled',()=>{
+    deferredInstallPrompt=null;
+    if(page==='online')render();
+  });
   if('serviceWorker' in navigator && ['https:','http:'].includes(location.protocol) && (location.protocol==='https:'||['localhost','127.0.0.1'].includes(location.hostname))){
     window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js',{scope:'./'}).catch(error=>console.warn('PWA no disponible:',error)));
   }
