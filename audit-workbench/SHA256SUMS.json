@@ -1,0 +1,18 @@
+{
+  "index.html": "ab8dbe2851da6a03fc096b459abb2f8d79aeb3f16bf879eb208c11c16c18bfcf",
+  "app.js": "504fd451894ada974742b59234a49d1a6b339976003fcf10d68f3fd9d3a7c6cb",
+  "styles.css": "f161bfbbdbaac2b52f57fb0e3515e6b9c637f859050176689d19751892339beb",
+  "manifest.webmanifest": "c0335b282f03c02d2bebe4cf05e2f4f785caeae23f60f7872e89f292cd6bbb14",
+  "sw.js": "06484576a2ef4b75ef7e64b9b50816c32e2ceeb76a600464ed9c9ce990ad3e61",
+  "audit-workbench.sh": "ebcd3f093376c23828ce6271d297b50e00a906bb6b87d9a58e703aa88ee19a53",
+  "audit-workbench.ps1": "f588b8deedb84b81cbafdbf121ffe780eaa5e171a093b73dfb01f8a038e27084",
+  "README.md": "3678e860ccc0d84fefac3a72247eb0f4f002b7ae8dcb0e9a2badd994ac67efb6",
+  "INSTALLATION.md": "22315152df3dc660df895e082113539abc83823ed0915c19436405791564306a",
+  "SECURITY.md": "d63128ca39031bb9fb9e41c32c932474e6d39d1ec37d1e2c7b27fdecfb5b6ab6",
+  "LEGAL.md": "33cde146e194c1a35df28e2de17b15ca63aa39e193d5301046721dfb6fdada4d",
+  "icons/icon-192.png": "1316ba0c68062bf1649ad24b28efafb11d50b3a0435cb4c562dc45c4e2aa77fa",
+  "icons/icon-512.png": "097d7f8883bf90e3f51b11733205ecf390c6bcf15811cffb9200d31d7a626375",
+  "tests/test_e2e.py": "7208c08d8917263cfbd3161d05dfdd62d3c0bfc7307718554d63e7cafffc2cb9",
+  "tests/test_v4.py": "28eecd182911f341493115e11d39f6d42c7e24a3f67806478cede3bd93fadbe4",
+  "tests/test_pwa.py": "75248c9125417d5afe8135e8386fa3879b5ca3529157bb79e39f37b1b5e93b90"
+}
