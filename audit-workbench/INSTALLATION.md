@@ -76,6 +76,15 @@ El menú lateral contiene Biblioteca, Configuración y Conexiones. Dentro de cad
 
 En el primer arranque, entra en **Configuración** y guarda los datos de la consultora y el prefijo de informes. Exporta el perfil junto con la biblioteca cuando cambies de dispositivo: la numeración por cliente depende de los contadores guardados en ese perfil.
 
-Las fuentes Atkinson Hyperlegible que has seleccionado se pueden activar localmente con el CSS de `fonts/` sin CDN. En el ZIP no se incluyen los WOFF2. Véase `fonts/README.md`.
+El CSS `fonts/atkinson.css` carga automáticamente las cuatro variantes locales de Atkinson Hyperlegible (Regular, Bold, Italic y BoldItalic), disponibles en el repositorio. Una distribución sin esos archivos utiliza la tipografía de reserva del sistema.
 
 Después de actualizar por `git pull` o por los lanzadores, cierra pestañas previas y vuelve a abrir la PWA para que el service worker pase de `shell-v5` a `shell-v6`. Antes de actualizar, exporta el backup JSON desde la Biblioteca y el perfil de consultora desde Configuración. La v6 utiliza un nuevo esquema del expediente (3) y está orientada a desarrollo; no se garantiza la importación de todos los esquemas anteriores.
+
+
+## Fuente Atkinson Hyperlegible
+
+La aplicación incorpora el CSS local de Atkinson con Regular, Bold, Italic y BoldItalic. Si instalas desde GitHub, las cuatro variantes WOFF2 deben estar dentro de `audit-workbench/fonts/`. Si las omites en una distribución reducida, la aplicación conserva su funcionalidad con la fuente del sistema.
+
+## Equipo de auditores
+
+En **Configuración → Equipo de auditores** registra nombre, función, correo profesional y teléfono de cada miembro. En cada expediente abre **Cliente y alcance → Profesionales asignados** y marca todas las personas participantes. Guarda un JSON de cada auditoría antes de cambiar de equipo; ese JSON conserva la autoría incluida en el informe.

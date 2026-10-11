@@ -58,7 +58,7 @@
     ['clientIdType','Documento fiscal del cliente','select',['No indicado','NIF entidad / CIF','DNI / NIF persona física','NIE','NIF intracomunitario / otro']],['clientTaxId','Número de identificación fiscal'],
     ['clientEmail','Correo electrónico del cliente'],['clientPhone','Teléfono del cliente'],['clientAddress','Domicilio fiscal / sede'],['clientPostal','Código postal (España)'],
     ['reportId','Identificador del informe'],['revision','Versión del informe'],
-    ['auditor','Auditor / consultora'],['contact','Contacto del cliente'],
+    ['contact','Contacto del cliente'],
     ['contactIdType','Documento identificativo del contacto','select',['No indicado','DNI / NIF persona física','NIE','Otro documento']],['contactId','DNI / NIE del contacto (opcional)'],
     ['start','Inicio de la auditoría','date'],['end','Fin de la auditoría','date'],
     ['classification','Clasificación','select',['Confidencial','Uso interno','Público']],
@@ -132,7 +132,7 @@
       ['sha256','SHA-256 del original (opcional)'],['notes','Detalle, custodia y observaciones','textarea']]}
   };
   const severity = ['Crítica','Alta','Media','Baja','Informativa'];
-  const fresh = () => ({schemaVersion:VERSION,meta:{classification:'Confidencial',type:'Auditoría de infraestructura',revision:'1.0',logo:'',reportAuto:'yes'},final:{disclaimer:'La evaluación refleja los sistemas y las evidencias examinados durante el período indicado. Las comprobaciones no ejecutadas y las exclusiones se detallan en el alcance.'},legal:legalDefaults(),assets:[],networks:[],software:[],cves:[],controls:[],findings:[],evidence:[]});
+  const fresh = () => ({schemaVersion:VERSION,meta:{classification:'Confidencial',type:'Auditoría de infraestructura',revision:'1.0',logo:'',reportAuto:'yes',auditTeam:[]},final:{disclaimer:'La evaluación refleja los sistemas y las evidencias examinados durante el período indicado. Las comprobaciones no ejecutadas y las exclusiones se detallan en el alcance.'},legal:legalDefaults(),assets:[],networks:[],software:[],cves:[],controls:[],findings:[],evidence:[]});
   const str = v => typeof v === 'string' ? v.slice(0,20000) : '';
   const html = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const uid = () => globalThis.crypto && crypto.randomUUID ? crypto.randomUUID() : 'id-'+Date.now()+'-'+Math.random().toString(36).slice(2);
@@ -149,6 +149,7 @@
     }
     out.meta.logo=safeLogo(raw.meta.logo);
     out.meta.reportAuto=raw.meta.reportAuto==='no'?'no':'yes';
+    out.meta.auditTeam=normalizeAuditTeam(raw.meta.auditTeam);
     for(const [block,definition] of Object.entries(groups)){
       if(block==='cves' && raw[block]===undefined)continue;
       if(!Array.isArray(raw[block])||raw[block].length>LIMIT_ROWS)throw Error('Datos no válidos en '+block);
@@ -165,6 +166,25 @@
     }
     return out;
   }
+  const TEAM_MAX=60;
+  const TEAM_ROLES=['Auditor/a de sistemas','Auditor/a de redes','Auditor/a de ciberseguridad','Responsable de auditoría','Especialista forense','Consultor/a técnico/a','Otro'];
+  // Store immutable attribution snapshots in each audit. Global member updates must
+  // not silently rewrite the author list of already issued reports.
+  function normalizeMember(raw){
+    if(!raw||typeof raw!=='object'||Array.isArray(raw))return null;
+    const id=str(raw.id).slice(0,90),name=str(raw.name).trim().slice(0,160);
+    if(!id||!name)return null;
+    return {id,name,role:str(raw.role).slice(0,120),email:str(raw.email).slice(0,254),phone:str(raw.phone).slice(0,40)};
+  }
+  function normalizeAuditTeam(raw){
+    if(!Array.isArray(raw))return [];
+    const seen=new Set();
+    return raw.slice(0,TEAM_MAX).map(normalizeMember).filter(member=>{
+      if(!member||seen.has(member.id))return false;
+      seen.add(member.id);return true;
+    });
+  }
+  function auditorNames(meta){return meta.auditTeam?.length?meta.auditTeam.map(x=>x.name).join(', '):str(meta.auditor).trim()}
   // Persistent multi-audit repository. IndexedDB is preferred for larger evidence images;
   // localStorage fallback retains functionality in browsers where IDB is unavailable.
   function openDatabase(){
@@ -199,16 +219,17 @@
   }
   const DEFAULT_SETTINGS = () => ({
     company:'',taxType:'NIF entidad / CIF',taxId:'',email:'',phone:'',address:'',postal:'',
-    auditor:'',prefix:'AUD',logo:'',sequences:{}
+    prefix:'AUD',logo:'',sequences:{},members:[]
   });
   function loadSettings(){
     try{
       const raw=JSON.parse(localStorage.getItem(SETTINGS_KEY)||'{}');
       if(!raw||typeof raw!=='object'||Array.isArray(raw))return DEFAULT_SETTINGS();
       const cfg=DEFAULT_SETTINGS();
-      for(const key of ['company','taxType','taxId','email','phone','address','postal','auditor','prefix'])if(typeof raw[key]==='string')cfg[key]=str(raw[key]);
+      for(const key of ['company','taxType','taxId','email','phone','address','postal','prefix'])if(typeof raw[key]==='string')cfg[key]=str(raw[key]);
       cfg.prefix=/^[A-Z0-9-]{2,12}$/.test(cfg.prefix)?cfg.prefix:'AUD';
       cfg.logo=safeLogo(raw.logo);
+      cfg.members=normalizeAuditTeam(raw.members);
       if(raw.sequences&&typeof raw.sequences==='object'&&!Array.isArray(raw.sequences)){
         for(const [key,value] of Object.entries(raw.sequences)){
           if(key.length<160&&Number.isSafeInteger(value)&&value>=0&&value<1000000)cfg.sequences[key]=value;
@@ -220,8 +241,9 @@
   function loadSettingsFromImport(raw){
     if(!raw||typeof raw!=='object'||Array.isArray(raw))throw Error('Configuración no válida');
     const result=DEFAULT_SETTINGS();
-    for(const key of ['company','taxType','taxId','email','phone','address','postal','auditor','prefix'])if(typeof raw[key]==='string')result[key]=str(raw[key]);
+    for(const key of ['company','taxType','taxId','email','phone','address','postal','prefix'])if(typeof raw[key]==='string')result[key]=str(raw[key]);
     result.logo=safeLogo(raw.logo);
+    result.members=normalizeAuditTeam(raw.members);
     if(!/^[A-Z0-9-]{2,12}$/.test(result.prefix))result.prefix='AUD';
     if(raw.sequences&&typeof raw.sequences==='object'&&!Array.isArray(raw.sequences))for(const [key,num] of Object.entries(raw.sequences)){if(key.length<160&&Number.isSafeInteger(num)&&num>=0&&num<1000000)result.sequences[key]=num}
     return result;
@@ -370,7 +392,7 @@
     try{
       await flush();
       if(!audit.meta.reportId){audit.meta.reportId=nextReportId(audit.meta.client);audit.meta.reportAuto='yes'}
-      if(!audit.meta.auditor)audit.meta.auditor=settings.auditor||settings.company;
+      // Auditors are selected explicitly per audit; never assign the company name as an individual.
       if(!audit.meta.logo)audit.meta.logo=settings.logo;
       const record=newRecord(audit);await enqueue(()=>repository.put(record));records.push(record);setActive(record);move('engagement')}
     catch(error){alert('No se ha creado la auditoría: '+error.message)}
@@ -433,19 +455,38 @@
   }
   function renderForm(block,fields,title,intro){return `<span class="eyebrow">AUDITORÍA / DOCUMENTACIÓN</span><h1 class="page-title">${title}</h1><p class="lead">${intro}</p><section class="card"><div class="fields">${fields.map(f=>renderField(state[block],block,f)).join('')}</div></section>`}
   function renderEngagement(){
-    return renderForm('meta',metaFields,'Cliente y alcance','Contexto, autorización, alcance, metodología y limitaciones de la evaluación.')+
+    return renderForm('meta',metaFields,'Cliente y alcance','Contexto, autorización, alcance, metodología y limitaciones de la evaluación.')+renderAuditTeam()+
       `<section class="card"><h2>Logo específico del informe (opcional)</h2><p class="subtle">Adjunta tu logo o el de la consultora (PNG, JPEG o WebP; máximo 3 MiB). Se convierte a JPEG y se incluye en el JSON exportado y en la portada del PDF. No se sube a Internet.</p><input id="logo-upload" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Seleccionar logotipo corporativo">${state.meta.logo?`<div class="logo-preview"><img src="${state.meta.logo}" alt="Logotipo corporativo incorporado"><button type="button" class="button danger small" id="logo-remove">Eliminar logotipo</button></div>`:''}</section>`;
   }
   function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p><section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Cada dato registrado podrá aparecer en el informe y en la copia JSON.</p></div><button class="button accent" data-add="${block}">+ Añadir registro</button></div>${rows.length?rows.map((r,i)=>`<div class="entry"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="fields">${def.fields.map(f=>renderField(r,block,f,i)).join('')}</div>${block==='cves'?`<div class="cve-tools"><button class="button quiet small" type="button" data-cve-check="${i}">Consultar CVE online (opcional)</button><button class="button small" type="button" data-cve-link="${i}">Ver en CVE.org ↗</button><span class="subtle">Solo se envía el identificador CVE, nunca los datos del cliente.</span></div>`:''}${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Captura opcional</strong> (PNG, JPG, WebP hasta 5 MiB; se optimiza localmente)</label><input type="file" accept="image/png,image/jpeg,image/webp" data-image-index="${i}" id="evidence-upload-${i}">${r.image?`<img class="evidence-preview" alt="Evidencia incrustada" src="${r.image}"><button class="button small danger" data-clear-image="${i}">Quitar imagen</button>`:''}</div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
   const settingsFields=[
     ['company','Nombre legal de la consultora'],['taxType','Identificador fiscal','select',['No indicado','NIF entidad / CIF','DNI / NIF persona física','NIE','NIF intracomunitario / otro']],
-    ['taxId','Identificación fiscal'],['auditor','Auditor responsable'],['email','Email corporativo'],['phone','Teléfono'],
+    ['taxId','Identificación fiscal'],['email','Email corporativo'],['phone','Teléfono'],
     ['address','Domicilio profesional'],['postal','Código postal (España)'],['prefix','Prefijo de informes (ej. AUD)']
   ];
+  function renderMemberDirectory(){
+    const members=settings.members;
+    return `<section class="card"><div class="card-head"><div><h2>Equipo de auditores</h2><p class="subtle">Añade los profesionales que trabajan para tu consultora. Después podrás asignar uno o varios a cada expediente. Los nombres seleccionados quedan registrados en el propio informe.</p></div><button class="button accent" type="button" id="member-add" ${members.length>=TEAM_MAX?'disabled':''}>+ Añadir auditor/a</button></div>
+    ${members.length?`<div class="member-directory">${members.map((member,i)=>`<section class="member-card" data-member-id="${html(member.id)}"><div class="member-card-head"><strong>Miembro ${i+1}${member.name?' · '+html(member.name):''}</strong><button type="button" class="button danger small" data-member-remove="${html(member.id)}">Eliminar</button></div><div class="fields">
+    <div class="field"><label for="member-name-${i}">Nombre y apellidos</label><input id="member-name-${i}" data-member-id="${html(member.id)}" data-member-field="name" maxlength="160" autocomplete="off" value="${html(member.name)}" required></div>
+    <div class="field"><label for="member-role-${i}">Función en las auditorías</label><select id="member-role-${i}" data-member-id="${html(member.id)}" data-member-field="role"><option value="">Seleccionar función…</option>${[...new Set([...TEAM_ROLES,member.role].filter(Boolean))].map(role=>`<option value="${html(role)}" ${role===member.role?'selected':''}>${html(role)}</option>`).join('')}</select></div>
+    <div class="field"><label for="member-email-${i}">Correo profesional (opcional)</label><input id="member-email-${i}" type="email" data-member-id="${html(member.id)}" data-member-field="email" maxlength="254" value="${html(member.email)}"></div>
+    <div class="field"><label for="member-phone-${i}">Teléfono profesional (opcional)</label><input id="member-phone-${i}" type="tel" data-member-id="${html(member.id)}" data-member-field="phone" maxlength="40" value="${html(member.phone)}"></div></div></section>`).join('')}</div>`:'<p class="empty">Todavía no hay auditores registrados. Añade un miembro para poder seleccionarlo en tus auditorías.</p>'}</section>`;
+  }
+  function renderAuditTeam(){
+    const team=state.meta.auditTeam||[];
+    const seen=new Set(settings.members.map(m=>m.id));
+    return `<section class="card"><h2>Profesionales asignados a esta auditoría</h2><p class="subtle">Selecciona los auditores que realizan el trabajo. Se pueden elegir varios. El equipo seleccionado se guarda dentro del expediente y se incorpora al PDF.</p>
+    ${settings.members.length?`<div class="auditor-choice-list">${settings.members.map(member=>`<label class="auditor-choice"><input type="checkbox" data-auditor-select="${html(member.id)}" ${team.some(x=>x.id===member.id)?'checked':''}><span><strong>${html(member.name)}</strong><small>${html(member.role||'Sin función definida')}${member.email?' · '+html(member.email):''}</small></span></label>`).join('')}</div>`:'<div class="notice warn">Configura primero los miembros de la consultora. <button type="button" class="button quiet small" data-go="settings">Añadir auditores</button></div>'}
+    ${team.filter(member=>!seen.has(member.id)).map(member=>`<label class="auditor-choice archived"><input type="checkbox" data-auditor-select="${html(member.id)}" checked><span><strong>${html(member.name)}</strong><small>Profesional archivado en este informe; ya no figura en el directorio</small></span></label>`).join('')}
+    <small class="subtle">Si actualizas el nombre o la función de un miembro del directorio, el expediente conserva sus datos anteriores hasta que lo desmarques y vuelvas a seleccionar.</small></section>`;
+  }
   function renderSettings(){
     return `<span class="eyebrow">PREFERENCIAS / CONSULTORA</span><h1 class="page-title">Configuración de la consultora</h1>
-      <p class="lead">Define una identidad reutilizable para tus auditorías. Los datos se guardan solo en este navegador; exporta el perfil para respaldarlo.</p>
+      <p class="lead">Gestiona por separado los datos fiscales de la consultora y los profesionales que realizan las auditorías. La información se conserva en este dispositivo hasta que exportes el perfil.</p>
+      ${currentId?'<button class="button quiet" type="button" data-go="engagement">← Volver al expediente abierto</button>':''}
       <section class="card"><h2>Datos de la empresa auditora</h2><div class="fields">${settingsFields.map(f=>renderField(settings,'settings',f)).join('')}</div></section>
+      ${renderMemberDirectory()}
       <section class="card"><h2>Logotipo corporativo</h2><p class="subtle">Se copiará a cada expediente nuevo y al PDF. No se envía a ningún servidor.</p>
       <input type="file" id="settings-logo-upload" accept="image/jpeg,image/png,image/webp" aria-label="Logotipo de la consultora">${settings.logo?`<div class="logo-preview"><img src="${settings.logo}" alt="Logotipo configurado"><button type="button" class="button danger" id="settings-logo-remove">Eliminar logo</button></div>`:''}</section>
       <section class="card"><h2>Numeración y copia de seguridad</h2><p class="subtle">La numeración se asigna por cliente al completar su nombre. Cada cliente tiene su propia secuencia; un código usado no vuelve a asignarse aunque borres el expediente. Puedes corregir manualmente un identificador concreto.</p>
@@ -552,6 +593,14 @@
   workspace.addEventListener('focusin',event=>{if(event.target.dataset.block==='meta'&&event.target.dataset.field==='client')event.target.dataset.originalClient=event.target.value});
   workspace.addEventListener('input',e=>{
     const t=e.target;
+    if(t.dataset.memberField){
+      const member=settings.members.find(m=>m.id===t.dataset.memberId);if(!member)return;
+      const field=t.dataset.memberField,limit=field==='name'?160:field==='email'?254:field==='role'?120:40;
+      member[field]=t.value.slice(0,limit);
+      if(field==='email'){const bad=Boolean(member.email)&&!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(member.email);t.setCustomValidity(bad?'Introduce un correo electrónico válido.':'');t.setAttribute('aria-invalid',String(bad));}
+      const title=t.closest('.member-card')?.querySelector('.member-card-head strong');if(title&&field==='name')title.textContent='Auditor/a · '+(member.name||'Sin nombre');
+      saveSettings();return;
+    }
     if(t.id==='record-filter'){
       const term=t.value.toLocaleLowerCase('es');
       const matches=[...records].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)).filter(r=>[r.audit.meta.client,r.audit.meta.project,r.audit.meta.reportId].some(v=>(v||'').toLocaleLowerCase('es').includes(term)));
@@ -563,9 +612,16 @@
   });
   workspace.addEventListener('change',async e=>{
     const t=e.target;
+    if(t.dataset.auditorSelect!==undefined){
+      const id=t.dataset.auditorSelect;
+      if(t.checked){const member=settings.members.find(x=>x.id===id);if(!member||!member.name.trim()){alert('Define primero un nombre para este auditor.');t.checked=false;return;}
+        if(!state.meta.auditTeam.some(x=>x.id===id))state.meta.auditTeam.push({...member});
+      }else state.meta.auditTeam=state.meta.auditTeam.filter(x=>x.id!==id);
+      state.meta.auditor=auditorNames({...state.meta,auditor:''});persist();return;
+    }
     if(t.name==='channel'){connectionChannel=t.value;for(const key of ['nextcloud','upload','email','share'])byId('connection-'+key).hidden=(key==='upload'||key==='nextcloud'?connectionChannel!=='nextcloud':connectionChannel!==key);return}
     if(t.id==='settings-import-file'&&t.files?.length){
-      try{const raw=JSON.parse(await t.files[0].text());if(raw?.kind!=='audit-workbench-consultancy-v1')throw Error('No es un perfil de consultora.');settings=loadSettingsFromImport(raw.settings);saveSettings();render()}
+      try{const raw=JSON.parse(await t.files[0].text());if(!['audit-workbench-consultancy-v1','audit-workbench-consultancy-v2'].includes(raw?.kind))throw Error('No es un perfil de consultora.');settings=loadSettingsFromImport(raw.settings);saveSettings();render()}
       catch(error){alert('Perfil no importado: '+error.message)}return;
     }
     if(t.id==='settings-logo-upload'&&t.files?.length){
@@ -633,7 +689,17 @@
     if(b.dataset.go){move(b.dataset.go);return}
     if(b.id==='install-pwa'){alert('Instala desde el menú del navegador: Instalar aplicación / Añadir a pantalla de inicio. Requiere HTTPS o localhost y compatibilidad PWA.');return;}
     if(b.id==='check-connectivity'){byId('online-status').textContent=navigator.onLine?'Conexión disponible según el navegador. La disponibilidad de servicios externos no se garantiza.':'Sin conexión según el navegador. No se ha contactado con ningún servidor.';return}
-    if(b.id==='settings-export'){download('perfil-consultora.json',JSON.stringify({kind:'audit-workbench-consultancy-v1',settings},null,2),'application/json;charset=utf-8');return}
+    if(b.id==='member-add'){
+      if(settings.members.length>=TEAM_MAX){alert('Máximo de 60 profesionales por perfil.');return;}
+      const member={id:uid(),name:'',role:'',email:'',phone:''};settings.members.push(member);saveSettings();render();
+      const last=byId('member-name-'+(settings.members.length-1));last?.focus();return;
+    }
+    if(b.dataset.memberRemove){
+      const member=settings.members.find(m=>m.id===b.dataset.memberRemove);if(!member)return;
+      if(!confirm('¿Eliminar del directorio a '+(member.name||'este profesional')+'? Las auditorías en las que participó conservarán su ficha.'))return;
+      settings.members=settings.members.filter(m=>m.id!==b.dataset.memberRemove);saveSettings();render();return;
+    }
+    if(b.id==='settings-export'){download('perfil-consultora.json',JSON.stringify({kind:'audit-workbench-consultancy-v2',settings},null,2),'application/json;charset=utf-8');return}
     if(b.id==='settings-import'){byId('settings-import-file').click();return}
     if(b.id==='settings-logo-remove'){if(confirm('¿Eliminar el logo global de la consultora?')){settings.logo='';saveSettings();render()}return}
     if(b.id==='dav-save'){
@@ -787,9 +853,10 @@
     const today=new Date().toLocaleDateString('es-ES');
     const count=Object.fromEntries(severity.map(s=>[s,state.findings.filter(x=>x.severity===s).length]));
     const meta=state.meta,ending=state.final;
-    const cover=`<div class="report-cover"><div class="sup">SYSADMIN / SECURITY · AUDIT REPORT <span class="report-theme-name">${html(selectedPalette)}</span></div>${meta.logo?`<img class="report-logo" src="${meta.logo}" alt="Logo corporativo">`:''}<h1>Informe de auditoría<br>informática</h1><h2>${html(meta.project||'Infraestructura, sistemas y ciberseguridad')}</h2><p class="classify">${html(meta.classification||'Confidencial')}</p><div class="cover-meta"><div><span class="report-number">CLIENTE</span><h3>${html(meta.client||'No indicado')}</h3><p>${html(meta.contact||'')}</p></div><div><span class="report-number">ENTREGA</span><h3>${html(today)}</h3><p>Ref. ${html(meta.reportId||'Sin referencia')} · Rev. ${html(meta.revision||'1.0')}</p><p>${html(meta.auditor||'')}</p><p>${html(settings.company||'')}</p><p>${html(settings.taxId||'')}</p></div></div></div>`;
+    const cover=`<div class="report-cover"><div class="sup">SYSADMIN / SECURITY · AUDIT REPORT <span class="report-theme-name">${html(selectedPalette)}</span></div>${meta.logo?`<img class="report-logo" src="${meta.logo}" alt="Logo corporativo">`:''}<h1>Informe de auditoría<br>informática</h1><h2>${html(meta.project||'Infraestructura, sistemas y ciberseguridad')}</h2><p class="classify">${html(meta.classification||'Confidencial')}</p><div class="cover-meta"><div><span class="report-number">CLIENTE</span><h3>${html(meta.client||'No indicado')}</h3><p>${html(meta.contact||'')}</p></div><div><span class="report-number">ENTREGA</span><h3>${html(today)}</h3><p>Ref. ${html(meta.reportId||'Sin referencia')} · Rev. ${html(meta.revision||'1.0')}</p><p>${html(auditorNames(meta)||'Equipo auditor pendiente de asignar')}</p><p>${html(settings.company||'')}</p><p>${html(settings.taxId||'')}</p></div></div></div>`;
     const legal=section(1,'Confidencialidad, alcance legal y custodia',`<p class="report-note">Cláusulas modelo que deben adaptarse al contrato específico y validarse antes de la entrega. RGPD (UE) 2016/679 y LOPDGDD 3/2018, según resulte aplicable.</p>${legalFields.map(([key,label])=>`<h3>${html(label)}</h3><p>${para(state.legal[key])}</p>`).join('')}<h3>Nota adicional del auditor</h3><p>${para(ending.disclaimer)}</p>`);
-    const identity=section(2,'Identificación, alcance y metodología',table(metaFields,meta));
+    const teamTable=meta.auditTeam?.length?`<table class="report-table"><thead><tr><th>Profesional</th><th>Función</th><th>Contacto</th></tr></thead><tbody>${meta.auditTeam.map(m=>`<tr><td>${html(m.name)}</td><td>${html(m.role||'No indicada')}</td><td>${html(m.email||'No indicado')}</td></tr>`).join('')}</tbody></table>`:`<p>${html(auditorNames(meta)||'No se han asignado profesionales.')}</p>`;
+    const identity=section(2,'Identificación, alcance y metodología',table(metaFields,meta)+`<h3>Equipo responsable de la auditoría</h3>${teamTable}`);
     const executive=section(3,'Resumen ejecutivo',`<p>${para(ending.executive)}</p><h3>Valoración del riesgo</h3><p>${para(ending.assessment)}</p><div class="report-stat-grid">${severity.map(s=>`<div><strong>${count[s]}</strong><small>${s}</small></div>`).join('')}</div><h3>Puntos fuertes</h3><p>${para(ending.strengths)}</p><h3>Debilidades principales</h3><p>${para(ending.weaknesses)}</p>`);
     const controls=section(8,'Controles y verificaciones',reportRows('controls'));
     const findings=section(9,'Resumen de hallazgos y ficha técnica',`${state.findings.length?`<table class="report-table"><thead><tr><th>ID</th><th>Hallazgo</th><th>Severidad</th><th>Remediación</th></tr></thead><tbody>${state.findings.map(f=>`<tr><td>${html(f.id)}</td><td>${html(f.title)}</td><td>${html(f.severity)}</td><td>${para(f.recommendation)}</td></tr>`).join('')}</tbody></table>`:'<p class="report-empty">No hay hallazgos registrados.</p>'}${state.findings.map(f=>`<div class="report-finding"><h3>${html(f.id||'Hallazgo')} — ${html(f.title||'Sin título')} <span class="report-badge ${level(f.severity)}">${html(f.severity)}</span></h3>${table(groups.findings.fields,f)}${state.evidence.filter(e=>(f.evidenceIds||'').split(/[,;\s]+/).includes(e.id)&&e.image).map(e=>`<figure><img class="report-evidence" src="${e.image}" alt="Evidencia ${html(e.id)}"><figcaption class="report-note">${html(e.id)} — ${html(e.title)}</figcaption></figure>`).join('')}</div>`).join('')}`);

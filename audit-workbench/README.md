@@ -96,7 +96,7 @@ El proyecto prioriza ECMAScript moderno sin empaquetador: funciones nativas, eve
 - **Fabricante y modelo:** el modelo depende del fabricante; cambiar de fabricante reinicia el modelo anterior. Si no figura tu equipo, usa «Otro / escribir».
 - **Severidades:** las etiquetas se actualizan al cambiar el selector, sin recargar la página.
 - **Temas:** paletas claras y oscuras ahora afectan a las superficies de edición y a la portada del PDF. Para conservar fondos al imprimir, habilita los gráficos de fondo.
-- **Fuente:** se recomienda Atkinson Hyperlegible Next, con licencia SIL OFL 1.1; consulta [FONTS.md](FONTS.md). No se descargan fuentes externas.
+- **Fuente:** Atkinson Hyperlegible se utiliza desde los archivos locales Regular, Bold, Italic y BoldItalic incluidos en el repositorio. No se descargan fuentes externas.
 
 La opción **Herramientas conectadas** reúne la consulta individual de CVE, el cliente de correo y el diálogo nativo para compartir archivos, además de explicar los límites de sincronización cloud. No existen integraciones automáticas con plataformas externas.
 
@@ -106,7 +106,7 @@ La aplicación tiene **tres entradas principales**: Biblioteca, Configuración y
 
 ### Identidad de consultora y numeración
 
-En **Configuración** puedes guardar el nombre legal, NIF/NIE de la consultora, dirección, contacto, auditor responsable, prefijo y logo. Los expedientes nuevos reciben esta identidad por defecto; los ya existentes conservan sus campos editados. **Exportar perfil JSON** guarda la configuración y los contadores de numeración (incluye logo, no credenciales); **Importar perfil JSON** restaura el perfil.
+En **Configuración** puedes guardar el nombre legal, NIF/NIE de la consultora, dirección, contacto, prefijo, logo y **directorio de auditores**. Desde **Cliente y alcance → Profesionales asignados** selecciona uno o varios miembros del equipo para cada expediente. Las fichas de los profesionales elegidos se guardan dentro de esa auditoría y aparecen en el PDF, aunque luego se modifique el directorio global. Los expedientes nuevos reciben por defecto los datos corporativos y el logo; los ya existentes conservan sus campos editados. **Exportar perfil JSON** guarda la configuración y los contadores de numeración (incluye logo, no credenciales); **Importar perfil JSON** restaura el perfil.
 
 Los informes reciben códigos automáticos por cliente, por ejemplo `AUD-001`, `AUD-002`, `AUD-003`. Un cliente diferente inicia en `AUD-001`. Las secuencias se mantienen incluso si se borra una auditoría. El identificador puede editarse manualmente; desde ese momento deja de renumerarse automáticamente. **Una misma empresa debe registrarse con un nombre uniforme**; nombres escritos con variantes se consideran clientes diferentes. Este contador pertenece a la instalación local, por lo que la configuración debe exportarse si se cambia de dispositivo. La auditoría no utiliza un registro de identificadores centralizado.
 
@@ -134,4 +134,4 @@ En **Conexiones online** hay un selector de canal y una secuencia explícita de 
 
 ### Fuentes locales opcionales
 
-El paquete incluye `fonts/atkinson.css`, preparado para los cuatro archivos WOFF2 de Atkinson Hyperlegible que aparecen en tu captura. **Los cuatro WOFF2 ya están presentes en la rama de GitHub (aportados por el propietario), pero no se redistribuyen en el ZIP reducido.** Consulta [fonts/README.md](fonts/README.md) para copiar los archivos y activar la hoja de estilos sin solicitudes externas.
+La fuente **Atkinson Hyperlegible** se sirve localmente mediante `fonts/atkinson.css`. El repositorio incorpora cuatro archivos WOFF2: Regular, Bold, Italic y BoldItalic. En instalaciones completas de GitHub se aplican automáticamente sin conexión a servicios externos. Si distribuyes un ZIP que no incluya estas fuentes, el navegador utilizará su tipografía de sistema sin bloquear la auditoría.

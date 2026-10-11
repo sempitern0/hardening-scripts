@@ -1,0 +1,12 @@
+/* Audit team directory and multi-select, following the current palette. */
+.member-directory{display:grid;gap:16px;margin-top:16px}
+.member-card{background:var(--canvas);border:1px solid var(--line);border-radius:14px;padding:18px}
+.member-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;color:var(--ink)}
+.member-card .fields{gap:16px}
+.auditor-choice-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,310px),1fr));gap:12px;margin:18px 0}
+.auditor-choice{display:flex;align-items:center;gap:14px;background:var(--canvas);border:1px solid var(--line);border-radius:14px;padding:16px;cursor:pointer;min-height:68px;color:var(--ink)}
+.auditor-choice:has(input:checked){border-color:var(--brand);background:var(--brand-tint)}
+.auditor-choice input{accent-color:var(--brand);width:22px;height:22px;flex:none}
+.auditor-choice span{display:grid;gap:4px;min-width:0}.auditor-choice small{color:var(--muted);line-height:1.4}
+.auditor-choice.archived{border-style:dashed;margin:8px 0}.member-card .field input,.member-card .field select{max-width:100%}
+@media(max-width:720px){.member-card-head{flex-wrap:wrap}.auditor-choice-list{grid-template-columns:1fr}.member-card{padding:14px}}

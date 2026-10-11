@@ -1,12 +1,16 @@
 /* Audit Workbench service worker: immutable local shell only. No audit data is cached. */
 'use strict';
-const CACHE_NAME = 'audit-workbench-shell-v6';
+const CACHE_NAME = 'audit-workbench-shell-v7';
+const OPTIONAL_FONTS = ['Regular','Bold','Italic','BoldItalic'].map(weight => `./fonts/AtkinsonHyperlegible-${weight}.woff2`);
 const CORE = [
   './', './index.html', './styles.css', './app.js',
-  './normalize.css', './manifest.webmanifest', './icons/dragon.svg', './icons/icon-192.png', './icons/icon-512.png'
+  './normalize.css', './team.css', './fonts/atkinson.css', './manifest.webmanifest', './icons/dragon.svg', './icons/icon-192.png', './icons/icon-512.png'
 ];
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(CORE)));
+  event.waitUntil(caches.open(CACHE_NAME).then(async cache => {
+    await cache.addAll(CORE);
+    await Promise.all(OPTIONAL_FONTS.map(path => cache.add(path).catch(() => undefined)));
+  }));
 });
 self.addEventListener('activate', event => {
   event.waitUntil(Promise.all([
@@ -19,5 +23,14 @@ self.addEventListener('fetch', event => {
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin || !url.pathname.startsWith(new URL(self.registration.scope).pathname)) return;
-  event.respondWith(caches.match(request).then(cached => cached || fetch(request)));
+  event.respondWith(caches.match(request).then(async cached => {
+    if (cached) return cached;
+    const response = await fetch(request);
+    // Cache only self-hosted font assets after a successful request. Optional
+    // fonts must not prevent a ZIP distribution without WOFF2 from installing.
+    if (response.ok && url.pathname.endsWith('.woff2') && url.pathname.includes('/fonts/')) {
+      event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.put(request, response.clone())));
+    }
+    return response;
+  }));
 });
