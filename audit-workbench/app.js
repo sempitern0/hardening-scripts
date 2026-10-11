@@ -8,6 +8,8 @@
   const ACTIVE_KEY = 'sysadmin-tools:audit-workbench:active:v3';
   const FALLBACK_KEY = 'sysadmin-tools:audit-workbench:records:v3';
   const PALETTE_KEY = 'sysadmin-tools:audit-workbench:palette:v1';
+  const BACKUP_KEY = 'sysadmin-tools:audit-workbench:backup-settings:v1';
+  const BACKUP_DB = 'audit-workbench-backup-directory';
   const palettes = ['ocean', 'forest', 'indigo', 'graphite', 'midnight', 'obsidian', 'pine-dark', 'amethyst-dark', 'crimson-dark'];
   const CVE_PATTERN = /^CVE-(?:1999|2\d{3})-\d{4,}$/i;
   const safeLogo = value => typeof value === 'string' && value.length <= 850000 && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(value) ? value : '';
@@ -350,6 +352,95 @@
     for(const [block,def] of Object.entries(groups))for(const record of state[block])for(const [name] of def.fields){const issue=validationError(block,name,record[name],record);if(issue)problems.push(block+'/'+name+': '+issue)}
     return problems;
   }
+  // Backup metadata contains timestamps and user preferences, never customer data.
+  let backupPrefs = {lastExportAt:'',lastExportCount:0,lastFolderAt:'',lastFolderCount:0,folderName:'',automatic:false,lastError:''};
+  try {backupPrefs={...backupPrefs,...JSON.parse(localStorage.getItem(BACKUP_KEY)||'{}')};} catch (_ignored) {}
+  let autoBackupInProgress=false;
+  const storeBackupPrefs=()=>{try{localStorage.setItem(BACKUP_KEY,JSON.stringify(backupPrefs))}catch(error){console.warn('No se pudo guardar la preferencia de backups',error)}};
+  const changedSinceLastBackup=()=>{
+    const latest = records.reduce((date,item)=>item.updatedAt>date?item.updatedAt:date,'');
+    return dirty || !backupPrefs.lastFolderAt || latest>backupPrefs.lastFolderAt;
+  };
+  const canChooseFolder=()=>typeof window.showDirectoryPicker==='function' && typeof indexedDB!=='undefined';
+  function directoryHandle(action){
+    return new Promise((resolve,reject)=>{
+      const request=indexedDB.open(BACKUP_DB,1);
+      request.onupgradeneeded=()=>request.result.createObjectStore('handles');
+      request.onerror=()=>reject(request.error||Error('No se pudo abrir el registro de carpetas'));
+      request.onsuccess=()=>{
+        const db=request.result,tx=db.transaction('handles',action==='get'?'readonly':'readwrite');
+        const op=action==='get'?tx.objectStore('handles').get('backup'):action==='delete'?tx.objectStore('handles').delete('backup'):tx.objectStore('handles').put(action,'backup');
+        op.onsuccess=()=>resolve(op.result);
+        op.onerror=()=>reject(op.error||Error('No se pudo acceder a la carpeta'));
+        tx.oncomplete=()=>db.close();
+      };
+    });
+  }
+  function backupPayload(){
+    return {auditWorkbenchBackup:1,exportedAt:new Date().toISOString(),records:records.map(item=>({audit:item.id===currentId?state:item.audit}))};
+  }
+  function backupFilename(){return 'audit-workbench-copia-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json'}
+  async function backupToFolder({interactive=false}={}){
+    if(autoBackupInProgress)return;
+    autoBackupInProgress=true;
+    try{
+      if(!canChooseFolder())throw Error('Este navegador no admite escritura en carpetas mediante File System Access API. Utiliza «Descargar backup JSON».');
+      const handle=await directoryHandle('get');
+      if(!handle)throw Error('Primero selecciona una carpeta de destino.');
+      let permission=await handle.queryPermission({mode:'readwrite'});
+      if(permission!=='granted' && interactive)permission=await handle.requestPermission({mode:'readwrite'});
+      if(permission!=='granted')throw Error('Permiso de escritura no disponible. Abre el gestor y autoriza la carpeta de nuevo.');
+      await flush();
+      const destination=await handle.getFileHandle(backupFilename(),{create:true});
+      const writer=await destination.createWritable();
+      try{await writer.write(JSON.stringify(backupPayload(),null,2));await writer.close()}
+      catch(error){await writer.abort().catch(()=>{});throw error}
+      backupPrefs.lastFolderAt=new Date().toISOString();backupPrefs.lastFolderCount=records.length;backupPrefs.lastError='';
+      backupPrefs.folderName=handle.name;storeBackupPrefs();
+      if(page==='backups')render();
+    }catch(error){
+      backupPrefs.lastError=String(error.message||error).slice(0,240);storeBackupPrefs();
+      if(interactive)alert('No se pudo guardar en la carpeta: '+backupPrefs.lastError);
+      else console.warn('Copia automática pendiente:',error.message);
+      if(page==='backups')render();
+    }finally{autoBackupInProgress=false}
+  }
+  async function selectBackupFolder(){
+    try{
+      if(!canChooseFolder())throw Error('El selector de carpetas no está disponible en este navegador.');
+      const handle=await window.showDirectoryPicker({mode:'readwrite'});
+      if((await handle.requestPermission({mode:'readwrite'}))!=='granted')throw Error('Permiso de escritura no concedido.');
+      await directoryHandle(handle);backupPrefs.folderName=handle.name;backupPrefs.lastError='';storeBackupPrefs();render();
+    }catch(error){if(error.name!=='AbortError')alert('No se pudo seleccionar la carpeta: '+error.message)}
+  }
+  async function forgetBackupFolder(){
+    if(!confirm('¿Desvincular la carpeta de copias? Los archivos ya guardados NO se borrarán.'))return;
+    try{await directoryHandle('delete')}catch(_ignored){}
+    backupPrefs.automatic=false;backupPrefs.folderName='';backupPrefs.lastError='';storeBackupPrefs();render();
+  }
+  async function exportTabular(format){
+    const engine=globalThis.AuditTabular;
+    if(!engine){alert('El módulo de exportaciones no se ha cargado. Recarga la aplicación para actualizar la caché offline.');return}
+    try{
+      await flush();
+      const prefix='auditoria-'+slug(state.meta.reportId||state.meta.client||'sin-referencia');
+      if(format==='xlsx'){
+        const file=engine.xlsx(state);downloadBlob(prefix+'.xlsx',file);
+      }else{
+        const key=byId('export-csv-section')?.value||'Hallazgos';
+        const section=engine.sections(state).find(item=>item.name===key);
+        if(!section)throw Error('Selecciona una sección de exportación.');
+        download(prefix+'-'+slug(key)+'.csv',engine.csv(section),'text/csv;charset=utf-8');
+      }
+    }catch(error){alert('Error al preparar la exportación tabular: '+error.message)}
+  }
+  // The browser may suspend tabs. Periodic backups are attempted only while the
+  // application is open, visible and the user has granted folder access.
+  setInterval(()=>{
+    if(!backupPrefs.automatic || document.hidden || !backupPrefs.folderName || autoBackupInProgress)return;
+    const previous=Date.parse(backupPrefs.lastFolderAt||'');
+    if((!Number.isFinite(previous)||Date.now()-previous>=30*60*1000) && changedSinceLastBackup())void backupToFolder();
+  },60*1000);
   const repository=createRepository();
   const byId=id=>document.getElementById(id);
   let state=fresh(),currentId='',page='records',records=[],storageError=false,dirty=false,saveTimer=null,writeQueue=Promise.resolve();
@@ -445,7 +536,8 @@
     const copy=structuredCloneSafe(original.audit);copy.meta.project=(copy.meta.project||'Auditoría')+' · Copia';
     await createAudit(copy);
   }
-  function download(filename,content,type){const url=URL.createObjectURL(new Blob([content],{type}));const a=document.createElement('a');a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),60000)}
+  function downloadBlob(filename,blob){const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),60000)}
+  function download(filename,content,type){downloadBlob(filename,new Blob([content],{type}))}
   function renderField(obj,block,def,index){
     const [name,label,type,choices]=def;
     const attrs=`data-block="${html(block)}" data-field="${html(name)}"`+(index===undefined?'':` data-index="${index}"`);
@@ -476,6 +568,32 @@
     const search=(byId('record-filter')?.value||'').toLocaleLowerCase('es');
     const items=[...records].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)).filter(r=>[r.audit.meta.client,r.audit.meta.project,r.audit.meta.reportId].some(v=>(v||'').toLocaleLowerCase('es').includes(search)));
     return `<span class="eyebrow">BIBLIOTECA / EXPEDIENTES LOCALES</span><h1 class="page-title">Auditorías guardadas</h1><p class="lead">Cada expediente se guarda por separado en este navegador. Puedes abrirlo, duplicarlo, exportarlo o borrarlo.</p><section class="card"><div class="card-head"><div><h2>${records.length} auditorías</h2><p class="subtle">Almacenamiento ${html(repository.mode)} · No sincronizado entre dispositivos.</p></div><div class="audit-actions"><button class="button quiet" data-backup-all="true">Respaldar todas (JSON)</button><button class="button accent" data-new="true">+ Nueva auditoría</button></div></div><div class="library-toolbar"><label for="record-filter">Buscar por cliente, proyecto o referencia</label><input id="record-filter" type="search" value="${html(search)}" placeholder="Buscar auditorías…" autocomplete="off"></div><div id="record-list">${recordsMarkup(items)}</div></section><div class="notice warn">Una auditoría guardada en el navegador no equivale a una copia de seguridad. Exporta el JSON a un directorio cifrado antes de entregar el equipo o borrar los datos del navegador.</div>`;
+  }
+  function renderBackups(){
+    const pending=changedSinceLastBackup();
+    const readable=iso=>iso?new Date(iso).toLocaleString('es-ES'):'Todavía no';
+    const tables=globalThis.AuditTabular?.sections(state)||[];
+    return `<span class="eyebrow">BIBLIOTECA / COPIAS Y ENTREGA</span><h1 class="page-title">Copias de seguridad y exportación</h1>
+      <p class="lead">Los expedientes se guardan en <strong>${html(repository.mode)}</strong> dentro de este navegador. La carpeta de instalación contiene la aplicación, <strong>no</strong> los datos de los clientes.</p>
+      <div class="grid-two">
+        <section class="card"><h2>Copia completa · JSON</h2><p class="subtle">Único formato compatible con la restauración de todas las auditorías, incluidos textos, cláusulas y fotografías.</p>
+          <p><strong>${records.length}</strong> auditorías en este perfil · Última descarga iniciada: <strong>${html(readable(backupPrefs.lastExportAt))}</strong></p>
+          <div class="action-row"><button type="button" class="button accent" data-backup-all="true">Descargar backup completo (.json)</button><button type="button" class="button quiet" id="backup-restore">Importar / restaurar JSON</button></div>
+          <p class="subtle">La descarga no prueba que el archivo se haya guardado correctamente. Verifica el archivo en la carpeta de destino antes de borrar datos del navegador.</p></section>
+        <section class="card"><h2>Copias en carpeta local</h2><p class="subtle">${canChooseFolder()?'Disponible en este navegador.':'No disponible en este navegador. Puedes seguir descargando JSON manualmente.'}</p>
+          <p>Destino: <strong>${html(backupPrefs.folderName||'Sin carpeta asociada')}</strong> · Última copia escrita: <strong>${html(readable(backupPrefs.lastFolderAt))}</strong></p>
+          <p><strong>${pending?'Hay cambios pendientes de respaldar':'Sin cambios detectados desde la última copia guardada'}</strong></p>
+          ${backupPrefs.lastError?`<p class="backup-error" role="alert">${html(backupPrefs.lastError)}</p>`:''}
+          <div class="action-row"><button type="button" class="button quiet" id="backup-select-folder" ${canChooseFolder()?'':'disabled'}>Seleccionar carpeta</button><button type="button" class="button accent" id="backup-write-now" ${backupPrefs.folderName?'':'disabled'}>Guardar ahora</button><button type="button" class="button quiet" id="backup-forget" ${backupPrefs.folderName?'':'disabled'}>Desvincular</button></div>
+          <label class="backup-opt"><input id="backup-auto" type="checkbox" ${backupPrefs.automatic?'checked':''} ${backupPrefs.folderName?'':'disabled'}> Realizar copias cada 30 minutos con cambios, mientras la aplicación esté abierta</label>
+          <p class="subtle">Los permisos pueden caducar. No funciona cuando el navegador está cerrado y no sustituye un backup cifrado externo.</p></section>
+      </div>
+      <section class="card"><h2>Entregables editables · Excel / CSV</h2><p class="subtle">Úsalos para compartir inventarios y planes de actuación; <strong>no se pueden restaurar</strong> como auditorías. Las imágenes y cláusulas extensas permanecen en el JSON y en el PDF.</p>
+        <div class="backup-exports"><div><label for="export-csv-section">Sección para CSV</label><select id="export-csv-section" aria-label="Seleccionar datos CSV">${tables.map(x=>`<option value="${html(x.name)}" ${x.name==='Hallazgos'?'selected':''}>${html(x.name)} (${x.rows.length})</option>`).join('')}</select></div>
+          <button type="button" class="button quiet" id="backup-export-csv" ${currentId?'':'disabled'}>Exportar CSV</button>
+          <button type="button" class="button accent" id="backup-export-xlsx" ${currentId?'':'disabled'}>Exportar Excel (.xlsx)</button></div>
+        <p class="subtle">El XLSX incluye varias hojas con filtros; el CSV usa UTF-8 y separador de punto y coma para Excel en español. Comprueba los datos confidenciales antes de compartir.</p></section>
+      <div class="notice warn">Algunos expedientes contienen datos personales, vulnerabilidades o evidencias sensibles. Guarda los backups en un volumen cifrado y controla quién puede acceder a ellos.</div>`;
   }
   function recordsMarkup(items){
     return items.length?items.map(r=>`<article class="audit-row${r.id===currentId?' current':''}"><div class="audit-description"><span class="eyebrow">${r.id===currentId?'ABIERTA · ':''}${html(r.audit.meta.reportId||'SIN REFERENCIA')}</span><h3>${html(r.audit.meta.project||'Auditoría sin título')}</h3><p>${html(r.audit.meta.client||'Cliente por identificar')} · Actualizada ${html(new Date(r.updatedAt).toLocaleString('es-ES'))}</p><small>${r.audit.assets.length} equipos · ${r.audit.findings.length} hallazgos · ${r.audit.controls.length} controles</small></div><div class="audit-actions"><button class="button accent" data-open="${html(r.id)}">Editar</button><button class="button quiet" data-copy="${html(r.id)}">Duplicar</button><button class="button quiet" data-export-record="${html(r.id)}">JSON</button><button class="button danger" data-delete-record="${html(r.id)}">Borrar</button></div></article>`).join(''):'<div class="empty"><b>Sin resultados</b>Prueba otro nombre o crea una auditoría.</div>';
@@ -594,9 +712,9 @@
       <section class="card"><h2>Entrega bajo control del auditor</h2><p class="subtle">No se realiza ningún envío automático. El PDF se adjunta manualmente después de revisarlo.</p><div class="action-row"><button class="button accent" id="open-email">Preparar correo</button><button class="button quiet" id="native-share-json">Compartir JSON con el sistema</button><button class="button quiet" id="delivery-pdf">Generar PDF</button></div></section>
       <section class="card"><h2>Sincronización con nube</h2><p class="subtle">Google Drive, OneDrive, S3, Nextcloud y correo API requieren autorización, cifrado, autenticación y mecanismos de revocación. Todavía no están conectados. Exporta JSON y utiliza un cliente autorizado.</p></section>`;
   }
-  function renderDelivery(){const unresolved=state.controls.filter(x=>x.status==='Pendiente'||x.status==='No verificado').length;return `<span class="eyebrow">ENTREGA / REPORTING</span><h1 class="page-title">Informe final</h1><p class="lead">Última revisión editorial antes de entregar el resultado al cliente.</p><div class="notice">El PDF se crea con <strong>Imprimir → Guardar como PDF</strong> en tu navegador. No se necesita conexión, servidor ni librerías adicionales. Activa los gráficos de fondo si quieres conservar la composición visual.</div>${unresolved?`<div class="notice warn">Atención: hay ${unresolved} controles pendientes o no verificados. Se mostrarán así en el informe, no como conformes.</div>`:''}<section class="card"><div class="card-head"><div><h2>Conclusiones y cierre</h2><p class="subtle">Incluye un resumen ejecutivo entendible y un plan técnico accionable.</p></div></div><div class="fields">${finalFields.map(f=>renderField(state.final,'final',f)).join('')}</div></section><section class="card"><h2>Preparar entrega</h2><p class="subtle">El informe incorpora portada, confidencialidad, alcance, inventarios, controles, hallazgos, evidencias y recomendaciones.</p><div class="action-row"><button class="button accent" id="delivery-pdf">Generar informe PDF ↗</button><button class="button quiet" id="delivery-json">Guardar expediente JSON</button><button class="button danger" id="delivery-reset">Nuevo expediente</button><button class="button quiet" id="native-share-json">Compartir JSON (opcional)</button><button class="button quiet" id="open-email">Preparar correo (sin adjuntos)</button></div></section>`}
+  function renderDelivery(){const unresolved=state.controls.filter(x=>x.status==='Pendiente'||x.status==='No verificado').length;return `<span class="eyebrow">ENTREGA / REPORTING</span><h1 class="page-title">Informe final</h1><p class="lead">Última revisión editorial antes de entregar el resultado al cliente.</p><div class="notice">El PDF se crea con <strong>Imprimir → Guardar como PDF</strong> en tu navegador. No se necesita conexión, servidor ni librerías adicionales. Activa los gráficos de fondo si quieres conservar la composición visual.</div>${unresolved?`<div class="notice warn">Atención: hay ${unresolved} controles pendientes o no verificados. Se mostrarán así en el informe, no como conformes.</div>`:''}<section class="card"><div class="card-head"><div><h2>Conclusiones y cierre</h2><p class="subtle">Incluye un resumen ejecutivo entendible y un plan técnico accionable.</p></div></div><div class="fields">${finalFields.map(f=>renderField(state.final,'final',f)).join('')}</div></section><section class="card"><h2>Preparar entrega</h2><p class="subtle">El informe incorpora portada, confidencialidad, alcance, inventarios, controles, hallazgos, evidencias y recomendaciones.</p><div class="action-row"><button class="button accent" id="delivery-pdf">Generar informe PDF ↗</button><button class="button quiet" id="delivery-json">Guardar expediente JSON</button><button class="button quiet" data-go="backups">Copias / Excel / CSV</button><button class="button danger" id="delivery-reset">Nuevo expediente</button><button class="button quiet" id="native-share-json">Compartir JSON (opcional)</button><button class="button quiet" id="open-email">Preparar correo (sin adjuntos)</button></div></section>`}
   function render(){
-    const inLibrary=['records','online','settings','connections'].includes(page)||!currentId;
+    const inLibrary=['records','backups','online','settings','connections'].includes(page)||!currentId;
     byId('navigation').hidden=true;
     byId('audit-context').hidden=true;
     byId('workspace-label').textContent='MENÚ PRINCIPAL';
@@ -605,16 +723,16 @@
     byId('audit-context-title').textContent=state.meta.project||state.meta.client||'Auditoría sin título';
     byId('audit-context-ref').textContent=[state.meta.reportId||'SIN REFERENCIA',state.meta.client||'Cliente pendiente'].join(' · ');
     byId('navigation').innerHTML=nav.map(([id,symbol,name])=>`<button type="button" data-go="${id}" class="${page===id?'active':''}" ${page===id?'aria-current="page"':''}><span class="nav-mark">${symbol}</span>${name}</button>`).join('');
-    byId('current-section').textContent=page==='records'?'Biblioteca de auditorías':page==='settings'?'Configuración de consultora':page==='connections'||page==='online'?'Conexiones online':nav.find(n=>n[0]===page)?.[2]||'Expediente';
+    byId('current-section').textContent=page==='records'?'Biblioteca de auditorías':page==='backups'?'Copias de seguridad':page==='settings'?'Configuración de consultora':page==='connections'||page==='online'?'Conexiones online':nav.find(n=>n[0]===page)?.[2]||'Expediente';
     byId('active-audit-label').textContent=inLibrary?'Selecciona una auditoría':(state.meta.reportId||'Sin referencia')+' · '+(state.meta.project||state.meta.client||'Sin título');
     byId('btn-export').disabled=inLibrary;
     byId('btn-pdf').disabled=inLibrary;
 
-    byId('workspace').innerHTML=(inLibrary?'':renderWizardTop())+(page==='dashboard'?renderOverview():page==='records'?renderRecords():page==='settings'?renderSettings():page==='connections'||page==='online'?renderConnections():page==='engagement'?renderEngagement():page==='legal'?renderForm('legal',legalFields,'Cláusulas y privacidad','Modelos editables para auditorías en España. Revisa el contrato y solicita asesoramiento jurídico cuando corresponda.'):page==='delivery'?renderDelivery():renderGroup(page))+(inLibrary?'':renderWizard());
+    byId('workspace').innerHTML=(inLibrary?'':renderWizardTop())+(page==='dashboard'?renderOverview():page==='records'?renderRecords():page==='backups'?renderBackups():page==='settings'?renderSettings():page==='connections'||page==='online'?renderConnections():page==='engagement'?renderEngagement():page==='legal'?renderForm('legal',legalFields,'Cláusulas y privacidad','Modelos editables para auditorías en España. Revisa el contrato y solicita asesoramiento jurídico cuando corresponda.'):page==='delivery'?renderDelivery():renderGroup(page))+(inLibrary?'':renderWizard());
     byId('wizard-step-select')?.addEventListener('change',event=>move(event.target.value));
     for(const target of workspace.querySelectorAll('.field [data-field]:not([data-preset])'))updateValidation(target);
   }
-  function move(section){if(!['records','online','settings','connections'].includes(section)&&!currentId){alert('Primero crea o abre una auditoría desde la biblioteca.');return}if(['records','online','settings','connections'].includes(section)||nav.some(n=>n[0]===section)){page=section;render();scrollTo(0,0)}}
+  function move(section){if(!['records','backups','online','settings','connections'].includes(section)&&!currentId){alert('Primero crea o abre una auditoría desde la biblioteca.');return}if(['records','backups','online','settings','connections'].includes(section)||nav.some(n=>n[0]===section)){page=section;render();scrollTo(0,0)}}
   function fieldTarget(target){const {block,field,index}=target.dataset;if(!block||!field)return null;if(block==='meta'||block==='final'||block==='legal')return state[block];if(groups[block]&&index!==undefined)return state[block][Number(index)];return null}
   const workspace=byId('workspace');
   byId('global-navigation').addEventListener('click',e=>{const b=e.target.closest('[data-go]');if(b)move(b.dataset.go)});
@@ -649,6 +767,12 @@
         if(!state.meta.auditTeam.some(x=>x.id===id))state.meta.auditTeam.push({...member});
       }else state.meta.auditTeam=state.meta.auditTeam.filter(x=>x.id!==id);
       state.meta.auditor=auditorNames({...state.meta,auditor:''});persist();return;
+    }
+    if(t.id==='backup-auto'){
+      if(!backupPrefs.folderName){t.checked=false;alert('Primero selecciona una carpeta para las copias periódicas.');return}
+      backupPrefs.automatic=t.checked;backupPrefs.lastError='';storeBackupPrefs();
+      if(t.checked)void backupToFolder({interactive:true});
+      return;
     }
     if(t.name==='channel'){connectionChannel=t.value;for(const key of ['nextcloud','upload','email','share'])byId('connection-'+key).hidden=(key==='upload'||key==='nextcloud'?connectionChannel!=='nextcloud':connectionChannel!==key);return}
     if(t.id==='settings-import-file'&&t.files?.length){
@@ -755,6 +879,12 @@
     }
     if(b.id==='dav-forget'){if(confirm('¿Eliminar el perfil cifrado y cerrar la sesión Nextcloud?')){localStorage.removeItem(CONNECTION_KEY);unlockedConnection=null;render()}return}
     if(b.id==='dav-upload'){try{await flush();await uploadDav()}catch(error){byId('dav-upload-status').textContent='Error de subida: '+error.message}return}
+    if(b.id==='backup-select-folder'){await selectBackupFolder();return}
+    if(b.id==='backup-write-now'){await backupToFolder({interactive:true});return}
+    if(b.id==='backup-forget'){await forgetBackupFolder();return}
+    if(b.id==='backup-restore'){byId('input-import').click();return}
+    if(b.id==='backup-export-xlsx'){await exportTabular('xlsx');return}
+    if(b.id==='backup-export-csv'){await exportTabular('csv');return}
     if(b.dataset.new){await createAudit();return}
     if(b.dataset.backupAll){await backupAll();return}
     if(b.dataset.open){await switchAudit(b.dataset.open);return}
@@ -848,8 +978,9 @@
   async function backupAll(){
     try{
       await flush();
-      const payload={auditWorkbenchBackup:1,exportedAt:new Date().toISOString(),records:records.map(item=>({audit:item.id===currentId?state:item.audit}))};
-      download('audit-workbench-backup-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(payload,null,2),'application/json;charset=utf-8');
+      download('audit-workbench-backup-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(backupPayload(),null,2),'application/json;charset=utf-8');
+      backupPrefs.lastExportAt=new Date().toISOString();backupPrefs.lastExportCount=records.length;
+      storeBackupPrefs();if(page==='backups')render();
     }catch(error){alert('No se pudo exportar el backup: '+error.message)}
   }
   function exportJson(audit=state){const name='auditoria-'+slug(audit.meta.client)+'-'+new Date().toISOString().slice(0,10)+'.json';download(name,JSON.stringify(audit,null,2),'application/json;charset=utf-8')}

@@ -50,7 +50,7 @@ Abre `http://127.0.0.1:8765/` **en ese mismo PC**. El origen localhost se consid
 
 ## Migrar de ordenador a tablet
 
-1. PC: **Mis auditorías → Respaldar todas (JSON)** o **Guardar JSON** para un expediente.
+1. PC: **Copias y exportaciones → Descargar backup completo (.json)** o **Guardar JSON** para un expediente.
 2. Transfiere el archivo por USB, disco cifrado o el canal cifrado expresamente autorizado por el cliente.
 3. Tablet: abre Audit Workbench en el origen PWA, pulsa **Importar** y selecciona el archivo JSON desde **Archivos** (iOS/iPadOS) o un gestor de archivos (Android).
 4. Comprueba biblioteca, capturas y datos, y genera un PDF de control antes de continuar la auditoría.
@@ -88,3 +88,11 @@ La aplicación incorpora el CSS local de Atkinson con Regular, Bold, Italic y Bo
 ## Equipo de auditores
 
 En **Configuración → Equipo de auditores** registra nombre, función, correo profesional y teléfono de cada miembro. En cada expediente abre **Cliente y alcance → Profesionales asignados** y marca todas las personas participantes. Guarda un JSON de cada auditoría antes de cambiar de equipo; ese JSON conserva la autoría incluida en el informe.
+
+## Gestor de copias y formatos para el cliente
+
+En el menú principal, **Copias y exportaciones** centraliza las descargas JSON, la restauración y la exportación XLSX/CSV. El JSON completo puede recuperarse en otro equipo mediante **Importar**. Excel y CSV son formatos de entrega editables y **no sirven para restaurar** el expediente.
+
+Si aparece **Seleccionar carpeta**, puedes autorizar una carpeta local para guardar copias JSON con nombres fechados. La opción automática prueba a guardar cada 30 minutos con cambios, pero únicamente mientras la aplicación esté abierta y el navegador conserve acceso de escritura; no es un backup en segundo plano del sistema operativo. No se recomienda depender de esta función como único mecanismo de recuperación.
+
+Los JSON, CSV, XLSX y PDF pueden incluir datos de carácter reservado. Usa un volumen cifrado, acceso restringido y las políticas de conservación del contrato.

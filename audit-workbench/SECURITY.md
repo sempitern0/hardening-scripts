@@ -45,3 +45,10 @@ No utilices el flujo de WebDAV con credenciales personales principales: crea una
 La CSP permite `connect-src https:` únicamente para soportar servidores Nextcloud definidos por el usuario y consultas CVE expresas. No hay analítica, conexiones en segundo plano ni inyección de scripts desde dominios externos. Configura una CSP más restrictiva en el reverse proxy cuando un despliegue corporativo utiliza proveedores conocidos.
 
 El algoritmo de checksum español de DNI/NIE y el de NIF ordinario de entidad son **validadores de formato y control**, no verificaciones contra el censo de la AEAT ni contra la identidad de sus titulares.
+
+## Exportaciones tabulares y carpeta de respaldo
+
+- **JSON:** única copia restaurable de auditorías. Puede incluir imágenes, identificadores y datos personales sin cifrar; requiere custodia cifrada.
+- **XLSX/CSV:** exportaciones de tablas sin imágenes. CSV protege campos que empiezan por caracteres interpretables como fórmulas; XLSX utiliza celdas de texto, sin macros ni fórmulas generadas. Revisa cada entregable antes de enviarlo.
+- **Carpeta local:** la aplicación solo escribe en una carpeta seleccionada explícitamente mediante File System Access API, si está disponible. El permiso puede revocarse al cerrar o actualizar el navegador. No se proporciona ejecución automática con la app cerrada. Los nombres de carpeta y los tiempos de respaldo se guardan como preferencias; los permisos se custodian localmente mediante IndexedDB.
+- No utilices como destino del backup la carpeta pública servida por Python o un servidor web: los expedientes podrían quedar accesibles a terceros.

@@ -39,7 +39,8 @@ Get-Content .\audit-workbench.ps1
 
 ## Contenido
 
-- **Biblioteca:** auditorías guardadas, búsqueda, duplicado, borrado con confirmación, exportación individual y respaldo de todas las auditorías.
+- **Biblioteca:** auditorías guardadas, búsqueda, duplicado, borrado con confirmación y acceso al gestor de copias de seguridad.
+- **Copias y exportaciones:** respaldo JSON restaurable, opción de guardar copias periódicas en una carpeta autorizada y entregables XLSX/CSV offline.
 - **Cliente/alcance:** empresa, consultor, proyecto, clasificación, alcance autorizado, limitaciones, metodología, fechas y logotipo JPEG/PNG/WebP optimizado localmente.
 - **Inventario:** modelos de hardware dependientes del fabricante (con opción «Otro»), equipos físicos/virtuales, procesadores, memoria, discos, SO/firmware, fabricantes, modelos y ciclo de vida; redes/subredes/VLAN; software y licencias. Selectores con opción **Otro / escribir**.
 - **Seguridad:** controles y hallazgos con severidad, valoración de riesgo, medidas de remediación, referencias, responsables y pruebas.
@@ -47,27 +48,36 @@ Get-Content .\audit-workbench.ps1
 - **Evidencias:** fotografías/capturas opcionales comprimidas en el navegador, identificadores de evidencia y hashes manuales.
 - **Cláusulas:** modelos editables de confidencialidad, autorización, limitaciones, privacidad y custodia basados en contexto español, nunca sustitutos de contrato o revisión legal.
 - **Informe:** portada con logo, capítulos, distribución de severidades, inventarios, CVE, evidencias y recomendaciones. La paleta escogida modifica el acento del PDF y el fondo de su portada, mientras las páginas de contenido mantienen fondo blanco para lectura e impresión.
-- **Entrega:** JSON individual, backup JSON de todos los expedientes, imprimir/guardar PDF, compartir JSON a través del diálogo nativo cuando esté disponible, y preparar correo sin adjuntos. Ningún envío es automático.
+- **Entrega:** JSON individual, backup JSON restaurable, exportación XLSX/CSV, imprimir/guardar PDF, compartir JSON a través del diálogo nativo cuando esté disponible, y preparar correo sin adjuntos. Ningún envío es automático.
 
 ## Exportación, restauración y backup (imprescindible)
 
 1. Al terminar una sesión pulsa **Guardar JSON**. Se genera un expediente portable `auditoria-<cliente>-<fecha>.json` con los datos, cláusulas, CVE y las imágenes/logotipo incorporados.
-2. Para respaldar *todos* los informes, entra en **Mis auditorías → Respaldar todas (JSON)**. Se genera `audit-workbench-backup-AAAA-MM-DD.json`.
+2. Para respaldar *todos* los informes, entra en **Copias y exportaciones → Descargar backup completo (.json)**. Se genera `audit-workbench-backup-AAAA-MM-DD.json`.
 3. Copia el archivo a una ubicación cifrada con respaldo controlado. No lo subas a servicios no autorizados.
 4. En otro equipo abre Audit Workbench, pulsa **Importar**, elige el JSON individual o el backup y acepta la importación. Los expedientes importados se agregan como **nuevas copias**; no sobrescriben los existentes.
 5. Abre la biblioteca y comprueba que el número de activos, hallazgos y evidencias coincide. Genera el PDF y valida el resultado antes de entregar.
 
+### Copias en una carpeta elegida (opcional)
+
+En navegadores compatibles con la **File System Access API** (habitualmente Chrome/Edge de escritorio o ciertos Chromium), abre **Copias y exportaciones → Seleccionar carpeta**. Elige una carpeta de confianza y concede permiso de escritura. Usa **Guardar ahora** para comprobar la operación. Puedes activar **Copias cada 30 minutos**: solo se crearán cuando haya cambios, con la aplicación abierta y visible y mientras se mantengan los permisos. Los archivos tienen fecha/hora en el nombre y **no** se eliminan automáticamente. Desvincular la carpeta quita su autorización desde la aplicación, sin borrar copias anteriores.
+
+Firefox, Safari y determinados dispositivos móviles pueden no ofrecer la API. En ese caso, utiliza **Descargar backup completo (.json)**. Por seguridad el navegador no permite escribir arbitrariamente en la carpeta donde reside la aplicación. No conviertas los backups en archivos públicos del servidor: contienen datos de clientes, evidencias y datos personales.
+
+### CSV y Excel (XLSX)
+
+En **Copias y exportaciones** puedes descargar:
+
+- **Excel (.xlsx):** libro con ocho hojas (Resumen, Hardware, Redes, Software, CVE, Controles, Hallazgos y Evidencias), encabezados, filtros y primera fila fija. Se genera con JavaScript local, sin servicios online. No incrusta imágenes de evidencias.
+- **CSV (.csv):** una sección a elegir, en UTF-8 con BOM y separador `;` para facilitar la apertura en Excel configurado en español. Los valores potencialmente interpretables como fórmulas se fuerzan a texto.
+
+Ambos formatos son **entregables tabulares** destinados a revisión, intercambio y remediación: **no son backups restaurables** ni sustituyen al PDF. Solo JSON conserva la totalidad del expediente y sus capturas incrustadas. Antes de entregar hojas, revisa su contenido, los accesos autorizados y los metadatos que puedan identificar personas o sistemas.
+
 **Advertencia:** IndexedDB/localStorage pertenecen al perfil del navegador y al origen (`file://`, `https://servidor`, `http://localhost`). Borrar datos de sitio, usar incógnito, cambiar de navegador/perfil, reinstalar el sistema o cambiar la URL de origen **puede hacer desaparecer los expedientes locales**. Una PWA instalada no equivale a un backup; exporta los JSON con frecuencia. Los archivos de backup no están cifrados por la aplicación.
-
-## Dónde quedan guardadas las auditorías
-
-Los expedientes se guardan **dentro del navegador**, principalmente en **IndexedDB**, con `localStorage` como alternativa. **No se generan archivos en la carpeta de instalación al guardar automáticamente**: los archivos JSON aparecen en la carpeta de descargas (o donde elijas) únicamente cuando pulsas **Guardar JSON** o **Respaldar todas (JSON)**. El PDF se crea igualmente al seleccionar **Guardar como PDF** desde el diálogo de impresión.
-
-El almacenamiento se separa por navegador, perfil y origen web: `http://localhost:8765`, `http://127.0.0.1:8765` y puertos distintos pueden mostrar bibliotecas diferentes. Antes de cambiar de equipo, URL, navegador o instalación, exporta un respaldo de todos los expedientes y comprueba que puedes importarlo. Borrar los datos del sitio o desinstalar la aplicación puede eliminar la base local.
 
 ## Generación de PDF
 
-Selecciona el tema y carga el logotipo en **Cliente y alcance**, revisa **Cláusulas y privacidad** y **Informe final**, y pulsa **Generar PDF**. En el diálogo de impresión del sistema selecciona **Guardar como PDF** (Android/iPadOS pueden utilizar la función de imprimir/compartir del navegador) y selecciona **papel A4**, **escala 100 %** y **márgenes predeterminados**; el propio documento aplica márgenes físicos mediante CSS. Activa **gráficos de fondo** para reproducir la paleta y la portada. No selecciones «sin márgenes» ni «ajustar a página» si alteran la escala.
+Selecciona el tema y carga el logotipo en **Cliente y alcance**, revisa **Cláusulas y privacidad** y **Informe final**, y pulsa **Generar PDF**. En el diálogo de impresión del sistema selecciona **Guardar como PDF** (Android/iPadOS pueden utilizar la función de imprimir/compartir del navegador) y activa **gráficos de fondo** si tu navegador ofrece esa opción para reproducir todos los colores.
 
 El PDF contiene una instantánea del expediente *en ese momento*. No se modifica automáticamente si luego cambias la auditoría. Revisa encabezados, saltos de página, capturas y cumplimiento de requisitos del cliente antes de enviarlo. El PDF no constituye evidencia de integridad criptográfica ni una firma digital.
 
@@ -89,6 +99,7 @@ La función de compartir utiliza la API nativa `navigator.share` **solo cuando e
 
 ```bash
 node --check audit-workbench/app.js
+node --check audit-workbench/exporters.js
 bash -n audit-workbench/audit-workbench.sh
 python audit-workbench/tests/test_e2e.py  # Requiere Chromium, Playwright y PyMuPDF en entorno de desarrollo
 ```
@@ -112,7 +123,7 @@ La aplicación tiene **tres entradas principales**: Biblioteca, Configuración y
 
 ### Identidad de consultora y numeración
 
-En **Configuración** puedes guardar el nombre legal, NIF/NIE de la consultora, dirección, contacto, prefijo, logo y **directorio de auditores**. Desde **Cliente y alcance → Profesionales asignados** selecciona uno o varios miembros del equipo para cada expediente. Las fichas de los profesionales elegidos se guardan dentro de esa auditoría y aparecen en el PDF, aunque luego se modifique el directorio global. Cada auditor debe registrar **DNI, NIE o pasaporte/otro identificador** antes de poder ser asignado: se comprueba localmente el formato y, para DNI/NIE, la letra de control. Los documentos se incorporan a la atribución del informe PDF y al JSON del expediente, por lo que deben custodiarse como datos personales; esta validación no acredita identidad real ni sustituye la identificación contractual. Los expedientes nuevos reciben por defecto los datos corporativos y el logo; los ya existentes conservan sus campos editados. **Exportar perfil JSON** guarda la configuración y los contadores de numeración (incluye logo, no credenciales); **Importar perfil JSON** restaura el perfil.
+En **Configuración** puedes guardar el nombre legal, NIF/NIE de la consultora, dirección, contacto, prefijo, logo y **directorio de auditores**. Desde **Cliente y alcance → Profesionales asignados** selecciona uno o varios miembros del equipo para cada expediente. Las fichas de los profesionales elegidos se guardan dentro de esa auditoría y aparecen en el PDF, aunque luego se modifique el directorio global. Los expedientes nuevos reciben por defecto los datos corporativos y el logo; los ya existentes conservan sus campos editados. **Exportar perfil JSON** guarda la configuración y los contadores de numeración (incluye logo, no credenciales); **Importar perfil JSON** restaura el perfil.
 
 Los informes reciben códigos automáticos por cliente, por ejemplo `AUD-001`, `AUD-002`, `AUD-003`. Un cliente diferente inicia en `AUD-001`. Las secuencias se mantienen incluso si se borra una auditoría. El identificador puede editarse manualmente; desde ese momento deja de renumerarse automáticamente. **Una misma empresa debe registrarse con un nombre uniforme**; nombres escritos con variantes se consideran clientes diferentes. Este contador pertenece a la instalación local, por lo que la configuración debe exportarse si se cambia de dispositivo. La auditoría no utiliza un registro de identificadores centralizado.
 

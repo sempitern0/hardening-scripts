@@ -64,3 +64,12 @@
   #workspace .wizard-jump { width: 100%; }
   #workspace .wizard-jump select { width: 100%; max-width: none; flex: 1 1 100%; }
 }
+
+/* Backup manager: cards and export actions follow the same accessible spacing. */
+.backup-exports{display:flex;flex-wrap:wrap;gap:14px;align-items:end;margin:20px 0 10px}
+.backup-exports>div{flex:1 1 230px;display:grid;gap:8px}
+.backup-exports select{width:100%;min-height:48px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);padding:10px 12px}
+.backup-opt{display:flex;align-items:flex-start;gap:12px;padding:14px 0;font-size:.98rem;line-height:1.5}
+.backup-opt input{width:19px;height:19px;flex-shrink:0;accent-color:var(--brand);margin-top:3px}
+.backup-error{border:1px solid #bc4560;border-radius:10px;padding:12px;color:var(--ink)}
+@media(max-width:700px){.backup-exports{display:grid;grid-template-columns:1fr}.backup-exports .button{width:100%}}

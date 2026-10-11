@@ -24,7 +24,7 @@
     <aside class="sidebar" aria-label="Navegación del expediente">
       <div class="brand"><div class="brand-mark"><img src="icons/dragon.svg" width="39" height="39" alt="Dragón, icono de Audit Workbench"></div><div><strong>Audit Workbench</strong><small>SYSADMIN / SECURITY</small></div></div>
       <div class="side-caption" id="workspace-label">MENÚ PRINCIPAL</div>
-      <nav id="global-navigation" aria-label="Menú principal"><button type="button" data-go="records"><span class="nav-mark">▤</span> Biblioteca de auditorías</button><button type="button" data-go="settings"><span class="nav-mark">⚙</span> Configuración</button><button type="button" data-go="connections"><span class="nav-mark">↗</span> Conexiones online</button></nav>
+      <nav id="global-navigation" aria-label="Menú principal"><button type="button" data-go="records"><span class="nav-mark">▤</span> Biblioteca de auditorías</button><button type="button" data-go="backups"><span class="nav-mark">▣</span> Copias y exportaciones</button><button type="button" data-go="settings"><span class="nav-mark">⚙</span> Configuración</button><button type="button" data-go="connections"><span class="nav-mark">↗</span> Conexiones online</button></nav>
       <div class="audit-context" id="audit-context" hidden><span class="context-kicker">EXPEDIENTE ACTUAL</span><strong id="audit-context-title"></strong><small id="audit-context-ref"></small><button class="button quiet small" type="button" data-go="records">Cambiar auditoría ↗</button></div>
       <nav id="navigation" aria-label="Secciones del expediente"></nav>
       <div class="side-bottom"><span class="dot"></span> Entorno local · Offline <small>Sin servicios externos ni telemetría</small></div>
@@ -60,6 +60,7 @@
     </div>
   </div>
   <article id="report" aria-label="Informe final de auditoría"></article>
+  <script src="exporters.js" defer></script>
   <script src="app.js" defer></script>
 </body>
 </html>
