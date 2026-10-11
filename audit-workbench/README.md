@@ -41,12 +41,12 @@ Get-Content .\audit-workbench.ps1
 
 - **Biblioteca:** auditorías guardadas, búsqueda, duplicado, borrado con confirmación, exportación individual y respaldo de todas las auditorías.
 - **Cliente/alcance:** empresa, consultor, proyecto, clasificación, alcance autorizado, limitaciones, metodología, fechas y logotipo JPEG/PNG/WebP optimizado localmente.
-- **Inventario:** equipos físicos/virtuales, procesadores, memoria, discos, SO/firmware, fabricantes, modelos y ciclo de vida; redes/subredes/VLAN; software y licencias. Selectores con opción **Otro / escribir**.
+- **Inventario:** modelos de hardware dependientes del fabricante (con opción «Otro»), equipos físicos/virtuales, procesadores, memoria, discos, SO/firmware, fabricantes, modelos y ciclo de vida; redes/subredes/VLAN; software y licencias. Selectores con opción **Otro / escribir**.
 - **Seguridad:** controles y hallazgos con severidad, valoración de riesgo, medidas de remediación, referencias, responsables y pruebas.
 - **CVE:** registro manual con estados de verificación, activos afectados y fuente; consulta individual a CVE Services bajo autorización expresa cuando hay Internet; enlace a CVE.org. **No es un escáner de vulnerabilidades.**
 - **Evidencias:** fotografías/capturas opcionales comprimidas en el navegador, identificadores de evidencia y hashes manuales.
 - **Cláusulas:** modelos editables de confidencialidad, autorización, limitaciones, privacidad y custodia basados en contexto español, nunca sustitutos de contrato o revisión legal.
-- **Informe:** portada con logo, capítulos, distribución de severidades, inventarios, CVE, evidencias y recomendaciones. La paleta escogida ajusta el color de acento del PDF, que mantiene fondo blanco para la lectura e impresión.
+- **Informe:** portada con logo, capítulos, distribución de severidades, inventarios, CVE, evidencias y recomendaciones. La paleta escogida modifica el acento del PDF y el fondo de su portada, mientras las páginas de contenido mantienen fondo blanco para lectura e impresión.
 - **Entrega:** JSON individual, backup JSON de todos los expedientes, imprimir/guardar PDF, compartir JSON a través del diálogo nativo cuando esté disponible, y preparar correo sin adjuntos. Ningún envío es automático.
 
 ## Exportación, restauración y backup (imprescindible)
@@ -88,3 +88,14 @@ python audit-workbench/tests/test_e2e.py  # Requiere Chromium, Playwright y PyMu
 ```
 
 El proyecto prioriza ECMAScript moderno sin empaquetador: funciones nativas, eventos delegados, persistencia versionada, escapado sistemático y sin `eval`, `innerHTML` de datos sin sanitizar ni bibliotecas remotas. La app está preparada para una futura separación por módulos, respetando su uso offline y su despliegue con HTML/JS estáticos.
+
+## Interfaz y accesibilidad (v5)
+
+- **Menú principal:** biblioteca de expedientes y herramientas conectadas. Al abrir una auditoría aparece un menú diferente con el proyecto y su referencia claramente visibles.
+- **Logotipo:** PNG, JPEG y WebP de hasta 3 MiB. Se procesa enteramente en el dispositivo, se incrusta como JPEG y se valida tras importación. El formato SVG aportado por usuarios no se admite, porque puede contener código activo. El icono de la propia aplicación sí es un SVG local y estático.
+- **Fabricante y modelo:** el modelo depende del fabricante; cambiar de fabricante reinicia el modelo anterior. Si no figura tu equipo, usa «Otro / escribir».
+- **Severidades:** las etiquetas se actualizan al cambiar el selector, sin recargar la página.
+- **Temas:** paletas claras y oscuras ahora afectan a las superficies de edición y a la portada del PDF. Para conservar fondos al imprimir, habilita los gráficos de fondo.
+- **Fuente:** se recomienda Atkinson Hyperlegible Next, con licencia SIL OFL 1.1; consulta [FONTS.md](FONTS.md). No se descargan fuentes externas.
+
+La opción **Herramientas conectadas** reúne la consulta individual de CVE, el cliente de correo y el diálogo nativo para compartir archivos, además de explicar los límites de sincronización cloud. No existen integraciones automáticas con plataformas externas.
