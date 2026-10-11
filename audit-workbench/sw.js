@@ -1,6 +1,6 @@
 /* Audit Workbench service worker: immutable local shell only. No audit data is cached. */
 'use strict';
-const CACHE_NAME = 'audit-workbench-shell-v7';
+const CACHE_NAME = 'audit-workbench-shell-v8-fonts';
 const OPTIONAL_FONTS = ['Regular','Bold','Italic','BoldItalic'].map(weight => `./fonts/AtkinsonHyperlegible-${weight}.woff2`);
 const CORE = [
   './', './index.html', './styles.css', './app.js',
@@ -10,6 +10,7 @@ self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE_NAME).then(async cache => {
     await cache.addAll(CORE);
     await Promise.all(OPTIONAL_FONTS.map(path => cache.add(path).catch(() => undefined)));
+    await self.skipWaiting();
   }));
 });
 self.addEventListener('activate', event => {
