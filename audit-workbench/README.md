@@ -59,9 +59,15 @@ Get-Content .\audit-workbench.ps1
 
 **Advertencia:** IndexedDB/localStorage pertenecen al perfil del navegador y al origen (`file://`, `https://servidor`, `http://localhost`). Borrar datos de sitio, usar incógnito, cambiar de navegador/perfil, reinstalar el sistema o cambiar la URL de origen **puede hacer desaparecer los expedientes locales**. Una PWA instalada no equivale a un backup; exporta los JSON con frecuencia. Los archivos de backup no están cifrados por la aplicación.
 
+## Dónde quedan guardadas las auditorías
+
+Los expedientes se guardan **dentro del navegador**, principalmente en **IndexedDB**, con `localStorage` como alternativa. **No se generan archivos en la carpeta de instalación al guardar automáticamente**: los archivos JSON aparecen en la carpeta de descargas (o donde elijas) únicamente cuando pulsas **Guardar JSON** o **Respaldar todas (JSON)**. El PDF se crea igualmente al seleccionar **Guardar como PDF** desde el diálogo de impresión.
+
+El almacenamiento se separa por navegador, perfil y origen web: `http://localhost:8765`, `http://127.0.0.1:8765` y puertos distintos pueden mostrar bibliotecas diferentes. Antes de cambiar de equipo, URL, navegador o instalación, exporta un respaldo de todos los expedientes y comprueba que puedes importarlo. Borrar los datos del sitio o desinstalar la aplicación puede eliminar la base local.
+
 ## Generación de PDF
 
-Selecciona el tema y carga el logotipo en **Cliente y alcance**, revisa **Cláusulas y privacidad** y **Informe final**, y pulsa **Generar PDF**. En el diálogo de impresión del sistema selecciona **Guardar como PDF** (Android/iPadOS pueden utilizar la función de imprimir/compartir del navegador) y activa **gráficos de fondo** si tu navegador ofrece esa opción para reproducir todos los colores.
+Selecciona el tema y carga el logotipo en **Cliente y alcance**, revisa **Cláusulas y privacidad** y **Informe final**, y pulsa **Generar PDF**. En el diálogo de impresión del sistema selecciona **Guardar como PDF** (Android/iPadOS pueden utilizar la función de imprimir/compartir del navegador) y selecciona **papel A4**, **escala 100 %** y **márgenes predeterminados**; el propio documento aplica márgenes físicos mediante CSS. Activa **gráficos de fondo** para reproducir la paleta y la portada. No selecciones «sin márgenes» ni «ajustar a página» si alteran la escala.
 
 El PDF contiene una instantánea del expediente *en ese momento*. No se modifica automáticamente si luego cambias la auditoría. Revisa encabezados, saltos de página, capturas y cumplimiento de requisitos del cliente antes de enviarlo. El PDF no constituye evidencia de integridad criptográfica ni una firma digital.
 
