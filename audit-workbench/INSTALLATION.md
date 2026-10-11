@@ -44,6 +44,8 @@ Abre `http://127.0.0.1:8765/` **en ese mismo PC**. El origen localhost se consid
 4. Abre la app **una vez online y espera la carga completa** para que el service worker guarde la aplicación; luego activa modo avión y prueba apertura, edición y generación de PDF (el diálogo de impresión puede depender del SO).
 5. Guarda un backup JSON en almacenamiento cifrado y verifica que puedes importarlo en otro dispositivo.
 
+**Paquete listo para PWA:** el ZIP de distribución incluye `index.html`, CSS/JS, `manifest.webmanifest`, `sw.js` y los iconos SVG y PNG. No hay que instalar Python ni Node en Android/iPadOS: solo servir el contenido bajo HTTPS durante la primera instalación. Al usar **Añadir a pantalla de inicio / Instalar** se crea un icono propio, con el dragón, desde el que se abre la app sin conexión después del primer cacheo. Esto no es un APK/IPA firmado: instalar un ZIP o abrir un HTML con doble toque **no instala** una app nativa. Para requerir un APK/IPA independiente será necesario un wrapper firmado (por ejemplo Capacitor o TWA) y las herramientas de construcción y distribución de cada plataforma.
+
 **No basta con compartir por HTTP una IP de la LAN** (`http://192.168.x.x:8765`), porque no es un contexto seguro para PWA. Si usas un host local accesible desde tablet, proporciona HTTPS y un certificado que el dispositivo confíe. No uses certificados ignorando alertas TLS en auditorías reales.
 
 ## Migrar de ordenador a tablet
@@ -65,5 +67,5 @@ Para un futuro cambio de `hardening-scripts` a `sysadmin-tools`, adapta la URL y
 - **No se instala:** comprueba HTTPS o localhost, navegador compatible, manifiesto, iconos y políticas MDM.
 - **No abre sin red:** comprueba que se abrió online una vez tras la instalación y que el navegador no eliminó el almacenamiento del sitio.
 - **Faltan auditorías:** revisa el origen, perfil y navegador; restaura un backup JSON. No se puede recuperar lo que nunca se exportó si el almacenamiento local ha sido eliminado.
-- **PDF sin colores:** activa gráficos de fondo; selecciona la paleta **antes** de imprimir. La hoja permanece blanca para legibilidad.
+- **PDF sin colores:** activa gráficos de fondo; selecciona la paleta **antes** de imprimir. Las páginas técnicas mantienen fondo blanco para legibilidad, mientras la portada usa un fondo de color distinto por tema (incluidos los oscuros).
 - **Faltan capturas:** verifica que las imágenes estaban incrustadas en el JSON importado y que el navegador disponía de almacenamiento suficiente.
