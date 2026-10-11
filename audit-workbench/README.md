@@ -1,87 +1,90 @@
-# Audit Workbench · Offline Audit Workspace
+# Audit Workbench · auditorías técnicas offline
 
-Asistente local de documentación para auditorías de **hardware, software, redes, sistemas y ciberseguridad**. No realiza escaneos ni modifica infraestructura; el auditor documenta activos, controles, evidencias, hallazgos y recomendaciones, y prepara un **informe PDF** desde el navegador.
+Aplicación HTML/PWA para documentación y entrega de auditorías informáticas de **sistemas, redes, hardware, software y seguridad**. Se distribuye junto con dos instaladores Bash y PowerShell, pero no ejecuta hardening ni escanea redes. Está aislada de los asistentes de Active Directory del repositorio.
 
-La aplicación está **aislada de los scripts de Active Directory** del repositorio. Todos sus archivos, incluyendo los lanzadores, viven en `audit-workbench/`.
+**Regla central:** el expediente se trabaja localmente y se entrega cuando el auditor lo decide. Sin registro, cuentas, analítica, telemetría, servicios cloud ni librerías CDN. La consulta online de CVE y el uso de clientes de correo o de la función de compartir son opcionales y requieren intervención explícita del usuario.
 
-## Inicio rápido desde un checkout
+## Inicio rápido
 
-**Linux / macOS (Bash)**
-
-```bash
-bash ./audit-workbench/audit-workbench.sh
-# Instalación/actualización forzada desde los archivos del checkout:
-bash ./audit-workbench/audit-workbench.sh --update
-```
-
-**Windows (PowerShell 5.1+ / 7)**
-
-```powershell
-.\audit-workbench\audit-workbench.ps1
-.\audit-workbench\audit-workbench.ps1 -Update
-```
-
-Los lanzadores copian la aplicación a la carpeta local de usuario y abren `index.html`. No requieren privilegios administrativos ni Internet cuando se lanzan desde un checkout completo. Puedes abrir directamente `audit-workbench/index.html` manteniendo los recursos junto a él. El PDF se obtiene con **Generar PDF → Imprimir → Guardar como PDF** (preferentemente con fondos habilitados).
-
-## Descarga rápida sin clonar el repositorio
-
-Obtén el lanzador desde una rama/commit conocido y **revísalo** antes de ejecutarlo. La instalación necesita Internet una vez para descargar el HTML, JS, CSS, manifest, SW e iconos; la documentación de auditoría funciona después sin red.
+Desde un clone/ZIP del repositorio, estando en `audit-workbench/`:
 
 ```bash
-curl -fL -o audit-workbench.sh 'https://raw.githubusercontent.com/sempitern0/hardening-scripts/feature/offline-audit-workbench/audit-workbench/audit-workbench.sh'
-bash ./audit-workbench.sh --ref feature/offline-audit-workbench
+bash ./audit-workbench.sh
 ```
 
 ```powershell
-Invoke-WebRequest 'https://raw.githubusercontent.com/sempitern0/hardening-scripts/feature/offline-audit-workbench/audit-workbench/audit-workbench.ps1' -OutFile './audit-workbench.ps1'
+.\audit-workbench.ps1
+```
+
+O abre directamente `index.html` en un navegador moderno. Para instalar la PWA en tablet/móvil hace falta **primera carga desde HTTPS con certificado válido**; `file://` no soporta service workers y la instalación nativa puede depender del navegador y sistema. Véase [INSTALLATION.md](INSTALLATION.md).
+
+Para descargar solo el instalador desde GitHub, revisarlo y ejecutarlo:
+
+```bash
+curl -fL -o audit-workbench.sh \
+  'https://raw.githubusercontent.com/sempitern0/hardening-scripts/feature/offline-audit-workbench/audit-workbench/audit-workbench.sh'
+less audit-workbench.sh
+AUDIT_WORKBENCH_REF=feature/offline-audit-workbench bash ./audit-workbench.sh
+```
+
+En Windows con PowerShell, descarga y revisa antes de ejecutar:
+
+```powershell
+Invoke-WebRequest 'https://raw.githubusercontent.com/sempitern0/hardening-scripts/feature/offline-audit-workbench/audit-workbench/audit-workbench.ps1' -OutFile audit-workbench.ps1
+Get-Content .\audit-workbench.ps1
 .\audit-workbench.ps1 -Ref feature/offline-audit-workbench
 ```
 
-Tras fusionar en `main`, omite `--ref` y `-Ref`. Si se renombra el repositorio, utiliza `AUDIT_WORKBENCH_REPO=owner/nuevo-repo` (Bash) o `-Repository 'owner/nuevo-repo'` (PowerShell). Evita ejecutar scripts remotos directamente con `curl | bash` o `irm | iex`; revisa el archivo antes. Para actualizar una instalación anterior, usa `--update` o `-Update`.
+> La rama `feature/offline-audit-workbench` es de desarrollo. Sustituye su URL por `main` cuando la versión haya sido publicada. Evita `curl | bash` o `irm | iex` en clientes de terceros; descarga e inspecciona el script antes de ejecutarlo. Para cambiar el repositorio usa `AUDIT_WORKBENCH_REPO` (Bash) o `-Repository` (PowerShell).
 
-## Cómo realizar una auditoría
+## Contenido
 
-1. **Auditorías guardadas:** crea un expediente, abre uno anterior, búscalo, duplica, exporta a JSON o elimina con confirmación. Los expedientes están separados por ID estable.
-2. **Cliente y alcance:** identifica al cliente, autorización, fechas, exclusiones, límites y metodología.
-3. **Inventario técnico:** rellena hardware, segmentos de red y software. Los selectores ofrecen valores frecuentes y **Otro / escribir** cuando sea necesario.
-4. **Controles:** registra conformidad real; «Pendiente» y «No verificado» no significan conforme.
-5. **Hallazgos:** severidad, probabilidad, impacto, activos, evidencia, remediación, responsables y fechas. CVSS es un campo manual, no un cálculo automático.
-6. **Evidencias:** adjunta imágenes JPG/PNG/WebP que la app normaliza en el navegador (conserva el original fuera de la aplicación), referencias y hashes opcionales.
-7. **Informe final:** escribe conclusiones, resume hallazgos, revisa alcance y guarda el PDF. **Exporta también el JSON** para seguir trabajando en otra ocasión o dispositivo.
+- **Biblioteca:** auditorías guardadas, búsqueda, duplicado, borrado con confirmación, exportación individual y respaldo de todas las auditorías.
+- **Cliente/alcance:** empresa, consultor, proyecto, clasificación, alcance autorizado, limitaciones, metodología, fechas y logotipo JPEG/PNG/WebP optimizado localmente.
+- **Inventario:** equipos físicos/virtuales, procesadores, memoria, discos, SO/firmware, fabricantes, modelos y ciclo de vida; redes/subredes/VLAN; software y licencias. Selectores con opción **Otro / escribir**.
+- **Seguridad:** controles y hallazgos con severidad, valoración de riesgo, medidas de remediación, referencias, responsables y pruebas.
+- **CVE:** registro manual con estados de verificación, activos afectados y fuente; consulta individual a CVE Services bajo autorización expresa cuando hay Internet; enlace a CVE.org. **No es un escáner de vulnerabilidades.**
+- **Evidencias:** fotografías/capturas opcionales comprimidas en el navegador, identificadores de evidencia y hashes manuales.
+- **Cláusulas:** modelos editables de confidencialidad, autorización, limitaciones, privacidad y custodia basados en contexto español, nunca sustitutos de contrato o revisión legal.
+- **Informe:** portada con logo, capítulos, distribución de severidades, inventarios, CVE, evidencias y recomendaciones. La paleta escogida ajusta el color de acento del PDF, que mantiene fondo blanco para la lectura e impresión.
+- **Entrega:** JSON individual, backup JSON de todos los expedientes, imprimir/guardar PDF, compartir JSON a través del diálogo nativo cuando esté disponible, y preparar correo sin adjuntos. Ningún envío es automático.
 
-Los datos viven preferentemente en **IndexedDB** y, si el navegador no lo permite, en `localStorage`. Ambos almacenamientos son locales al perfil y **origen** del navegador; no se sincronizan ni sustituyen copias de seguridad. Se conserva compatibilidad con los JSON `schemaVersion: 2`. Al abrir por primera vez la nueva versión se intenta migrar el expediente guardado bajo la clave anterior `sysadmin-tools:audit-workbench:v2` sin eliminar esa clave. Las importaciones JSON **crean una nueva auditoría** y no sobrescriben otras.
+## Exportación, restauración y backup (imprescindible)
 
-## PWA en tablets: instalación y uso sin Internet
+1. Al terminar una sesión pulsa **Guardar JSON**. Se genera un expediente portable `auditoria-<cliente>-<fecha>.json` con los datos, cláusulas, CVE y las imágenes/logotipo incorporados.
+2. Para respaldar *todos* los informes, entra en **Mis auditorías → Respaldar todas (JSON)**. Se genera `audit-workbench-backup-AAAA-MM-DD.json`.
+3. Copia el archivo a una ubicación cifrada con respaldo controlado. No lo subas a servicios no autorizados.
+4. En otro equipo abre Audit Workbench, pulsa **Importar**, elige el JSON individual o el backup y acepta la importación. Los expedientes importados se agregan como **nuevas copias**; no sobrescriben los existentes.
+5. Abre la biblioteca y comprueba que el número de activos, hallazgos y evidencias coincide. Genera el PDF y valida el resultado antes de entregar.
 
-Una PWA requiere origen seguro para poder registrarse como aplicación instalable. **`file://` sigue funcionando como aplicación web local, pero no se puede instalar como PWA** con service worker en esa modalidad.
+**Advertencia:** IndexedDB/localStorage pertenecen al perfil del navegador y al origen (`file://`, `https://servidor`, `http://localhost`). Borrar datos de sitio, usar incógnito, cambiar de navegador/perfil, reinstalar el sistema o cambiar la URL de origen **puede hacer desaparecer los expedientes locales**. Una PWA instalada no equivale a un backup; exporta los JSON con frecuencia. Los archivos de backup no están cifrados por la aplicación.
 
-1. Publica el contenido estático mediante **HTTPS**, por ejemplo GitHub Pages (Settings → Pages → Deploy from a branch, rama elegida, carpeta `/`); la ruta será similar a `https://USUARIO.github.io/REPOSITORIO/audit-workbench/`. La dirección es un ejemplo, no una URL actualmente confirmada.
-2. Con conexión, abre esa dirección una vez y espera a que todos los recursos de la aplicación se descarguen. En Android/Chrome selecciona **Instalar aplicación**; en iPad/Safari, **Compartir → Añadir a pantalla de inicio**.
-3. Abre la aplicación instalada. A partir de ese momento funciona sin Internet para **editar, consultar, guardar JSON y preparar PDF** (la opción de impresión/PDF depende del navegador y sistema operativo). Desactiva la red para comprobarlo antes de ir al cliente.
+## Generación de PDF
 
-El service worker almacena **solo los archivos estáticos de la aplicación**, nunca el expediente o las imágenes. No usa CDN, API, telemetría ni recursos remotos de terceros. Una actualización futura del HTML/JS requiere volver a conectarse una vez al origen HTTPS. GitHub Pages es únicamente distribución de código público: **los datos del cliente no se suben a GitHub**.
+Selecciona el tema y carga el logotipo en **Cliente y alcance**, revisa **Cláusulas y privacidad** y **Informe final**, y pulsa **Generar PDF**. En el diálogo de impresión del sistema selecciona **Guardar como PDF** (Android/iPadOS pueden utilizar la función de imprimir/compartir del navegador) y activa **gráficos de fondo** si tu navegador ofrece esa opción para reproducir todos los colores.
 
-**Atención a los orígenes:** `file://`, `http://localhost`, y `https://...` utilizan almacenamientos distintos. Para migrar entre dispositivos, dominios o modalidades exporta el JSON e impórtalo en el destino. Las PWA pueden perder datos por políticas de limpieza/capacidad del navegador, especialmente en tablets: exporta al final de cada sesión y guarda expedientes en almacenamiento cifrado. No introduzcas contraseñas, tokens ni credenciales reales en texto claro.
+El PDF contiene una instantánea del expediente *en ese momento*. No se modifica automáticamente si luego cambias la auditoría. Revisa encabezados, saltos de página, capturas y cumplimiento de requisitos del cliente antes de enviarlo. El PDF no constituye evidencia de integridad criptográfica ni una firma digital.
 
-## Seguridad
+## CVE y conectividad
 
-- Interfaz sin peticiones a servicios de terceros; CSP restrictiva, HTML escapado, importación JSON con esquema validado, máximos por archivo/registro y tipos de imagen permitidos.
-- Persistencia por transacciones IndexedDB y guardado automático; indicador de errores de escritura. No se envían datos a ninguna red.
-- Los PDFs se renderizan en el navegador; el tema visual afecta a la interfaz pero los informes mantienen un estilo imprimible consistente.
-- El borrado local es irreversible salvo que hayas exportado una copia. No sustituye al borrado seguro del dispositivo.
-- La validación editorial y la autorización del contenido siguen siendo responsabilidad del auditor. El programa no acredita cumplimiento legal o normativo ni genera una puntuación CVSS verificada.
+El catálogo CVE admite trabajar sin Internet. Rellena `CVE-AAAA-NNNN`, el activo, la evaluación, la fuente y las notas. **Sin verificar** es el valor prudente por defecto. La acción **Consultar CVE online** realiza, solo después de confirmar, una petición `GET https://cveawg.mitre.org/api/cve/<ID>`, sin enviar otros campos del expediente; se importa descripción/fuente/fecha de publicación, **no** se declara una vulnerabilidad confirmada ni se inventan métricas CVSS. El navegador, una política CORS, el firewall o la disponibilidad del servicio pueden bloquear la consulta; siempre queda la consulta manual en CVE.org.
 
-## Desarrollo y pruebas
+La función de compartir utiliza la API nativa `navigator.share` **solo cuando está soportada**, previa confirmación, y comparte el **JSON completo**, no el PDF: el sistema/navegador decide canales. La opción de correo genera un borrador `mailto` **sin archivos adjuntos**; adjunta personalmente el PDF a un canal autorizado. **No hay sincronización con Dropbox/Drive ni envío SMTP/API automático** en esta versión. Véase [SECURITY.md](SECURITY.md).
+
+## Seguridad y límites
+
+- La aplicación carece de servidor y de sistema de cuentas. **No introduzcas contraseñas, claves, hashes de autenticación o tokens sin tratar** en el expediente.
+- La importación valida esquema y límites de filas/imágenes; el HTML escapa contenido textual. No se carga JavaScript de terceros; la CSP permite únicamente la consulta individual a CVE Services mediante HTTPS.
+- Los datos locales y las exportaciones **no se cifran** automáticamente. Usa discos cifrados, copias controladas y una política de acceso/retención que acuerdes con el cliente.
+- Los textos legales son plantillas editables; consulta [LEGAL.md](LEGAL.md) y revisión jurídica cuando corresponda.
+- Un informe profesional no implica certificación ISO 27001, conformidad ENS/CIS ni auditoría exhaustiva a menos que el alcance y las evidencias lo justifiquen.
+
+## Desarrollo y regresión
 
 ```bash
-bash -n audit-workbench/audit-workbench.sh
 node --check audit-workbench/app.js
-node --check audit-workbench/sw.js
-python audit-workbench/tests/test_e2e.py   # Playwright y PyMuPDF instalados solo en el entorno de prueba
+bash -n audit-workbench/audit-workbench.sh
+python audit-workbench/tests/test_e2e.py  # Requiere Chromium, Playwright y PyMuPDF en entorno de desarrollo
 ```
 
-El modo de prueba automatizado monta un documento artificial porque el navegador del entorno de CI restringe la navegación directa local; prueba el CRUD y PDF, pero la instalación PWA real debe probarse en Android/iPadOS con HTTPS. La aplicación no necesita Node, Python ni Playwright para ejecutarse.
-
-### Referencia editorial
-
-Inspirado en la estructura del documento compartido `RG001_INFORME_RESULTADOS_PENTESTING.pdf`: alcance y exclusiones, confidencialidad, metodología, resumen ejecutivo, severidad, riesgos, evidencias, hallazgos y remediaciones. No reproduce marcas, datos, capturas ni partes sustanciales del material original.
+El proyecto prioriza ECMAScript moderno sin empaquetador: funciones nativas, eventos delegados, persistencia versionada, escapado sistemático y sin `eval`, `innerHTML` de datos sin sanitizar ni bibliotecas remotas. La app está preparada para una futura separación por módulos, respetando su uso offline y su despliegue con HTML/JS estáticos.
