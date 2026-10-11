@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
   <title>Audit Workbench · Auditoría offline</title>
   <meta name="theme-color" content="#102a3b">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; manifest-src 'self'; worker-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://cveawg.mitre.org; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; manifest-src 'self'; worker-src 'self'">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
@@ -32,6 +32,11 @@
               <option value="forest">Bosque</option>
               <option value="indigo">Índigo</option>
               <option value="graphite">Grafito</option>
+              <option value="midnight">Medianoche (oscuro)</option>
+              <option value="obsidian">Obsidiana (oscuro)</option>
+              <option value="pine-dark">Pino (oscuro)</option>
+              <option value="amethyst-dark">Amatista (oscuro)</option>
+              <option value="crimson-dark">Granate (oscuro)</option>
             </select>
           </label>
           <button type="button" id="open-library" class="button quiet">Mis auditorías</button>
