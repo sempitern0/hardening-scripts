@@ -1,7 +1,9 @@
-/* Audit Workbench - local-only audit records. No network APIs are used. */
+/* Audit Workbench: offline-first audits, explicit network connectors, no telemetry. */
 'use strict';
 (() => {
-  const VERSION = 2;
+  const VERSION = 3;
+  const SETTINGS_KEY = 'sysadmin-tools:audit-workbench:settings:v1';
+  const CONNECTION_KEY = 'sysadmin-tools:audit-workbench:encrypted-nextcloud:v1';
   const LEGACY_STORE = 'sysadmin-tools:audit-workbench:v2';
   const ACTIVE_KEY = 'sysadmin-tools:audit-workbench:active:v3';
   const FALLBACK_KEY = 'sysadmin-tools:audit-workbench:records:v3';
@@ -53,8 +55,11 @@
   ];
   const metaFields = [
     ['client','Organización / cliente'],['project','Nombre del proyecto'],
+    ['clientIdType','Documento fiscal del cliente','select',['No indicado','NIF entidad / CIF','DNI / NIF persona física','NIE','NIF intracomunitario / otro']],['clientTaxId','Número de identificación fiscal'],
+    ['clientEmail','Correo electrónico del cliente'],['clientPhone','Teléfono del cliente'],['clientAddress','Domicilio fiscal / sede'],['clientPostal','Código postal (España)'],
     ['reportId','Identificador del informe'],['revision','Versión del informe'],
     ['auditor','Auditor / consultora'],['contact','Contacto del cliente'],
+    ['contactIdType','Documento identificativo del contacto','select',['No indicado','DNI / NIF persona física','NIE','Otro documento']],['contactId','DNI / NIE del contacto (opcional)'],
     ['start','Inicio de la auditoría','date'],['end','Fin de la auditoría','date'],
     ['classification','Clasificación','select',['Confidencial','Uso interno','Público']],
     ['type','Modalidad','select',['Auditoría de sistemas','Auditoría de infraestructura','Revisión de ciberseguridad','Pentesting autorizado','Mixta']],
@@ -127,7 +132,7 @@
       ['sha256','SHA-256 del original (opcional)'],['notes','Detalle, custodia y observaciones','textarea']]}
   };
   const severity = ['Crítica','Alta','Media','Baja','Informativa'];
-  const fresh = () => ({schemaVersion:VERSION,meta:{classification:'Confidencial',type:'Auditoría de infraestructura',revision:'1.0',logo:''},final:{disclaimer:'La evaluación refleja los sistemas y las evidencias examinados durante el período indicado. Las comprobaciones no ejecutadas y las exclusiones se detallan en el alcance.'},legal:legalDefaults(),assets:[],networks:[],software:[],cves:[],controls:[],findings:[],evidence:[]});
+  const fresh = () => ({schemaVersion:VERSION,meta:{classification:'Confidencial',type:'Auditoría de infraestructura',revision:'1.0',logo:'',reportAuto:'yes'},final:{disclaimer:'La evaluación refleja los sistemas y las evidencias examinados durante el período indicado. Las comprobaciones no ejecutadas y las exclusiones se detallan en el alcance.'},legal:legalDefaults(),assets:[],networks:[],software:[],cves:[],controls:[],findings:[],evidence:[]});
   const str = v => typeof v === 'string' ? v.slice(0,20000) : '';
   const html = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const uid = () => globalThis.crypto && crypto.randomUUID ? crypto.randomUUID() : 'id-'+Date.now()+'-'+Math.random().toString(36).slice(2);
@@ -143,6 +148,7 @@
       for(const [name] of fields)out[block][name]=typeof raw[block][name]==='string'?str(raw[block][name]):out[block][name];
     }
     out.meta.logo=safeLogo(raw.meta.logo);
+    out.meta.reportAuto=raw.meta.reportAuto==='no'?'no':'yes';
     for(const [block,definition] of Object.entries(groups)){
       if(block==='cves' && raw[block]===undefined)continue;
       if(!Array.isArray(raw[block])||raw[block].length>LIMIT_ROWS)throw Error('Datos no válidos en '+block);
@@ -190,6 +196,110 @@
       async put(record){if(database)return transaction('readwrite',s=>s.put(record));const records=fallback().filter(r=>r.id!==record.id);records.push(record);localStorage.setItem(FALLBACK_KEY,JSON.stringify(records))},
       async remove(id){if(database)return transaction('readwrite',s=>s.delete(id));localStorage.setItem(FALLBACK_KEY,JSON.stringify(fallback().filter(r=>r.id!==id)))}
     };
+  }
+  const DEFAULT_SETTINGS = () => ({
+    company:'',taxType:'NIF entidad / CIF',taxId:'',email:'',phone:'',address:'',postal:'',
+    auditor:'',prefix:'AUD',logo:'',sequences:{}
+  });
+  function loadSettings(){
+    try{
+      const raw=JSON.parse(localStorage.getItem(SETTINGS_KEY)||'{}');
+      if(!raw||typeof raw!=='object'||Array.isArray(raw))return DEFAULT_SETTINGS();
+      const cfg=DEFAULT_SETTINGS();
+      for(const key of ['company','taxType','taxId','email','phone','address','postal','auditor','prefix'])if(typeof raw[key]==='string')cfg[key]=str(raw[key]);
+      cfg.prefix=/^[A-Z0-9-]{2,12}$/.test(cfg.prefix)?cfg.prefix:'AUD';
+      cfg.logo=safeLogo(raw.logo);
+      if(raw.sequences&&typeof raw.sequences==='object'&&!Array.isArray(raw.sequences)){
+        for(const [key,value] of Object.entries(raw.sequences)){
+          if(key.length<160&&Number.isSafeInteger(value)&&value>=0&&value<1000000)cfg.sequences[key]=value;
+        }
+      }
+      return cfg;
+    }catch{return DEFAULT_SETTINGS()}
+  }
+  function loadSettingsFromImport(raw){
+    if(!raw||typeof raw!=='object'||Array.isArray(raw))throw Error('Configuración no válida');
+    const result=DEFAULT_SETTINGS();
+    for(const key of ['company','taxType','taxId','email','phone','address','postal','auditor','prefix'])if(typeof raw[key]==='string')result[key]=str(raw[key]);
+    result.logo=safeLogo(raw.logo);
+    if(!/^[A-Z0-9-]{2,12}$/.test(result.prefix))result.prefix='AUD';
+    if(raw.sequences&&typeof raw.sequences==='object'&&!Array.isArray(raw.sequences))for(const [key,num] of Object.entries(raw.sequences)){if(key.length<160&&Number.isSafeInteger(num)&&num>=0&&num<1000000)result.sequences[key]=num}
+    return result;
+  }
+  let settings=loadSettings();
+  function saveSettings(){
+    try{localStorage.setItem(SETTINGS_KEY,JSON.stringify(settings));return true}
+    catch(error){alert('No se pudo guardar la configuración local: '+error.message);return false}
+  }
+  function clientKey(client){return (client||'__pendiente__').trim().toLocaleLowerCase('es').slice(0,150)}
+  function nextReportId(client){
+    const key=clientKey(client),prefix=settings.prefix||'AUD';
+    const prior=records.filter(r=>r.id!==currentId&&clientKey(r.audit?.meta?.client)===key).map(r=>r.audit?.meta?.reportId||'');
+    const expression=new RegExp('^'+prefix+'-(\\d+)$','i');
+    const highest=prior.reduce((max,id)=>Math.max(max,Number(id.match(expression)?.[1]||0)),0);
+    const next=Math.max(settings.sequences[key]||0,highest)+1;
+    settings.sequences[key]=next;saveSettings();
+    return prefix+'-'+String(next).padStart(3,'0');
+  }
+  function normalizeId(v){return str(v).trim().toUpperCase().replace(/[.\s-]/g,'')}
+  const DNI_LETTERS='TRWAGMYFPDXBNJZSQVHLCKE';
+  function validDni(value){return /^\d{8}[A-Z]$/.test(value)&&DNI_LETTERS[Number(value.slice(0,8))%23]===value[8]}
+  function validNie(value){return /^[XYZ]\d{7}[A-Z]$/.test(value)&&validDni('XYZ'.indexOf(value[0])+value.slice(1))}
+  function validEntityNif(value){
+    if(!/^[ABCDEFGHJKLMNPQRSUVW]\d{7}[0-9A-J]$/.test(value))return false;
+    const digits=value.slice(1,8);
+    const even=[1,3,5].reduce((acc,i)=>acc+Number(digits[i]),0);
+    const odd=[0,2,4,6].reduce((acc,i)=>{const twice=Number(digits[i])*2;return acc+Math.floor(twice/10)+twice%10},0);
+    const check=(10-(even+odd)%10)%10;
+    const digit=String(check),letter='JABCDEFGHI'[check];
+    const control=value[8];
+    if('ABEH'.includes(value[0]))return control===digit;
+    if('NPQRSW'.includes(value[0]))return control===letter;
+    return control===digit||control===letter;
+  }
+  function validateIdentity(type,value){
+    const v=normalizeId(value);
+    if(!v||type==='No indicado')return '';
+    if(type==='DNI / NIF persona física'&&!validDni(v))return 'DNI/NIF no válido: comprueba 8 dígitos y letra de control.';
+    if(type==='NIE'&&!validNie(v))return 'NIE no válido: comprueba X/Y/Z, 7 cifras y letra de control.';
+    if(type==='NIF entidad / CIF'&&!validEntityNif(v))return 'NIF de entidad no válido: comprueba la letra y el dígito/letra de control.';
+    if(type==='NIF intracomunitario / otro'&&!/^[A-Z]{2}[A-Z0-9]{4,14}$/.test(v))return 'Comprueba país de dos letras y número fiscal; la verificación VIES no se realiza offline.';
+    if(type==='Otro documento'&&v.length<4)return 'El documento parece demasiado corto.';
+    return '';
+  }
+  function validationError(block,field,value,obj){
+    const v=str(value).trim();if(!v)return '';
+    if(field==='clientTaxId')return validateIdentity(obj.clientIdType||'No indicado',v);
+    if(field==='contactId')return validateIdentity(obj.contactIdType||'No indicado',v);
+    if(field==='taxId'&&block==='settings')return validateIdentity(obj.taxType||'No indicado',v);
+    if(['email','clientEmail'].includes(field)&&!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v))return 'Introduce un correo electrónico válido.';
+    if(['phone','clientPhone'].includes(field)&&!/^\+?[\d ()-]{9,23}$/.test(v))return 'Número telefónico no válido (9–15 dígitos, prefijo opcional).';
+    if(['postal','clientPostal'].includes(field)&&!/^((0[1-9]|[1-4]\d|5[0-2])\d{3})$/.test(v))return 'Código postal español: 5 dígitos, provincia entre 01 y 52.';
+    if(field==='id'&&block==='cves'&&!CVE_PATTERN.test(v))return 'Formato esperado: CVE-AAAA-NNNN.';
+    if(field==='sha256'&& !/^[a-fA-F0-9]{64}$/.test(v))return 'La huella SHA-256 debe contener 64 caracteres hexadecimales.';
+    if(field==='cvss'&& !(/^(?:10(?:\.0)?|[0-9](?:\.[0-9])?)$/.test(v)))return 'La puntuación CVSS debe estar entre 0.0 y 10.0.';
+    if(field==='vlan'&&(!/^\d+$/.test(v)||Number(v)<1||Number(v)>4094))return 'VLAN válida: de 1 a 4094.';
+    if(field==='cidr'&& !/^(?:\d{1,3}\.){3}\d{1,3}\/(?:[0-9]|[12][0-9]|3[0-2])$/.test(v))return 'Subred IPv4 CIDR no válida (ej. 192.168.1.0/24).';
+    if(field==='end'&&obj.start&&v<obj.start)return 'La fecha de fin no puede ser anterior al inicio.';
+    return '';
+  }
+  function updateValidation(target){
+    const block=target.dataset.block,field=target.dataset.field;
+    const obj=block==='settings'?settings:fieldTarget(target);
+    if(!obj||target.dataset.preset)return;
+    const issue=validationError(block,field,target.value,obj);
+    const wrapper=target.closest('.field');
+    if(!wrapper)return;
+    let node=wrapper.querySelector('.field-error');
+    if(!node){node=document.createElement('small');node.className='field-error';node.setAttribute('role','status');wrapper.append(node)}
+    node.textContent=issue;target.setAttribute('aria-invalid',issue?'true':'false');
+    if(typeof target.setCustomValidity==='function')target.setCustomValidity(issue);
+  }
+  function invalidFields(){
+    const problems=[];
+    for(const [name] of metaFields){const issue=validationError('meta',name,state.meta[name],state.meta);if(issue)problems.push(name+': '+issue)}
+    for(const [block,def] of Object.entries(groups))for(const record of state[block])for(const [name] of def.fields){const issue=validationError(block,name,record[name],record);if(issue)problems.push(block+'/'+name+': '+issue)}
+    return problems;
   }
   const repository=createRepository();
   const byId=id=>document.getElementById(id);
@@ -257,7 +367,12 @@
     render();
   }
   async function createAudit(audit=fresh()){
-    try{await flush();const record=newRecord(audit);await enqueue(()=>repository.put(record));records.push(record);setActive(record);move('engagement')}
+    try{
+      await flush();
+      if(!audit.meta.reportId){audit.meta.reportId=nextReportId(audit.meta.client);audit.meta.reportAuto='yes'}
+      if(!audit.meta.auditor)audit.meta.auditor=settings.auditor||settings.company;
+      if(!audit.meta.logo)audit.meta.logo=settings.logo;
+      const record=newRecord(audit);await enqueue(()=>repository.put(record));records.push(record);setActive(record);move('engagement')}
     catch(error){alert('No se ha creado la auditoría: '+error.message)}
   }
   async function switchAudit(id){
@@ -319,38 +434,122 @@
   function renderForm(block,fields,title,intro){return `<span class="eyebrow">AUDITORÍA / DOCUMENTACIÓN</span><h1 class="page-title">${title}</h1><p class="lead">${intro}</p><section class="card"><div class="fields">${fields.map(f=>renderField(state[block],block,f)).join('')}</div></section>`}
   function renderEngagement(){
     return renderForm('meta',metaFields,'Cliente y alcance','Contexto, autorización, alcance, metodología y limitaciones de la evaluación.')+
-      `<section class="card"><h2>Identidad corporativa del informe</h2><p class="subtle">Adjunta tu logo o el de la consultora (PNG, JPEG o WebP; máximo 3 MiB). Se convierte a JPEG y se incluye en el JSON exportado y en la portada del PDF. No se sube a Internet.</p><input id="logo-upload" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Seleccionar logotipo corporativo">${state.meta.logo?`<div class="logo-preview"><img src="${state.meta.logo}" alt="Logotipo corporativo incorporado"><button type="button" class="button danger small" id="logo-remove">Eliminar logotipo</button></div>`:''}</section>`;
+      `<section class="card"><h2>Logo específico del informe (opcional)</h2><p class="subtle">Adjunta tu logo o el de la consultora (PNG, JPEG o WebP; máximo 3 MiB). Se convierte a JPEG y se incluye en el JSON exportado y en la portada del PDF. No se sube a Internet.</p><input id="logo-upload" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Seleccionar logotipo corporativo">${state.meta.logo?`<div class="logo-preview"><img src="${state.meta.logo}" alt="Logotipo corporativo incorporado"><button type="button" class="button danger small" id="logo-remove">Eliminar logotipo</button></div>`:''}</section>`;
   }
   function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p><section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Cada dato registrado podrá aparecer en el informe y en la copia JSON.</p></div><button class="button accent" data-add="${block}">+ Añadir registro</button></div>${rows.length?rows.map((r,i)=>`<div class="entry"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="fields">${def.fields.map(f=>renderField(r,block,f,i)).join('')}</div>${block==='cves'?`<div class="cve-tools"><button class="button quiet small" type="button" data-cve-check="${i}">Consultar CVE online (opcional)</button><button class="button small" type="button" data-cve-link="${i}">Ver en CVE.org ↗</button><span class="subtle">Solo se envía el identificador CVE, nunca los datos del cliente.</span></div>`:''}${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Captura opcional</strong> (PNG, JPG, WebP hasta 5 MiB; se optimiza localmente)</label><input type="file" accept="image/png,image/jpeg,image/webp" data-image-index="${i}" id="evidence-upload-${i}">${r.image?`<img class="evidence-preview" alt="Evidencia incrustada" src="${r.image}"><button class="button small danger" data-clear-image="${i}">Quitar imagen</button>`:''}</div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
+  const settingsFields=[
+    ['company','Nombre legal de la consultora'],['taxType','Identificador fiscal','select',['No indicado','NIF entidad / CIF','DNI / NIF persona física','NIE','NIF intracomunitario / otro']],
+    ['taxId','Identificación fiscal'],['auditor','Auditor responsable'],['email','Email corporativo'],['phone','Teléfono'],
+    ['address','Domicilio profesional'],['postal','Código postal (España)'],['prefix','Prefijo de informes (ej. AUD)']
+  ];
+  function renderSettings(){
+    return `<span class="eyebrow">PREFERENCIAS / CONSULTORA</span><h1 class="page-title">Configuración de la consultora</h1>
+      <p class="lead">Define una identidad reutilizable para tus auditorías. Los datos se guardan solo en este navegador; exporta el perfil para respaldarlo.</p>
+      <section class="card"><h2>Datos de la empresa auditora</h2><div class="fields">${settingsFields.map(f=>renderField(settings,'settings',f)).join('')}</div></section>
+      <section class="card"><h2>Logotipo corporativo</h2><p class="subtle">Se copiará a cada expediente nuevo y al PDF. No se envía a ningún servidor.</p>
+      <input type="file" id="settings-logo-upload" accept="image/jpeg,image/png,image/webp" aria-label="Logotipo de la consultora">${settings.logo?`<div class="logo-preview"><img src="${settings.logo}" alt="Logotipo configurado"><button type="button" class="button danger" id="settings-logo-remove">Eliminar logo</button></div>`:''}</section>
+      <section class="card"><h2>Numeración y copia de seguridad</h2><p class="subtle">La numeración se asigna por cliente al completar su nombre. Cada cliente tiene su propia secuencia; un código usado no vuelve a asignarse aunque borres el expediente. Puedes corregir manualmente un identificador concreto.</p>
+      <div class="action-row"><button class="button accent" id="settings-export">Exportar perfil JSON</button><button class="button quiet" id="settings-import">Importar perfil JSON</button><input type="file" id="settings-import-file" accept=".json,application/json" hidden></div></section>`;
+  }
+  function renderWizardTop(){const i=nav.findIndex(n=>n[0]===page);return i<0?'':`<div class="wizard-top"><span>Fase ${i+1} / ${nav.length}</span><progress max="${nav.length}" value="${i+1}"></progress><span>${html(nav[i][2])}</span></div>`}
+  function renderWizard(){
+    const current=nav.findIndex(n=>n[0]===page);
+    if(current<0)return '';
+    const previous=nav[current-1],next=nav[current+1];
+    const options=nav.map(([id,,label],i)=>`<option value="${id}"${i===current?' selected':''}>${i+1}. ${html(label)}</option>`).join('');
+    return `<div class="wizard-controls" aria-label="Asistente de auditoría"><div class="wizard-progress"><strong>Paso ${current+1} de ${nav.length}</strong><span>${html(nav[current][2])}</span><progress max="${nav.length}" value="${current+1}"></progress></div>
+      <div class="wizard-buttons"><button type="button" class="button quiet" data-go="${previous?previous[0]:'records'}">← ${previous?'Anterior':'Biblioteca'}</button><label class="wizard-jump">Ir al paso <select id="wizard-step-select">${options}</select></label><button type="button" class="button accent" data-go="${next?next[0]:'records'}">${next?'Siguiente':'Finalizar'} →</button></div></div>`;
+  }
+  // Browser-side WebDAV session; credentials are encrypted at rest with a user passphrase.
+  const utf8=new TextEncoder(),decoder=new TextDecoder();
+  let unlockedConnection=null, connectionChannel='nextcloud';
+  function bytesB64(bytes){return btoa(Array.from(bytes,b=>String.fromCharCode(b)).join(''))}
+  function b64Bytes(value){return Uint8Array.from(atob(value),x=>x.charCodeAt(0))}
+  async function deriveKey(passphrase,salt){
+    const base=await crypto.subtle.importKey('raw',utf8.encode(passphrase),'PBKDF2',false,['deriveKey']);
+    return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:310000,hash:'SHA-256'},base,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+  }
+  async function encryptProfile(profile,passphrase){
+    const salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12));
+    const key=await deriveKey(passphrase,salt);
+    const ciphertext=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,utf8.encode(JSON.stringify(profile)));
+    return {version:1,kdf:'PBKDF2-SHA256',rounds:310000,cipher:'AES-256-GCM',salt:bytesB64(salt),iv:bytesB64(iv),payload:bytesB64(new Uint8Array(ciphertext))};
+  }
+  async function decryptProfile(envelope,passphrase){
+    if(envelope?.version!==1)throw Error('Formato cifrado no reconocido.');
+    const key=await deriveKey(passphrase,b64Bytes(envelope.salt));
+    return JSON.parse(decoder.decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:b64Bytes(envelope.iv)},key,b64Bytes(envelope.payload))));
+  }
+  function validateWebdavProfile(url,user,password){
+    const parsed=new URL(url);
+    if(parsed.protocol!=='https:'||parsed.username||parsed.password||parsed.search||parsed.hash)throw Error('Usa una dirección HTTPS sin parámetros ni credenciales en URL.');
+    if(!/\/remote\.php\/dav\/files\//.test(parsed.pathname)&&!/\/remote\.php\/webdav\/?$/.test(parsed.pathname))throw Error('Indica una URL WebDAV de Nextcloud, p. ej. https://nube.example/remote.php/dav/files/usuario/');
+    if(!user.trim()||!password)throw Error('Indica usuario y contraseña de aplicación de Nextcloud.');
+    return {url:parsed.href.replace(/\/*$/,'/') ,user:user.trim(),secret:password};
+  }
+  function connectionSettingsMarkup(){
+    const exists=Boolean(localStorage.getItem(CONNECTION_KEY));
+    return `<span class="eyebrow">CONECTORES / OPCIONAL</span><h1 class="page-title">Conexiones y entrega</h1>
+      <p class="lead">Los datos del expediente permanecen offline. Cada conexión es opcional y solo transmite información al pulsar «Subir expediente».</p>
+      <section class="card"><h2>1 · Elige un canal</h2><div class="connection-methods"><label><input type="radio" name="channel" value="nextcloud" ${connectionChannel==='nextcloud'?'checked':''}> Nextcloud / WebDAV (subir JSON cifrando la conexión TLS)</label><label><input type="radio" name="channel" value="email" ${connectionChannel==='email'?'checked':''}> Email (abre tu cliente de correo)</label><label><input type="radio" name="channel" value="share" ${connectionChannel==='share'?'checked':''}> Compartir con el sistema</label></div></section>
+      <section class="card" id="connection-nextcloud" ${connectionChannel==='nextcloud'?'':'hidden'}><h2>2 · Configura Nextcloud</h2><p class="subtle">Usa una contraseña de aplicación revocable, no la contraseña principal. El perfil queda cifrado localmente mediante AES-GCM y una frase de paso que no almacenamos. El navegador debe permitir CORS en el servidor WebDAV.</p>
+      <div class="fields"><div class="field full"><label for="dav-url">URL WebDAV HTTPS</label><input id="dav-url" type="url" autocomplete="off" placeholder="https://nube.example/remote.php/dav/files/usuario/"></div>
+      <div class="field"><label for="dav-user">Usuario</label><input id="dav-user" autocomplete="off"></div><div class="field"><label for="dav-secret">Contraseña de aplicación</label><input id="dav-secret" type="password" autocomplete="new-password"></div>
+      <div class="field full"><label for="dav-passphrase">Frase de paso local (12 caracteres mínimo)</label><input id="dav-passphrase" type="password" autocomplete="new-password"></div></div>
+      <div class="action-row"><button class="button accent" id="dav-save">Guardar conexión cifrada</button><button class="button quiet" id="dav-unlock" ${exists?'':'disabled'}>Desbloquear conexión</button><button class="button danger" id="dav-forget" ${exists?'':'disabled'}>Borrar conexión</button></div>
+      <p class="subtle" id="dav-status" role="status">${unlockedConnection?'Conexión desbloqueada en esta sesión.':exists?'Hay un perfil cifrado. Introduce la frase de paso para desbloquearlo.':'Todavía no hay una conexión guardada.'}</p></section>
+      <section class="card" id="connection-upload" ${connectionChannel==='nextcloud'?'':'hidden'}><h2>3 · Entrega bajo consentimiento</h2><p class="subtle">Sube únicamente el expediente activo como JSON a la carpeta WebDAV configurada. Puede contener información confidencial y evidencias incrustadas. No se realizan sincronizaciones automáticas.</p>
+      <div class="action-row"><button class="button accent" id="dav-upload" ${unlockedConnection&&currentId?'':'disabled'}>Subir expediente JSON</button><button class="button quiet" id="open-email">Preparar correo</button><button class="button quiet" id="native-share-json">Compartir JSON</button></div><p class="subtle" id="dav-upload-status" role="status"></p></section>
+      <section class="card" id="connection-email" ${connectionChannel==='email'?'':'hidden'}><h2>2 · Envío por correo</h2><p class="subtle">Abre un correo con asunto y texto preparados. Los navegadores no pueden adjuntar automáticamente un PDF a un enlace mailto. Genera y revisa el PDF, adjúntalo en tu cliente y verifica destinatarios antes de enviar.</p><button type="button" class="button accent" id="open-email">Redactar correo</button></section>
+      <section class="card" id="connection-share" ${connectionChannel==='share'?'':'hidden'}><h2>2 · Compartir mediante el dispositivo</h2><p class="subtle">Utiliza Web Share API si el dispositivo la ofrece; elige manualmente la aplicación de destino. También puedes exportar JSON y compartir el PDF ya generado desde el gestor de archivos.</p><button type="button" class="button accent" id="native-share-json">Compartir expediente JSON</button></section>
+      <section class="card"><h2>Otros proveedores</h2><p class="subtle">Drive, OneDrive y Microsoft 365 requieren OAuth mediante PKCE, registro de aplicación y políticas CORS. No guardes <em>client secrets</em> de OAuth en una aplicación JavaScript distribuida: no pueden mantenerse secretos en un cliente público. Se añadirán integraciones específicas cuando tengan un flujo seguro verificado.</p></section>`;
+  }
+  function renderConnections(){return connectionSettingsMarkup()}
+  async function uploadDav(){
+    if(!currentId||!unlockedConnection)throw Error('Abre un expediente y desbloquea la conexión primero.');
+    const filename='auditoria-'+slug(state.meta.client)+'-'+slug(state.meta.reportId||'informe')+'.json';
+    const body=JSON.stringify(state,null,2);
+    if(!confirm(`¿Enviar el expediente ${state.meta.reportId||''} (${Math.ceil(body.length/1024)} KiB) a ${new URL(unlockedConnection.url).origin}? Puede incluir datos personales y evidencias.`))return;
+    const target=new URL(encodeURIComponent(filename),unlockedConnection.url).href;
+    const authorization='Basic '+btoa(Array.from(utf8.encode(unlockedConnection.user+':'+unlockedConnection.secret),v=>String.fromCharCode(v)).join(''));
+    const reply=await fetch(target,{method:'PUT',mode:'cors',credentials:'omit',headers:{'Authorization':authorization,'Content-Type':'application/json;charset=utf-8'},body,redirect:'error',referrerPolicy:'no-referrer'});
+    if(!reply.ok)throw Error('WebDAV devolvió HTTP '+reply.status+'. Revisa permisos y CORS.');
+    byId('dav-upload-status').textContent='Expediente enviado por HTTPS. Conserva igualmente una copia offline.';
+  }
   function renderOnline(){
     const status=navigator.onLine?'El navegador declara conexión disponible.':'Sin conexión detectada. El expediente sigue siendo editable.';
     return `<span class="eyebrow">CONECTIVIDAD / ENTREGA OPCIONAL</span><h1 class="page-title">Herramientas conectadas</h1>
       <p class="lead">La auditoría no necesita Internet. Estas operaciones solo se ejecutan tras pulsar y confirmar, sin credenciales guardadas.</p>
-      <section class="card"><h2>Estado de conexión e instalación</h2><p id="online-status" role="status">${html(status)}</p><div class="action-row"><button class="button quiet" id="check-connectivity">Comprobar conectividad</button><button class="button accent" id="install-pwa" ${deferredInstallPrompt?'':'hidden'}>Instalar aplicación en este dispositivo</button><button class="button quiet" data-go="cves">Consultar CVE por identificador</button></div><p class="subtle" style="margin-top:14px">Para tablets: primero abre el sitio mediante HTTPS. Si el navegador no ofrece instalación directa, usa «Añadir a pantalla de inicio» desde su menú. Tras abrirla online, prueba la aplicación en modo avión.</p></section>
+      <section class="card"><h2>Estado de conexión e instalación</h2><p id="online-status" role="status">${html(status)}</p><div class="action-row"><button class="button quiet" id="check-connectivity">Comprobar conectividad</button><button class="button accent" id="install-pwa" ${deferredInstallPrompt?'':'hidden'}>Instalar aplicación en este dispositivo</button><button class="button quiet" data-go="cves">Consultar CVE por identificador</button></div><p class="subtle online-install-note">Para tablets: primero abre el sitio mediante HTTPS. Si el navegador no ofrece instalación directa, usa «Añadir a pantalla de inicio» desde su menú. Tras abrirla online, prueba la aplicación en modo avión.</p></section>
       <section class="card"><h2>Entrega bajo control del auditor</h2><p class="subtle">No se realiza ningún envío automático. El PDF se adjunta manualmente después de revisarlo.</p><div class="action-row"><button class="button accent" id="open-email">Preparar correo</button><button class="button quiet" id="native-share-json">Compartir JSON con el sistema</button><button class="button quiet" id="delivery-pdf">Generar PDF</button></div></section>
       <section class="card"><h2>Sincronización con nube</h2><p class="subtle">Google Drive, OneDrive, S3, Nextcloud y correo API requieren autorización, cifrado, autenticación y mecanismos de revocación. Todavía no están conectados. Exporta JSON y utiliza un cliente autorizado.</p></section>`;
   }
   function renderDelivery(){const unresolved=state.controls.filter(x=>x.status==='Pendiente'||x.status==='No verificado').length;return `<span class="eyebrow">ENTREGA / REPORTING</span><h1 class="page-title">Informe final</h1><p class="lead">Última revisión editorial antes de entregar el resultado al cliente.</p><div class="notice">El PDF se crea con <strong>Imprimir → Guardar como PDF</strong> en tu navegador. No se necesita conexión, servidor ni librerías adicionales. Activa los gráficos de fondo si quieres conservar la composición visual.</div>${unresolved?`<div class="notice warn">Atención: hay ${unresolved} controles pendientes o no verificados. Se mostrarán así en el informe, no como conformes.</div>`:''}<section class="card"><div class="card-head"><div><h2>Conclusiones y cierre</h2><p class="subtle">Incluye un resumen ejecutivo entendible y un plan técnico accionable.</p></div></div><div class="fields">${finalFields.map(f=>renderField(state.final,'final',f)).join('')}</div></section><section class="card"><h2>Preparar entrega</h2><p class="subtle">El informe incorpora portada, confidencialidad, alcance, inventarios, controles, hallazgos, evidencias y recomendaciones.</p><div class="action-row"><button class="button accent" id="delivery-pdf">Generar informe PDF ↗</button><button class="button quiet" id="delivery-json">Guardar expediente JSON</button><button class="button danger" id="delivery-reset">Nuevo expediente</button><button class="button quiet" id="native-share-json">Compartir JSON (opcional)</button><button class="button quiet" id="open-email">Preparar correo (sin adjuntos)</button></div></section>`}
   function render(){
-    const inLibrary=page==='records'||(page==='online'&&!currentId);
-    byId('navigation').hidden=inLibrary;
-    byId('audit-context').hidden=inLibrary;
-    byId('workspace-label').textContent=inLibrary?'MENÚ PRINCIPAL':'EXPEDIENTE ABIERTO';
+    const inLibrary=['records','online','settings','connections'].includes(page)||!currentId;
+    byId('navigation').hidden=true;
+    byId('audit-context').hidden=true;
+    byId('workspace-label').textContent='MENÚ PRINCIPAL';
+    byId('main-audit-context').hidden=inLibrary;
+    byId('main-audit-context').textContent=(state.meta.reportId||'Sin referencia')+' · '+(state.meta.client||'Cliente pendiente')+' · '+(state.meta.project||'Sin título');
     byId('audit-context-title').textContent=state.meta.project||state.meta.client||'Auditoría sin título';
     byId('audit-context-ref').textContent=[state.meta.reportId||'SIN REFERENCIA',state.meta.client||'Cliente pendiente'].join(' · ');
     byId('navigation').innerHTML=nav.map(([id,symbol,name])=>`<button type="button" data-go="${id}" class="${page===id?'active':''}" ${page===id?'aria-current="page"':''}><span class="nav-mark">${symbol}</span>${name}</button>`).join('');
-    byId('current-section').textContent=inLibrary?'Biblioteca de auditorías':page==='online'?'Herramientas conectadas':nav.find(n=>n[0]===page)?.[2]||'Expediente';
+    byId('current-section').textContent=page==='records'?'Biblioteca de auditorías':page==='settings'?'Configuración de consultora':page==='connections'||page==='online'?'Conexiones online':nav.find(n=>n[0]===page)?.[2]||'Expediente';
     byId('active-audit-label').textContent=inLibrary?'Selecciona una auditoría':(state.meta.reportId||'Sin referencia')+' · '+(state.meta.project||state.meta.client||'Sin título');
     byId('btn-export').disabled=inLibrary;
     byId('btn-pdf').disabled=inLibrary;
 
-    byId('workspace').innerHTML=page==='dashboard'?renderOverview():page==='records'?renderRecords():page==='online'?renderOnline():page==='engagement'?renderEngagement():page==='legal'?renderForm('legal',legalFields,'Cláusulas y privacidad','Modelos editables para auditorías en España. Revisa el contrato y solicita asesoramiento jurídico cuando corresponda.'):page==='delivery'?renderDelivery():renderGroup(page);
+    byId('workspace').innerHTML=(inLibrary?'':renderWizardTop())+(page==='dashboard'?renderOverview():page==='records'?renderRecords():page==='settings'?renderSettings():page==='connections'||page==='online'?renderConnections():page==='engagement'?renderEngagement():page==='legal'?renderForm('legal',legalFields,'Cláusulas y privacidad','Modelos editables para auditorías en España. Revisa el contrato y solicita asesoramiento jurídico cuando corresponda.'):page==='delivery'?renderDelivery():renderGroup(page))+(inLibrary?'':renderWizard());
+    byId('wizard-step-select')?.addEventListener('change',event=>move(event.target.value));
+    for(const target of workspace.querySelectorAll('.field [data-field]:not([data-preset])'))updateValidation(target);
   }
-  function move(section){if(!['records','online'].includes(section)&&!currentId){alert('Primero crea o abre una auditoría desde la biblioteca.');return}if(['records','online'].includes(section)||nav.some(n=>n[0]===section)){page=section;render();scrollTo(0,0)}}
+  function move(section){if(!['records','online','settings','connections'].includes(section)&&!currentId){alert('Primero crea o abre una auditoría desde la biblioteca.');return}if(['records','online','settings','connections'].includes(section)||nav.some(n=>n[0]===section)){page=section;render();scrollTo(0,0)}}
   function fieldTarget(target){const {block,field,index}=target.dataset;if(!block||!field)return null;if(block==='meta'||block==='final'||block==='legal')return state[block];if(groups[block]&&index!==undefined)return state[block][Number(index)];return null}
   const workspace=byId('workspace');
   byId('global-navigation').addEventListener('click',e=>{const b=e.target.closest('[data-go]');if(b)move(b.dataset.go)});
   byId('navigation').addEventListener('click',e=>{const b=e.target.closest('[data-go]');if(b)move(b.dataset.go)});
+  workspace.addEventListener('focusin',event=>{if(event.target.dataset.block==='meta'&&event.target.dataset.field==='client')event.target.dataset.originalClient=event.target.value});
   workspace.addEventListener('input',e=>{
     const t=e.target;
     if(t.id==='record-filter'){
@@ -359,10 +558,19 @@
       byId('record-list').innerHTML=recordsMarkup(matches);return;
     }
     if(t.dataset.preset)return;
-    const obj=fieldTarget(t);if(obj){obj[t.dataset.field]=t.value;if(t.dataset.block==='meta'&&['project','client','reportId'].includes(t.dataset.field)){byId('audit-context-title').textContent=state.meta.project||state.meta.client||'Auditoría sin título';byId('audit-context-ref').textContent=(state.meta.reportId||'SIN REFERENCIA')+' · '+(state.meta.client||'Cliente pendiente');byId('active-audit-label').textContent=(state.meta.reportId||'Sin referencia')+' · '+(state.meta.project||state.meta.client||'Sin título')}if(['title','name','id'].includes(t.dataset.field)){const heading=t.closest('.entry')?.querySelector('.entry-head strong');if(heading)heading.textContent=obj.title||obj.name||obj.id||'Registro'}persist()}
+    if(t.dataset.block==='settings'){settings[t.dataset.field]=t.value;updateValidation(t);saveSettings();return}
+    const obj=fieldTarget(t);if(obj){obj[t.dataset.field]=t.value;if(t.dataset.block==='meta'&&t.dataset.field==='reportId')state.meta.reportAuto='no';if(t.dataset.block==='meta'&&['project','client','reportId'].includes(t.dataset.field)){byId('audit-context-title').textContent=state.meta.project||state.meta.client||'Auditoría sin título';byId('audit-context-ref').textContent=(state.meta.reportId||'SIN REFERENCIA')+' · '+(state.meta.client||'Cliente pendiente');byId('active-audit-label').textContent=(state.meta.reportId||'Sin referencia')+' · '+(state.meta.project||state.meta.client||'Sin título')}if(['title','name','id'].includes(t.dataset.field)){const heading=t.closest('.entry')?.querySelector('.entry-head strong');if(heading)heading.textContent=obj.title||obj.name||obj.id||'Registro'}persist();updateValidation(t)}
   });
   workspace.addEventListener('change',async e=>{
     const t=e.target;
+    if(t.name==='channel'){connectionChannel=t.value;for(const key of ['nextcloud','upload','email','share'])byId('connection-'+key).hidden=(key==='upload'||key==='nextcloud'?connectionChannel!=='nextcloud':connectionChannel!==key);return}
+    if(t.id==='settings-import-file'&&t.files?.length){
+      try{const raw=JSON.parse(await t.files[0].text());if(raw?.kind!=='audit-workbench-consultancy-v1')throw Error('No es un perfil de consultora.');settings=loadSettingsFromImport(raw.settings);saveSettings();render()}
+      catch(error){alert('Perfil no importado: '+error.message)}return;
+    }
+    if(t.id==='settings-logo-upload'&&t.files?.length){
+      try{settings.logo=await resizeImage(t.files[0],640,.84,850000,3);saveSettings();render()}catch(error){alert('No se pudo cargar el logo: '+error.message)}return;
+    }
     if(t.id==='logo-upload'&&t.files?.length){
       const auditId=currentId;
       try{
@@ -377,7 +585,25 @@
       try{const image=await resizeImage(t.files[0]);if(id!==currentId)throw Error('Ha cambiado el expediente.');const record=state.evidence.find(x=>x._key===recordKey);if(!record)throw Error('No se encontró la evidencia.');record.image=image;persist();render()}
       catch(err){alert('No se pudo incorporar la imagen: '+err.message);t.value=''}return;
     }
+    if(t.dataset.block==='settings'){
+      settings[t.dataset.field]=t.value;
+      if(t.dataset.field==='taxType'){const id=byId('f-settings-main-taxId');if(id)updateValidation(id)}
+      if(t.dataset.field==='prefix'){settings.prefix=settings.prefix.trim().toUpperCase();if(!/^[A-Z0-9-]{2,12}$/.test(settings.prefix)){alert('Prefijo válido: de 2 a 12 caracteres A-Z, 0-9 o guion.');return}}
+      saveSettings();updateValidation(t);return;
+    }
     const obj=fieldTarget(t);if(!obj)return;
+    if(t.dataset.block==='meta'&&t.dataset.field==='client'&&state.meta.reportAuto!=='no'){
+      const newClient=clientKey(t.value);
+      if(newClient!==clientKey(t.dataset.originalClient||'')){
+        state.meta.reportId=nextReportId(t.value);persist();
+        const idInput=byId('f-meta-main-reportId');if(idInput)idInput.value=state.meta.reportId;
+      }
+    }
+    if(t.dataset.block==='meta'&&t.dataset.field==='reportId'&&t.value!==state.meta.reportId){state.meta.reportAuto='no'}
+
+    if(t.dataset.block==='meta'&&t.dataset.field==='client'){
+      const context=byId('main-audit-context');context.textContent=(state.meta.reportId||'Sin referencia')+' · '+(t.value||'Cliente pendiente')+' · '+(state.meta.project||'Sin título');
+    }
     if(t.dataset.preset){
       const custom=t.closest('.field').querySelector('[data-custom]');
       const isOther=t.value==='__custom__';custom.hidden=!isOther;
@@ -390,6 +616,7 @@
       if(isOther)custom.focus();persist();return;
     }
     obj[t.dataset.field]=t.value;
+    if(t.dataset.block==='meta'&&['clientIdType','contactIdType'].includes(t.dataset.field)){const name=t.dataset.field==='clientIdType'?'clientTaxId':'contactId';const target=byId('f-meta-main-'+name);if(target)updateValidation(target)}
     if(t.dataset.block==='assets'&&t.dataset.field==='vendor'){
       obj.model='';
       const sibling=workspace.querySelector(`#f-assets-${t.dataset.index}-model`)?.closest('.field');
@@ -399,18 +626,38 @@
       const badge=t.closest('.entry')?.querySelector('.entry-head .pill');
       if(badge)badge.outerHTML=pill(obj.severity);
     }
-    persist();
+    persist();updateValidation(t);
   });
   workspace.addEventListener('click',async e=>{
     const b=e.target.closest('button');if(!b)return;
     if(b.dataset.go){move(b.dataset.go);return}
-    if(b.id==='install-pwa'){
-      if(!deferredInstallPrompt){alert('Instala desde el menú del navegador. Requiere HTTPS o localhost y compatibilidad PWA.');return}
-      const prompt=deferredInstallPrompt;deferredInstallPrompt=null;
-      await prompt.prompt();await prompt.userChoice;
-      b.hidden=true;return;
-    }
+    if(b.id==='install-pwa'){alert('Instala desde el menú del navegador: Instalar aplicación / Añadir a pantalla de inicio. Requiere HTTPS o localhost y compatibilidad PWA.');return;}
     if(b.id==='check-connectivity'){byId('online-status').textContent=navigator.onLine?'Conexión disponible según el navegador. La disponibilidad de servicios externos no se garantiza.':'Sin conexión según el navegador. No se ha contactado con ningún servidor.';return}
+    if(b.id==='settings-export'){download('perfil-consultora.json',JSON.stringify({kind:'audit-workbench-consultancy-v1',settings},null,2),'application/json;charset=utf-8');return}
+    if(b.id==='settings-import'){byId('settings-import-file').click();return}
+    if(b.id==='settings-logo-remove'){if(confirm('¿Eliminar el logo global de la consultora?')){settings.logo='';saveSettings();render()}return}
+    if(b.id==='dav-save'){
+      try{
+        if(!crypto?.subtle||!globalThis.isSecureContext)throw Error('El cifrado requiere HTTPS o localhost.');
+        const pass=byId('dav-passphrase').value;
+        if(pass.length<12)throw Error('Usa al menos 12 caracteres de frase de paso local.');
+        const profile=validateWebdavProfile(byId('dav-url').value,byId('dav-user').value,byId('dav-secret').value);
+        const envelope=await encryptProfile(profile,pass);
+        localStorage.setItem(CONNECTION_KEY,JSON.stringify(envelope));unlockedConnection=profile;
+        render();alert('Conexión guardada cifrada. Necesitarás la frase de paso para desbloquearla de nuevo.');
+      }catch(error){alert('No se pudo guardar la conexión: '+error.message)}return;
+    }
+    if(b.id==='dav-unlock'){
+      try{
+        const envelope=JSON.parse(localStorage.getItem(CONNECTION_KEY)||'null');
+        const pass=byId('dav-passphrase').value;
+        unlockedConnection=await decryptProfile(envelope,pass);
+        validateWebdavProfile(unlockedConnection.url,unlockedConnection.user,unlockedConnection.secret);
+        render();alert('Conexión desbloqueada para esta sesión.');
+      }catch(error){unlockedConnection=null;alert('No se pudo desbloquear: contraseña incorrecta o perfil dañado.')}return;
+    }
+    if(b.id==='dav-forget'){if(confirm('¿Eliminar el perfil cifrado y cerrar la sesión Nextcloud?')){localStorage.removeItem(CONNECTION_KEY);unlockedConnection=null;render()}return}
+    if(b.id==='dav-upload'){try{await flush();await uploadDav()}catch(error){byId('dav-upload-status').textContent='Error de subida: '+error.message}return}
     if(b.dataset.new){await createAudit();return}
     if(b.dataset.backupAll){await backupAll();return}
     if(b.dataset.open){await switchAudit(b.dataset.open);return}
@@ -540,7 +787,7 @@
     const today=new Date().toLocaleDateString('es-ES');
     const count=Object.fromEntries(severity.map(s=>[s,state.findings.filter(x=>x.severity===s).length]));
     const meta=state.meta,ending=state.final;
-    const cover=`<div class="report-cover"><div class="sup">SYSADMIN / SECURITY · AUDIT REPORT <span class="report-theme-name">${html(selectedPalette)}</span></div>${meta.logo?`<img class="report-logo" src="${meta.logo}" alt="Logo corporativo">`:''}<h1>Informe de auditoría<br>informática</h1><h2>${html(meta.project||'Infraestructura, sistemas y ciberseguridad')}</h2><p class="classify">${html(meta.classification||'Confidencial')}</p><div class="cover-meta"><div><span class="report-number">CLIENTE</span><h3>${html(meta.client||'No indicado')}</h3><p>${html(meta.contact||'')}</p></div><div><span class="report-number">ENTREGA</span><h3>${html(today)}</h3><p>Ref. ${html(meta.reportId||'Sin referencia')} · Rev. ${html(meta.revision||'1.0')}</p><p>${html(meta.auditor||'')}</p></div></div></div>`;
+    const cover=`<div class="report-cover"><div class="sup">SYSADMIN / SECURITY · AUDIT REPORT <span class="report-theme-name">${html(selectedPalette)}</span></div>${meta.logo?`<img class="report-logo" src="${meta.logo}" alt="Logo corporativo">`:''}<h1>Informe de auditoría<br>informática</h1><h2>${html(meta.project||'Infraestructura, sistemas y ciberseguridad')}</h2><p class="classify">${html(meta.classification||'Confidencial')}</p><div class="cover-meta"><div><span class="report-number">CLIENTE</span><h3>${html(meta.client||'No indicado')}</h3><p>${html(meta.contact||'')}</p></div><div><span class="report-number">ENTREGA</span><h3>${html(today)}</h3><p>Ref. ${html(meta.reportId||'Sin referencia')} · Rev. ${html(meta.revision||'1.0')}</p><p>${html(meta.auditor||'')}</p><p>${html(settings.company||'')}</p><p>${html(settings.taxId||'')}</p></div></div></div>`;
     const legal=section(1,'Confidencialidad, alcance legal y custodia',`<p class="report-note">Cláusulas modelo que deben adaptarse al contrato específico y validarse antes de la entrega. RGPD (UE) 2016/679 y LOPDGDD 3/2018, según resulte aplicable.</p>${legalFields.map(([key,label])=>`<h3>${html(label)}</h3><p>${para(state.legal[key])}</p>`).join('')}<h3>Nota adicional del auditor</h3><p>${para(ending.disclaimer)}</p>`);
     const identity=section(2,'Identificación, alcance y metodología',table(metaFields,meta));
     const executive=section(3,'Resumen ejecutivo',`<p>${para(ending.executive)}</p><h3>Valoración del riesgo</h3><p>${para(ending.assessment)}</p><div class="report-stat-grid">${severity.map(s=>`<div><strong>${count[s]}</strong><small>${s}</small></div>`).join('')}</div><h3>Puntos fuertes</h3><p>${para(ending.strengths)}</p><h3>Debilidades principales</h3><p>${para(ending.weaknesses)}</p>`);
@@ -549,7 +796,7 @@
     const closing=section(11,'Conclusiones y plan de acción',table(finalFields.filter(f=>f[0]!=='executive'&&f[0]!=='strengths'&&f[0]!=='weaknesses'&&f[0]!=='assessment'),ending)+`<div class="report-signature">Generado localmente con Audit Workbench. Validación y autorización de entrega: ${html(ending.signoff||'Pendiente de firma')}.</div>`);
     byId('report').innerHTML=cover+legal+identity+executive+section(4,'Inventario de hardware',reportRows('assets'))+section(5,'Infraestructura de redes',reportRows('networks'))+section(6,'Software y servicios',reportRows('software'))+section(7,'Vulnerabilidades CVE registradas',reportRows('cves'))+controls+findings+section(10,'Registro de evidencias',reportRows('evidence'))+closing;
   }
-  function printReport(){buildReport();window.print()}
+  function printReport(){const issues=invalidFields();if(issues.length&&!confirm(`Hay ${issues.length} campos con errores de formato o coherencia.\n\n${issues.slice(0,5).join('\n')}\n\n¿Generar el PDF igualmente?`))return;buildReport();window.print()}
   window.addEventListener('beforeprint',buildReport);
   byId('palette').addEventListener('change',event=>selectPalette(event.target.value));
   byId('open-library').addEventListener('click',async()=>{try{await flush();move('records')}catch(error){alert(error.message)}});
@@ -558,10 +805,7 @@
   byId('local-date').textContent=new Date().toLocaleDateString('es-ES');
   try{selectPalette(localStorage.getItem(PALETTE_KEY)||'ocean')}catch(_ignored){selectPalette('ocean')}
   void initialLoad();
-  window.addEventListener('beforeinstallprompt',event=>{
-    event.preventDefault();deferredInstallPrompt=event;
-    if(page==='online')render();
-  });
+  // Leave beforeinstallprompt to the browser: suppressing its default UI caused warning banners.
   window.addEventListener('appinstalled',()=>{
     deferredInstallPrompt=null;
     if(page==='online')render();

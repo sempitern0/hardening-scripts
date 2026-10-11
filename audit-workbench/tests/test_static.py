@@ -14,6 +14,11 @@ assert 'vendorModels' in js and 'obj.model=' in js, 'Dependent models'
 assert 'badge.outerHTML=pill(obj.severity)' in js, 'Severity pills'
 assert 'report-cover{background:var(--pdf-cover-bg)' in css, 'PDF themed cover'
 assert 'normalize.css' in html and './normalize.css' in sw
+assert 'main-audit-context' in html and 'wizard-step-select' in js
+assert 'style=' not in js, 'Inline style violates CSP'
+assert 'encryptProfile' in js and 'deriveKey' in js and 'validateIdentity' in js
+assert 'event.preventDefault();deferredInstallPrompt' not in js, 'Do not suppress native install prompt'
+assert (root/'fonts/atkinson.css').is_file()
 assert 'dragon.svg' in html and './icons/dragon.svg' in sw
 for item in ('index.html','app.js','styles.css','normalize.css','manifest.webmanifest','icons/dragon.svg','icons/icon-192.png','icons/icon-512.png'):
  assert (root/item).is_file(),item

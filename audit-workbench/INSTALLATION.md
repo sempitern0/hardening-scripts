@@ -69,3 +69,13 @@ Para un futuro cambio de `hardening-scripts` a `sysadmin-tools`, adapta la URL y
 - **Faltan auditorías:** revisa el origen, perfil y navegador; restaura un backup JSON. No se puede recuperar lo que nunca se exportó si el almacenamiento local ha sido eliminado.
 - **PDF sin colores:** activa gráficos de fondo; selecciona la paleta **antes** de imprimir. Las páginas técnicas mantienen fondo blanco para legibilidad, mientras la portada usa un fondo de color distinto por tema (incluidos los oscuros).
 - **Faltan capturas:** verifica que las imágenes estaban incrustadas en el JSON importado y que el navegador disponía de almacenamiento suficiente.
+
+## Actualización v6 y navegación con tablet
+
+El menú lateral contiene Biblioteca, Configuración y Conexiones. Dentro de cada auditoría navega por **Anterior/Siguiente** y **Ir al paso**; la referencia del informe está arriba, no en el lateral. En tablets el menú principal se convierte en barra horizontal para liberar espacio.
+
+En el primer arranque, entra en **Configuración** y guarda los datos de la consultora y el prefijo de informes. Exporta el perfil junto con la biblioteca cuando cambies de dispositivo: la numeración por cliente depende de los contadores guardados en ese perfil.
+
+Las fuentes Atkinson Hyperlegible que has seleccionado se pueden activar localmente con el CSS de `fonts/` sin CDN. En el ZIP no se incluyen los WOFF2. Véase `fonts/README.md`.
+
+Después de actualizar por `git pull` o por los lanzadores, cierra pestañas previas y vuelve a abrir la PWA para que el service worker pase de `shell-v5` a `shell-v6`. Antes de actualizar, exporta el backup JSON desde la Biblioteca y el perfil de consultora desde Configuración. La v6 utiliza un nuevo esquema del expediente (3) y está orientada a desarrollo; no se garantiza la importación de todos los esquemas anteriores.

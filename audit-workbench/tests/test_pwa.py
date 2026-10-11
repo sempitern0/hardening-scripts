@@ -14,12 +14,12 @@ try:
   page.goto('http://127.0.0.1:%d/'%server.server_port)
   page.locator('[data-new]').first.wait_for(timeout=15000)
   page.evaluate("navigator.serviceWorker.ready")
-  page.wait_for_function("async () => (await caches.keys()).some(k=>k.includes('shell-v5'))",timeout=10000)
+  page.wait_for_function("async () => (await caches.keys()).some(k=>k.includes('shell-v6'))",timeout=10000)
   context.set_offline(True)
   page.reload(wait_until='domcontentloaded',timeout=15000)
   page.locator('[data-new]').first.wait_for(timeout=10000)
   page.locator('[data-new]').click()
-  page.locator('nav button[data-go="assets"]').click()
+  page.locator('#wizard-step-select').select_option('assets')
   assert page.get_by_text('Inventario de hardware').count()>0
   assert not errors,errors
   print('PWA offline reload PASS',page.title())

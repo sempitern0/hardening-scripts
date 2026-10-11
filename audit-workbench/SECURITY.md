@@ -35,3 +35,13 @@ No existe búsqueda de CVE por producto/versión ni escaneo automático; un regi
 ## Límites y seguimiento
 
 Actualmente no hay autenticación, cifrado de expedientes dentro de la app, firmas digitales, control multiusuario, logs de acceso, encriptación extremo a extremo ni verificación de integridad firmada. Antes de implementar cualquier conector cloud se necesitarían autorización del cliente, cifrado, gestión de credenciales fuera del frontend, permisos mínimos, revocación y auditoría de acciones. No se deben introducir secretos API persistentes en JavaScript público.
+
+## Conexiones cifradas opcionales (v6)
+
+Las credenciales WebDAV se cifran localmente con AES-GCM, derivando la clave de una frase de paso del auditor con PBKDF2-SHA256/310.000 rondas y sal aleatoria. Se necesitan contexto seguro (HTTPS o localhost) y Web Crypto API. La frase de paso no se persiste, y el perfil se desbloquea manualmente cada sesión. **No hay un servidor de respaldo de claves ni recuperación de contraseñas**. La protección no equivale a un gestor de secretos empresarial ni cubre terminales comprometidos o acceso a la sesión desbloqueada.
+
+No utilices el flujo de WebDAV con credenciales personales principales: crea una **contraseña de aplicación** dedicada, revocable y con permisos mínimos. Las transferencias requieren HTTPS válido, CORS permitido por el servidor y confirmación explícita del auditor. Si el servidor no permite CORS, utiliza exportación manual. El contenido JSON no se cifra de extremo a extremo con una clave separada antes de subir: WebDAV lo transporta por TLS; la custodia y el cifrado en reposo del servidor corresponden a la configuración de Nextcloud/cliente.
+
+La CSP permite `connect-src https:` únicamente para soportar servidores Nextcloud definidos por el usuario y consultas CVE expresas. No hay analítica, conexiones en segundo plano ni inyección de scripts desde dominios externos. Configura una CSP más restrictiva en el reverse proxy cuando un despliegue corporativo utiliza proveedores conocidos.
+
+El algoritmo de checksum español de DNI/NIE y el de NIF ordinario de entidad son **validadores de formato y control**, no verificaciones contra el censo de la AEAT ni contra la identidad de sus titulares.

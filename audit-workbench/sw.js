@@ -1,6 +1,6 @@
 /* Audit Workbench service worker: immutable local shell only. No audit data is cached. */
 'use strict';
-const CACHE_NAME = 'audit-workbench-shell-v5';
+const CACHE_NAME = 'audit-workbench-shell-v6';
 const CORE = [
   './', './index.html', './styles.css', './app.js',
   './normalize.css', './manifest.webmanifest', './icons/dragon.svg', './icons/icon-192.png', './icons/icon-512.png'

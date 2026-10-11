@@ -6,22 +6,23 @@
   <meta name="color-scheme" content="light dark">
   <title>Audit Workbench · Auditoría offline</title>
   <meta name="theme-color" content="#102a3b">
-  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src https://cveawg.mitre.org; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; manifest-src 'self'; worker-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src https:; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; manifest-src 'self'; worker-src 'self'">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="icon" type="image/svg+xml" href="icons/dragon.svg">
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
   <link rel="stylesheet" href="normalize.css">
   <link rel="stylesheet" href="styles.css">
+  <!-- Para usar los WOFF2 adjuntados localmente, añade <link rel="stylesheet" href="fonts/atkinson.css"> tras instalar las fuentes. -->
 </head>
 <body>
   <div class="app" id="app">
     <aside class="sidebar" aria-label="Navegación del expediente">
       <div class="brand"><div class="brand-mark"><img src="icons/dragon.svg" width="39" height="39" alt="Dragón, icono de Audit Workbench"></div><div><strong>Audit Workbench</strong><small>SYSADMIN / SECURITY</small></div></div>
       <div class="side-caption" id="workspace-label">MENÚ PRINCIPAL</div>
-      <nav id="global-navigation" aria-label="Menú principal"><button type="button" data-go="records"><span class="nav-mark">▤</span> Biblioteca de auditorías</button><button type="button" data-go="online"><span class="nav-mark">↗</span> Herramientas conectadas</button></nav>
+      <nav id="global-navigation" aria-label="Menú principal"><button type="button" data-go="records"><span class="nav-mark">▤</span> Biblioteca de auditorías</button><button type="button" data-go="settings"><span class="nav-mark">⚙</span> Configuración</button><button type="button" data-go="connections"><span class="nav-mark">↗</span> Conexiones online</button></nav>
       <div class="audit-context" id="audit-context" hidden><span class="context-kicker">EXPEDIENTE ACTUAL</span><strong id="audit-context-title"></strong><small id="audit-context-ref"></small><button class="button quiet small" type="button" data-go="records">Cambiar auditoría ↗</button></div>
       <nav id="navigation" aria-label="Secciones del expediente"></nav>
       <div class="side-bottom"><span class="dot"></span> Entorno local · Offline <small>Sin servicios externos ni telemetría</small></div>
@@ -29,6 +30,7 @@
     <div class="content-wrap">
       <header class="topbar">
         <div class="breadcrumb"><span id="active-audit-label">Biblioteca</span><b>/</b><strong id="current-section">Vista general</strong></div>
+        <span id="main-audit-context" class="main-audit-context" hidden></span>
         <div class="actions">
           <label class="theme-select" for="palette">Paleta
             <select id="palette" aria-label="Paleta de color">
