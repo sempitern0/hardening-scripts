@@ -152,3 +152,25 @@ En **Conexiones online** hay un selector de canal y una secuencia explícita de 
 ### Fuentes locales opcionales
 
 La fuente **Atkinson Hyperlegible** se sirve localmente mediante `fonts/atkinson.css`. El repositorio incorpora cuatro archivos WOFF2: Regular, Bold, Italic y BoldItalic. En instalaciones completas de GitHub se aplican automáticamente sin conexión a servicios externos. Si distribuyes un ZIP que no incluya estas fuentes, el navegador utilizará su tipografía de sistema sin bloquear la auditoría.
+
+
+## Catálogo offline de fabricantes y modelos
+
+En **Hardware**, selecciona primero el fabricante para filtrar los modelos disponibles.
+El catálogo incluido cubre familias habituales de servidores, estaciones, conmutadores,
+firewalls, NAS, SAI e impresoras. También contiene equipos anteriores porque pueden
+seguir apareciendo en auditorías. Para cualquier equipo no listado utiliza
+**«Otro / escribir…»**: su valor se conserva en el expediente y en el PDF.
+
+El catálogo funciona **sin Internet**. No indica si un dispositivo tiene soporte,
+firmware actualizado, certificaciones vigentes o disponibilidad comercial; confirma
+esos datos directamente con el fabricante cuando correspondan.
+
+## Impresión local y en red
+
+**Generar PDF** abre la impresión nativa del navegador. Puedes elegir «Guardar como
+PDF» o una impresora ya configurada en Windows, Linux, macOS, Android o iPadOS,
+según las capacidades del dispositivo y del navegador. La aplicación no instala
+controladores, no descubre impresoras IPP ni modifica la configuración de impresión
+del sistema. Si necesitas una impresora de red, configúrala primero en el
+dispositivo o mediante la administración corporativa.
