@@ -101,6 +101,17 @@ Las asociaciones usan identificadores internos estables: cambiar el nombre de un
 
 **Privacidad:** revisa las capturas para retirar secretos, identificadores y datos de personas que no sean necesarios. Calcula la huella antes de redactar u optimizar un original si necesitas conservar la trazabilidad de ambos estados.
 
+
+## Control de calidad y plan de remediación (offline)
+
+Antes de entregar, entra en **Revisión de calidad**. El asistente muestra dos grupos desplegables: **Imprescindibles** (información esencial que falta) y **Avisos** (aspectos que conviene documentar o justificar). Cada aviso incluye **Revisar**, que abre directamente el formulario relacionado. Un control no verificado nunca se considera conforme.
+
+En **Hallazgos**, registra la acción correctiva, el responsable, la fecha acordada y **cómo verificar que la corrección se ha aplicado**. Puedes vincular hallazgos creados manualmente a controles ya existentes mediante el selector **Control relacionado**. La revisión también detecta hallazgos sin evaluar, controles no conformes sin seguimiento y referencias documentales rotas.
+
+La pantalla **Informe final** genera un plan ordenado por severidad documentada y muestra los casos cerrados/mitigados al final. El **PDF** incorpora una sección específica con acción, responsable, plazo y criterio de verificación. La exportación **XLSX** conserva también este último campo. Ninguna fecha, severidad o responsable se inventa.
+
+Si faltan datos imprescindibles, el navegador permite imprimir únicamente después de una confirmación explícita y el documento se identifica como **BORRADOR · REVISIÓN PENDIENTE**. El PDF nunca sustituye la validación profesional ni la aprobación contractual del cliente.
+
 ## Generación de PDF
 
 Selecciona el tema y carga el logotipo en **Cliente y alcance**, revisa **Cláusulas y privacidad** y **Informe final**, y pulsa **Generar PDF**. En el diálogo de impresión del sistema selecciona **Guardar como PDF** (Android/iPadOS pueden utilizar la función de imprimir/compartir del navegador) y activa **gráficos de fondo** si tu navegador ofrece esa opción para reproducir todos los colores.

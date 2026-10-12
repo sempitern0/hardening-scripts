@@ -12,8 +12,8 @@ $ErrorActionPreference = 'Stop'
 if ($Repository -notmatch '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$') { throw 'Repositorio inválido (owner/repo).' }
 if ($Ref -notmatch '^[A-Za-z0-9._/-]+$' -or $Ref.Contains('..') -or $Ref.StartsWith('//')) { throw 'Referencia Git inválida.' }
 $files = @(
-    'index.html','normalize.css','styles.css','team.css','contrast.css','relations.css','templates.css','print.css',
-    'app.js','audit-relations.js','control-templates.js','hardware-catalog.js','exporters.js','sw.js','manifest.webmanifest',
+    'index.html','normalize.css','styles.css','team.css','contrast.css','relations.css','templates.css','quality.css','print.css',
+    'app.js','audit-relations.js','control-templates.js','audit-quality.js','hardware-catalog.js','exporters.js','sw.js','manifest.webmanifest',
     'fonts/atkinson.css','fonts/AtkinsonHyperlegible-Regular.woff2','fonts/AtkinsonHyperlegible-Bold.woff2',
     'fonts/AtkinsonHyperlegible-Italic.woff2','fonts/AtkinsonHyperlegible-BoldItalic.woff2',
     'icons/dragon.svg','icons/icon-192.png','icons/icon-512.png'

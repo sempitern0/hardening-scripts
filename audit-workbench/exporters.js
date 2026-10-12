@@ -32,8 +32,8 @@
         ['CVE','Descripción','Activo','Estado','Severidad','CVSS','Publicación','Fuente','Referencias','Notas']],
       ['Controles', ['id','category','name','asset','status','method','reference','evidenceIds','notes'],
         ['ID','Área','Control','Activo','Resultado','Método','Marco','Evidencias','Observaciones']],
-      ['Hallazgos', ['id','title','severity','status','asset','cvss','likelihood','impact','description','risk','evidenceIds','references','recommendation','owner','deadline','residual'],
-        ['ID','Hallazgo','Severidad','Estado','Activo','CVSS','Probabilidad','Impacto','Descripción','Riesgo','Evidencias','Referencias','Remediación','Responsable','Fecha objetivo','Riesgo residual']],
+      ['Hallazgos', ['id','title','severity','status','asset','cvss','likelihood','impact','description','risk','evidenceIds','references','recommendation','owner','deadline','verification','residual'],
+        ['ID','Hallazgo','Severidad','Estado','Activo','CVSS','Probabilidad','Impacto','Descripción','Riesgo','Evidencias','Referencias','Remediación','Responsable','Fecha objetivo','Verificación de cierre','Riesgo residual']],
       ['Evidencias', ['id','title','asset','captured','source','sha256','notes'],
         ['ID','Título','Activo / hallazgo','Fecha','Origen','SHA-256','Notas']]
     ];

@@ -18,7 +18,7 @@ with sync_playwright() as p:
       Object.defineProperty(window,'indexedDB',{value:undefined,configurable:true});
       Object.defineProperty(window,'localStorage',{value:{getItem:k=>entries.get(k)||null,setItem:(k,v)=>entries.set(k,String(v)),removeItem:k=>entries.delete(k)},configurable:true});
     }''')
-    for file in ('exporters.js','hardware-catalog.js','audit-relations.js','control-templates.js','app.js'):
+    for file in ('exporters.js','hardware-catalog.js','audit-relations.js','control-templates.js','audit-quality.js','app.js'):
         page.add_script_tag(content=(ROOT/file).read_text(encoding='utf-8'))
     page.locator('[data-new]').first.click()
     page.locator('#wizard-step-select').select_option('controls')
@@ -55,7 +55,7 @@ with sync_playwright() as p:
     page.locator('#wizard-step-select').select_option('evidence')
     assert page.locator('.relation-chip').count()==2
     page.locator('#wizard-step-select').select_option('delivery')
-    assert page.get_by_text('hallazgo(s) con severidad sin evaluar').count()==1
+    assert page.get_by_text('Revisar calidad →').count()==1
     page.evaluate('window.dispatchEvent(new Event("beforeprint"))')
     assert 'Control de origen' in page.locator('#report').inner_text()
     page.wait_for_timeout(420)
