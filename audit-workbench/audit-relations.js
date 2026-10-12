@@ -46,6 +46,9 @@
         }
       }
     }
+    for (const finding of audit.findings || []) {
+      if (finding.originControlKey && !lookup.controls.has(finding.originControlKey)) messages.push(`Control de origen ausente: ${itemLabel(finding, 'findings')}`);
+    }
     for (const evidence of audit.evidence || []) {
       const name = itemLabel(evidence, 'evidence');
       for (const category of CATEGORIES) {

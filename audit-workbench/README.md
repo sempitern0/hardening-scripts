@@ -37,6 +37,18 @@ Get-Content .\audit-workbench.ps1
 
 > Los ejemplos anteriores instalan desde `main` del repositorio `sempitern0/sysadmin`. Evita `curl | bash` o `irm | iex` en clientes de terceros; descarga e inspecciona el script antes de ejecutarlo. Para cambiar el repositorio usa `AUDIT_WORKBENCH_REPO` (Bash) o `-Repository` (PowerShell).
 
+## Plantillas offline de controles (v13)
+
+En una auditoría abierta, abre **Controles → Plantillas de comprobaciones**. Selecciona el área (sistemas, redes, identidad o continuidad) y despliega la lista. Puedes desmarcar controles que estén fuera del alcance antes de pulsar **Añadir controles seleccionados**. El sistema identifica las plantillas ya añadidas y **no duplica** sus controles al aplicar el mismo paquete de nuevo.
+
+- Todos los controles se incorporan como **Pendiente**: importar una plantilla **no acredita que una prueba se haya realizado**, ni certifica cumplimiento de CIS, ISO, ENS u otro marco.
+- Cada control incorpora una metodología orientativa y un desplegable **Guía rápida** con la evidencia esperada y una medida recomendada. Ajusta el método, el alcance y el resultado tras una verificación real.
+- Si marcas un control **No conforme**, aparecerá **Documentar hallazgo**. La ficha resultante copiará la descripción y los datos relevantes y **heredará las evidencias vinculadas**, pero dejará la severidad **Sin evaluar** para que el auditor determine el impacto. No se ejecuta ningún cambio sobre la infraestructura.
+- El expediente conserva el identificador de plantilla y la relación entre control y hallazgo. Si borras el control de origen, **Informe final** advertirá de la referencia ausente.
+- Los paquetes son parte de la aplicación y funcionan sin Internet. Las auditorías existentes no se ven alteradas al actualizar: solo se añaden controles cuando lo solicita el usuario.
+
+Los controles son **listas orientativas de revisión**, no una metodología certificada ni un diagnóstico automático. El auditor debe conocer las autorizaciones, el alcance, los criterios aplicables y las evidencias que corresponden a cada cliente.
+
 ## Contenido
 
 - **Biblioteca:** auditorías guardadas, búsqueda, duplicado, borrado con confirmación y acceso al gestor de copias de seguridad.

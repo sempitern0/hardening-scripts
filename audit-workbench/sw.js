@@ -1,10 +1,10 @@
 /* Audit Workbench service worker: immutable local shell only. No audit data is cached. */
 'use strict';
-const CACHE_NAME = 'audit-workbench-shell-v12-evidence-links';
+const CACHE_NAME = 'audit-workbench-shell-v13-control-templates';
 const OPTIONAL_FONTS = ['Regular','Bold','Italic','BoldItalic'].map(weight => `./fonts/AtkinsonHyperlegible-${weight}.woff2`);
 const CORE = [
   './', './index.html', './styles.css', './app.js',
-  './normalize.css', './team.css', './contrast.css', './relations.css', './audit-relations.js', './print.css', './exporters.js', './hardware-catalog.js', './fonts/atkinson.css', './manifest.webmanifest', './icons/dragon.svg', './icons/icon-192.png', './icons/icon-512.png'
+  './normalize.css', './team.css', './contrast.css', './relations.css', './audit-relations.js', './templates.css', './control-templates.js', './print.css', './exporters.js', './hardware-catalog.js', './fonts/atkinson.css', './manifest.webmanifest', './icons/dragon.svg', './icons/icon-192.png', './icons/icon-512.png'
 ];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE_NAME).then(async cache => {
