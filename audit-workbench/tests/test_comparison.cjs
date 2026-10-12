@@ -1,7 +1,7 @@
 'use strict';
 const assert=require('node:assert/strict');const fs=require('node:fs');const vm=require('node:vm');const path=require('node:path');
 const root=path.resolve(__dirname,'..'),context=vm.createContext({});
-for(const name of ['audit-retest.js','audit-comparison.js'])vm.runInContext(fs.readFileSync(path.join(root,name),'utf8'),context);
+for(const name of ['js/audit-retest.js','js/audit-comparison.js'])vm.runInContext(fs.readFileSync(path.join(root,name),'utf8'),context);
 const c=context.AuditComparison,r=context.AuditRetest;
 const make=(key,severity='Alta')=>({_key:key,id:key,title:'Hallazgo '+key,severity,status:'Abierto',retests:[]});
 const sample={findings:[make('F-1'),make('F-2','Crítica'),make('F-3','Baja')]};

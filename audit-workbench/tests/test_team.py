@@ -16,7 +16,7 @@ with sync_playwright() as driver:
     page.on('pageerror',lambda e:errors.append(str(e)))
     page.set_content(html)
     page.evaluate('''() => {const m=new Map();Object.defineProperty(window,'indexedDB',{configurable:true,value:undefined});Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:k=>m.get(k)||null,setItem:(k,v)=>m.set(k,String(v)),removeItem:k=>m.delete(k)}});}''')
-    for name in ('exporters.js','hardware-catalog.js','audit-relations.js','control-templates.js','audit-quality.js','audit-retest.js','audit-comparison.js','audit-storage.js','app.js'):
+    for name in ('js/exporters.js','js/hardware-catalog.js','js/audit-relations.js','js/control-templates.js','js/audit-quality.js','js/audit-retest.js','js/audit-comparison.js','js/audit-storage.js','js/app.js'):
         page.add_script_tag(content=(ROOT/name).read_text(encoding='utf-8'))
     page.locator('[data-go="settings"]').first.click()
     assert page.get_by_role('heading',name='Equipo de auditores').is_visible()

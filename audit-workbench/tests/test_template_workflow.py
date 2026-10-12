@@ -18,7 +18,7 @@ with sync_playwright() as p:
       Object.defineProperty(window,'indexedDB',{value:undefined,configurable:true});
       Object.defineProperty(window,'localStorage',{value:{getItem:k=>entries.get(k)||null,setItem:(k,v)=>entries.set(k,String(v)),removeItem:k=>entries.delete(k)},configurable:true});
     }''')
-    for file in ('exporters.js','hardware-catalog.js','audit-relations.js','control-templates.js','audit-quality.js','audit-retest.js','audit-comparison.js','audit-storage.js','app.js'):
+    for file in ('js/exporters.js','js/hardware-catalog.js','js/audit-relations.js','js/control-templates.js','js/audit-quality.js','js/audit-retest.js','js/audit-comparison.js','js/audit-storage.js','js/app.js'):
         page.add_script_tag(content=(ROOT/file).read_text(encoding='utf-8'))
     page.locator('[data-new]').first.click()
     page.locator('#wizard-step-select').select_option('controls')

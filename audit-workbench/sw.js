@@ -1,10 +1,10 @@
 /* Audit Workbench service worker: immutable local shell only. No audit data is cached. */
 'use strict';
-const CACHE_NAME = 'audit-workbench-shell-v17-modular-storage';
+const CACHE_NAME = 'audit-workbench-shell-v18-organized-assets';
 const OPTIONAL_FONTS = ['Regular','Bold','Italic','BoldItalic'].map(weight => `./fonts/AtkinsonHyperlegible-${weight}.woff2`);
 const CORE = [
-  './', './index.html', './styles.css', './app.js', './audit-storage.js',
-  './normalize.css', './team.css', './contrast.css', './relations.css', './audit-relations.js', './templates.css', './quality.css', './audit-quality.js', './retest.css', './audit-retest.js', './comparison.css', './audit-comparison.js', './control-templates.js', './print.css', './exporters.js', './hardware-catalog.js', './fonts/atkinson.css', './manifest.webmanifest', './icons/dragon.svg', './icons/icon-192.png', './icons/icon-512.png'
+  './', './index.html', './css/styles.css', './js/app.js', './js/audit-storage.js',
+  './css/normalize.css', './css/team.css', './css/contrast.css', './css/relations.css', './js/audit-relations.js', './css/templates.css', './css/quality.css', './js/audit-quality.js', './css/retest.css', './js/audit-retest.js', './css/comparison.css', './js/audit-comparison.js', './js/control-templates.js', './css/print.css', './js/exporters.js', './js/hardware-catalog.js', './css/atkinson.css', './manifest.webmanifest', './icons/dragon.svg', './icons/icon-192.png', './icons/icon-512.png'
 ];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE_NAME).then(async cache => {

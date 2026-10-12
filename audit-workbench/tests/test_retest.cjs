@@ -1,7 +1,7 @@
 'use strict';
 const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path'),assert=require('node:assert/strict');
 const env={};env.globalThis=env;
-vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../audit-retest.js'),'utf8'),env);
+vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../js/audit-retest.js'),'utf8'),env);
 const api=env.AuditRetest, make=()=>'REV-001';
 let finding={id:'FND-001',status:'Abierto',verification:'Comprobar configuración segura',retests:[]};
 let entries=[{_key:'ev1',id:'EVD-001'}];

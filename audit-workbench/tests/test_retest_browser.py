@@ -13,10 +13,10 @@ with sync_playwright() as p:
     errors=[]
     page.on('pageerror',lambda error:errors.append(str(error)))
     page.set_content(html,wait_until='load')
-    for css in ('normalize.css','styles.css','team.css','contrast.css','relations.css','templates.css','quality.css','retest.css','comparison.css'):
+    for css in ('css/normalize.css','css/styles.css','css/team.css','css/contrast.css','css/relations.css','css/templates.css','css/quality.css','css/retest.css','css/comparison.css'):
         page.add_style_tag(content=(ROOT/css).read_text(encoding='utf-8'))
     page.evaluate('''() => {const memory=new Map();Object.defineProperty(window,'indexedDB',{configurable:true,value:undefined});Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:k=>memory.get(k)||null,setItem:(k,v)=>memory.set(k,String(v)),removeItem:k=>memory.delete(k)}});}''')
-    for name in ('exporters.js','hardware-catalog.js','audit-relations.js','control-templates.js','audit-quality.js','audit-retest.js','audit-comparison.js','audit-storage.js','app.js'):
+    for name in ('js/exporters.js','js/hardware-catalog.js','js/audit-relations.js','js/control-templates.js','js/audit-quality.js','js/audit-retest.js','js/audit-comparison.js','js/audit-storage.js','js/app.js'):
         page.add_script_tag(content=(ROOT/name).read_text(encoding='utf-8'))
     page.locator('[data-new]').first.click()
     for field,val in {'client':'Cliente ejemplo','project':'Reevaluación anual','scope':'Servidores de producción'}.items():

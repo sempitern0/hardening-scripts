@@ -5,10 +5,10 @@ import fitz
 root=Path(__file__).resolve().parents[1]
 raw=root.joinpath('index.html').read_text()
 raw='\n'.join(l for l in raw.splitlines() if 'Content-Security-Policy' not in l)
-for name in ['normalize.css','styles.css']:
+for name in ['css/normalize.css','css/styles.css']:
  raw=raw.replace(f'<link rel="stylesheet" href="{name}">','<style>'+root.joinpath(name).read_text()+'</style>')
 pre="""<script>window.auditStorage = window.auditStorage || new Map();Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:k=>window.auditStorage.get(k)||null,setItem:(k,v)=>window.auditStorage.set(k,String(v)),removeItem:k=>window.auditStorage.delete(k)}});Object.defineProperty(window,'indexedDB',{configurable:true,value:null});</script>"""
-raw=raw.replace('<script src="app.js" defer></script>',pre+'<script>'+root.joinpath('app.js').read_text()+'</script>')
+raw=raw.replace('<script src="js/app.js" defer></script>',pre+'<script>'+root.joinpath('js/app.js').read_text()+'</script>')
 with sync_playwright() as p:
  browser=p.chromium.launch(headless=True,executable_path='/usr/bin/chromium',args=['--no-sandbox'])
  page=browser.new_page(viewport={'width':1440,'height':900},accept_downloads=True)

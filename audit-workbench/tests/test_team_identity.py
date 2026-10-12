@@ -5,14 +5,14 @@ import fitz
 ROOT=Path(__file__).resolve().parents[1]
 html=(ROOT/'index.html').read_text()
 html='\n'.join(line for line in html.splitlines() if 'Content-Security-Policy' not in line)
-for name in ['normalize.css','styles.css','team.css','fonts/atkinson.css']:
+for name in ['css/normalize.css','css/styles.css','css/team.css','css/atkinson.css']:
     html=html.replace(f'<link rel="stylesheet" href="{name}">',f'<style>{(ROOT/name).read_text()}</style>')
 shim='''<script>
 window.testAuditStore=window.testAuditStore||new Map();
 Object.defineProperty(window,'indexedDB',{configurable:true,value:null});
 Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:k=>window.testAuditStore.get(k)||null,setItem:(k,v)=>window.testAuditStore.set(k,String(v)),removeItem:k=>window.testAuditStore.delete(k)}});
 </script>'''
-html=html.replace('<script src="app.js" defer></script>',shim+'<script>'+ (ROOT/'app.js').read_text()+'</script>')
+html=html.replace('<script src="js/app.js" defer></script>',shim+'<script>'+ (ROOT/'js/app.js').read_text()+'</script>')
 with sync_playwright() as playwright:
     browser=playwright.chromium.launch(headless=True, executable_path='/usr/bin/chromium',args=['--no-sandbox','--disable-extensions'])
     page=browser.new_page(viewport={'width':1280,'height':900},accept_downloads=True)

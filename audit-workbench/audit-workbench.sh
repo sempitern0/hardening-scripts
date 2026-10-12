@@ -35,9 +35,9 @@ done
 [[ "$REF" =~ ^[A-Za-z0-9._/-]+$ && "$REF" != *..* && "$REF" != //* ]] || { echo 'Ref inválida' >&2; exit 2; }
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 FILES=(
-  index.html normalize.css styles.css team.css contrast.css relations.css templates.css quality.css retest.css comparison.css print.css
-  app.js audit-storage.js audit-relations.js control-templates.js audit-quality.js audit-retest.js audit-comparison.js hardware-catalog.js exporters.js sw.js manifest.webmanifest
-  fonts/atkinson.css fonts/AtkinsonHyperlegible-Regular.woff2 fonts/AtkinsonHyperlegible-Bold.woff2
+  index.html css/normalize.css css/styles.css css/team.css css/contrast.css css/relations.css css/templates.css css/quality.css css/retest.css css/comparison.css css/print.css css/atkinson.css
+  js/app.js js/audit-storage.js js/audit-relations.js js/control-templates.js js/audit-quality.js js/audit-retest.js js/audit-comparison.js js/hardware-catalog.js js/exporters.js sw.js manifest.webmanifest
+  fonts/AtkinsonHyperlegible-Regular.woff2 fonts/AtkinsonHyperlegible-Bold.woff2
   fonts/AtkinsonHyperlegible-Italic.woff2 fonts/AtkinsonHyperlegible-BoldItalic.woff2
   icons/dragon.svg icons/icon-192.png icons/icon-512.png
 )
@@ -63,7 +63,7 @@ if ((needs_install)); then
     fi
     [[ -s "${stage}/${file}" ]] || { echo "Archivo de aplicación vacío: ${file}" >&2; exit 1; }
   done
-  grep -q 'Audit Workbench' "${stage}/index.html" && grep -q 'AuditRelations' "${stage}/audit-relations.js" || {
+  grep -q 'Audit Workbench' "${stage}/index.html" && grep -q 'AuditRelations' "${stage}/js/audit-relations.js" || {
     echo 'Los archivos descargados no corresponden a Audit Workbench.' >&2; exit 1;
   }
   for file in "${FILES[@]}"; do

@@ -13,10 +13,10 @@ with sync_playwright() as p:
     page=browser.new_page(viewport={'width':1150,'height':870},accept_downloads=True)
     errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
     page.set_content(src,wait_until='load')
-    for css in ('normalize.css','styles.css','team.css','contrast.css','relations.css','templates.css','print.css','quality.css','retest.css','comparison.css'):
+    for css in ('css/normalize.css','css/styles.css','css/team.css','css/contrast.css','css/relations.css','css/templates.css','css/print.css','css/quality.css','css/retest.css','css/comparison.css'):
         page.add_style_tag(content=(ROOT/css).read_text(encoding='utf-8'))
     page.evaluate('''() => {const m=new Map();Object.defineProperty(window,'indexedDB',{configurable:true,value:undefined});Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:k=>m.get(k)||null,setItem:(k,v)=>m.set(k,String(v)),removeItem:k=>m.delete(k)}});window.print=()=>{};}''')
-    for js in ('exporters.js','hardware-catalog.js','audit-relations.js','control-templates.js','audit-quality.js','audit-retest.js','audit-comparison.js','audit-storage.js','app.js'):
+    for js in ('js/exporters.js','js/hardware-catalog.js','js/audit-relations.js','js/control-templates.js','js/audit-quality.js','js/audit-retest.js','js/audit-comparison.js','js/audit-storage.js','js/app.js'):
         page.add_script_tag(content=(ROOT/js).read_text(encoding='utf-8'))
     page.locator('[data-new]').first.click()
     page.locator('#wizard-step-select').select_option('engagement')

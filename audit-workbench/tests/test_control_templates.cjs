@@ -5,7 +5,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const root=path.resolve(__dirname,'..');
 const sandbox={};sandbox.globalThis=sandbox;
-vm.runInNewContext(fs.readFileSync(path.join(root,'control-templates.js'),'utf8'),sandbox);
+vm.runInNewContext(fs.readFileSync(path.join(root,'js/control-templates.js'),'utf8'),sandbox);
 const lib=sandbox.AuditControlTemplates;
 assert.equal(lib.PACKS.length,4);
 assert.equal(lib.PACKS.reduce((total,pack)=>total+pack.controls.length,0),24);

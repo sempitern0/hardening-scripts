@@ -135,8 +135,8 @@ La función de compartir utiliza la API nativa `navigator.share` **solo cuando e
 ## Desarrollo y regresión
 
 ```bash
-node --check audit-workbench/app.js
-node --check audit-workbench/exporters.js
+node --check audit-workbench/js/app.js
+node --check audit-workbench/js/exporters.js
 bash -n audit-workbench/audit-workbench.sh
 python audit-workbench/tests/test_e2e.py  # Requiere Chromium, Playwright y PyMuPDF en entorno de desarrollo
 ```
@@ -188,7 +188,7 @@ En **Conexiones online** hay un selector de canal y una secuencia explícita de 
 
 ### Fuentes locales opcionales
 
-La fuente **Atkinson Hyperlegible** se sirve localmente mediante `fonts/atkinson.css`. El repositorio incorpora cuatro archivos WOFF2: Regular, Bold, Italic y BoldItalic. En instalaciones completas de GitHub se aplican automáticamente sin conexión a servicios externos. Si distribuyes un ZIP que no incluya estas fuentes, el navegador utilizará su tipografía de sistema sin bloquear la auditoría.
+La fuente **Atkinson Hyperlegible** se sirve localmente mediante `css/atkinson.css`. El repositorio incorpora cuatro archivos WOFF2: Regular, Bold, Italic y BoldItalic. En instalaciones completas de GitHub se aplican automáticamente sin conexión a servicios externos. Si distribuyes un ZIP que no incluya estas fuentes, el navegador utilizará su tipografía de sistema sin bloquear la auditoría.
 
 
 ## Catálogo offline de fabricantes y modelos
@@ -249,3 +249,9 @@ Si el navegador no permite acceder a los datos, evita borrar los datos del sitio
 Los cambios en Audit Workbench pasan una comprobación de sintaxis JavaScript, pruebas unitarias offline y validación del instalador Bash en GitHub Actions. Las pruebas de navegador (incluida la impresión A4 y la persistencia real en IndexedDB) requieren Chromium y Playwright; se pueden ejecutar por separado en un entorno de pruebas antes de distribuir una versión estable.
 
 La extracción del módulo `audit-storage.js` **no cambia los expedientes existentes ni su ubicación**. Si actualizas desde una PWA instalada, permite que el navegador active la nueva versión y comprueba que siguen presentes las auditorías; conserva siempre una copia JSON fuera del navegador.
+
+## Estructura de archivos
+
+`index.html`, `sw.js` y `manifest.webmanifest` permanecen en la raíz de la aplicación para mantener el alcance offline de la PWA. La lógica JavaScript está en `js/`, las hojas de estilo en `css/`, las cuatro fuentes WOFF2 en `fonts/`, los iconos en `icons/` y las pruebas en `tests/`. Los instaladores Bash y PowerShell siguen en `audit-workbench/`.
+
+Al actualizar, utiliza el instalador con `--update` (Bash) o `-Update` (PowerShell), exporta previamente un backup JSON y vuelve a cargar la aplicación para renovar la caché. La organización de los archivos no modifica la base IndexedDB ni las claves de almacenamiento.

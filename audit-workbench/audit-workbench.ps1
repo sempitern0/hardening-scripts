@@ -12,9 +12,9 @@ $ErrorActionPreference = 'Stop'
 if ($Repository -notmatch '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$') { throw 'Repositorio inválido (owner/repo).' }
 if ($Ref -notmatch '^[A-Za-z0-9._/-]+$' -or $Ref.Contains('..') -or $Ref.StartsWith('//')) { throw 'Referencia Git inválida.' }
 $files = @(
-    'index.html','normalize.css','styles.css','team.css','contrast.css','relations.css','templates.css','quality.css','retest.css','comparison.css','print.css',
-    'app.js','audit-storage.js','audit-relations.js','control-templates.js','audit-quality.js','audit-retest.js','audit-comparison.js','hardware-catalog.js','exporters.js','sw.js','manifest.webmanifest',
-    'fonts/atkinson.css','fonts/AtkinsonHyperlegible-Regular.woff2','fonts/AtkinsonHyperlegible-Bold.woff2',
+    'index.html','css/normalize.css','css/styles.css','css/team.css','css/contrast.css','css/relations.css','css/templates.css','css/quality.css','css/retest.css','css/comparison.css','css/print.css','css/atkinson.css',
+    'js/app.js','js/audit-storage.js','js/audit-relations.js','js/control-templates.js','js/audit-quality.js','js/audit-retest.js','js/audit-comparison.js','js/hardware-catalog.js','js/exporters.js','sw.js','manifest.webmanifest',
+    'fonts/AtkinsonHyperlegible-Regular.woff2','fonts/AtkinsonHyperlegible-Bold.woff2',
     'fonts/AtkinsonHyperlegible-Italic.woff2','fonts/AtkinsonHyperlegible-BoldItalic.woff2',
     'icons/dragon.svg','icons/icon-192.png','icons/icon-512.png'
 )
@@ -45,7 +45,7 @@ if ($required) {
             }
         }
         if (-not (Select-String -LiteralPath (Join-Path $stage 'index.html') -Pattern 'Audit Workbench' -SimpleMatch -Quiet) -or
-            -not (Select-String -LiteralPath (Join-Path $stage 'audit-relations.js') -Pattern 'AuditRelations' -SimpleMatch -Quiet)) {
+            -not (Select-String -LiteralPath (Join-Path $stage 'js/audit-relations.js') -Pattern 'AuditRelations' -SimpleMatch -Quiet)) {
             throw 'Los archivos no corresponden con Audit Workbench.'
         }
         foreach ($name in $files) {

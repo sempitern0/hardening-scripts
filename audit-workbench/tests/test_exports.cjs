@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const {TextEncoder} = require('node:util');
 const sandbox = {TextEncoder, Blob};
 sandbox.globalThis = sandbox;
-vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../exporters.js'), 'utf8'), sandbox);
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../js/exporters.js'), 'utf8'), sandbox);
 const sample = {
   meta: {client: 'Ámbito SA', reportId:'AUD-001', project: 'Auditoría TI'},
   assets: [{name:'srv-001', vendor:'Dell'}], networks:[],software:[],cves:[],controls:[],

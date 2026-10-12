@@ -4,10 +4,10 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'audit-storage.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '..', 'js/audit-storage.js'), 'utf8');
 const context = {console};
 context.globalThis = context;
-vm.runInNewContext(source, context, {filename:'audit-storage.js'});
+vm.runInNewContext(source, context, {filename:'js/audit-storage.js'});
 const createRepository = context.AuditStorage.createRepository;
 
 function localStorageFixture() {

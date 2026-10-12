@@ -1,0 +1,5 @@
+/* Self-hosted font families; every WOFF2 file is served locally from the adjacent fonts directory. */
+@font-face{font-family:"Atkinson Hyperlegible";src:url("../fonts/AtkinsonHyperlegible-Regular.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Atkinson Hyperlegible";src:url("../fonts/AtkinsonHyperlegible-Bold.woff2") format("woff2");font-weight:700 900;font-style:normal;font-display:swap}
+@font-face{font-family:"Atkinson Hyperlegible";src:url("../fonts/AtkinsonHyperlegible-Italic.woff2") format("woff2");font-weight:400;font-style:italic;font-display:swap}
+@font-face{font-family:"Atkinson Hyperlegible";src:url("../fonts/AtkinsonHyperlegible-BoldItalic.woff2") format("woff2");font-weight:700 900;font-style:italic;font-display:swap}
