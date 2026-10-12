@@ -35,8 +35,8 @@ done
 [[ "$REF" =~ ^[A-Za-z0-9._/-]+$ && "$REF" != *..* && "$REF" != //* ]] || { echo 'Ref inválida' >&2; exit 2; }
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 FILES=(
-  index.html normalize.css styles.css team.css contrast.css relations.css templates.css quality.css print.css
-  app.js audit-relations.js control-templates.js audit-quality.js hardware-catalog.js exporters.js sw.js manifest.webmanifest
+  index.html normalize.css styles.css team.css contrast.css relations.css templates.css quality.css retest.css print.css
+  app.js audit-relations.js control-templates.js audit-quality.js audit-retest.js hardware-catalog.js exporters.js sw.js manifest.webmanifest
   fonts/atkinson.css fonts/AtkinsonHyperlegible-Regular.woff2 fonts/AtkinsonHyperlegible-Bold.woff2
   fonts/AtkinsonHyperlegible-Italic.woff2 fonts/AtkinsonHyperlegible-BoldItalic.woff2
   icons/dragon.svg icons/icon-192.png icons/icon-512.png

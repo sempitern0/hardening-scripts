@@ -57,6 +57,12 @@
       if(!notEmpty(f.verification))add('warning','SIN_VERIFICACION','findings',`${name}: define cómo comprobar que la corrección funciona.`,key);
       if(!evidence.some(e=>isRelated(e,f,relations)))add('warning','SIN_EVIDENCIA','findings',`${name}: vincula evidencia o explica por qué no está disponible.`,key);
       if(CLOSED.has(f.status)&&!notEmpty(f.verification))add('blocker','CIERRE_NO_COMPROBADO','findings',`${name}: figura ${f.status.toLowerCase()} sin criterio documentado de verificación.`,key);
+      const historical=Array.isArray(f.retests)?f.retests:[];
+      const last=historical.at(-1);
+      if(f.status==='Cerrado' && !historical.some(r=>r?.result==='verified'))add('warning','CIERRE_SIN_REEVALUACION','followup',`${name}: cerrado sin una corrección comprobada en el historial de seguimiento.`,key);
+      if(last?.result==='verified' && f.status!=='Cerrado' && f.status!=='Riesgo aceptado')add('warning','ESTADO_DE_REEVALUACION','followup',`${name}: el seguimiento indica verificado, pero el estado administrativo es ${clean(f.status)||'vacío'}.`,key);
+      if(last?.evidenceKey && !evidence.some(e=>e._key===last.evidenceKey))add('warning','EVIDENCIA_REEVALUACION_NO_DISPONIBLE','followup',`${name}: la evidencia de la última revisión ya no está disponible en el expediente.`,key);
+      if(last?.result==='verified' && !last.evidenceKey)add('warning','VERIFICACION_SIN_EVIDENCIA','followup',`${name}: hay corrección verificada sin evidencia adicional vinculada.`,key);
       if(f.status==='Riesgo aceptado'&&!notEmpty(f.residual))add('warning','ACEPTACION_SIN_JUSTIFICAR','findings',`${name}: documenta justificación, responsable y condiciones de aceptación del riesgo.`,key);
     }
     if(!notEmpty(audit?.final?.executive))add('warning','SIN_RESUMEN','delivery','Completa el resumen ejecutivo para dirección.');

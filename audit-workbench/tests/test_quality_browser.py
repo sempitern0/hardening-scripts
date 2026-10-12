@@ -14,7 +14,7 @@ with sync_playwright() as p:
     page.on('pageerror',lambda err: errors.append(str(err)))
     page.set_content(html,wait_until='load')
     page.evaluate('''() => {const m=new Map();Object.defineProperty(window,'indexedDB',{configurable:true,value:undefined});Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:k=>m.get(k)||null,setItem:(k,v)=>m.set(k,String(v)),removeItem:k=>m.delete(k)}});}''')
-    for file in ('exporters.js','hardware-catalog.js','audit-relations.js','control-templates.js','audit-quality.js','app.js'):
+    for file in ('exporters.js','hardware-catalog.js','audit-relations.js','control-templates.js','audit-quality.js','audit-retest.js','app.js'):
         page.add_script_tag(content=(ROOT/file).read_text(encoding='utf-8'))
     page.locator('[data-new]').first.click()
     page.locator('#wizard-step-select').select_option('quality')

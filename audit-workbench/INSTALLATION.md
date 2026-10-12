@@ -96,3 +96,9 @@ En el menú principal, **Copias y exportaciones** centraliza las descargas JSON,
 Si aparece **Seleccionar carpeta**, puedes autorizar una carpeta local para guardar copias JSON con nombres fechados. La opción automática prueba a guardar cada 30 minutos con cambios, pero únicamente mientras la aplicación esté abierta y el navegador conserve acceso de escritura; no es un backup en segundo plano del sistema operativo. No se recomienda depender de esta función como único mecanismo de recuperación.
 
 Los JSON, CSV, XLSX y PDF pueden incluir datos de carácter reservado. Usa un volumen cifrado, acceso restringido y las políticas de conservación del contrato.
+
+## Actualizar la aplicación después de una auditoría
+
+Antes de actualizar, descarga un backup JSON completo desde **Copias y exportaciones**. Asegúrate de mantener el mismo origen de navegación (`localhost` y puerto, HTTPS o el archivo local) y el mismo perfil de navegador, porque IndexedDB depende de ambos. En una instalación PWA pueden transcurrir unos instantes hasta que se active la caché nueva: cierra y vuelve a abrir la aplicación si todavía no ves el paso **Seguimiento**.
+
+En el instalador Bash o PowerShell, utiliza la opción de actualización documentada arriba para incluir `audit-retest.js` y `retest.css`. Una vez instalada, la reevaluación y la impresión de su PDF funcionan sin Internet.

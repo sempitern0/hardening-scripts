@@ -1,0 +1,22 @@
+/* Seguimiento posterior: mismo diseño, menos campos hasta abrir cada hallazgo. */
+.retest-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:16px 0 22px}
+.retest-summary div{background:var(--canvas);border:1px solid var(--line);padding:15px;border-radius:12px}
+.retest-summary strong{font-size:1.75rem;line-height:1.15;display:block;font-variant-numeric:tabular-nums}
+.retest-summary span{font-size:.9rem;color:var(--muted)}
+.retest-item{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:20px;margin:15px 0;min-width:0}
+.retest-item-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:10px}
+.retest-item-head h3{margin:0;font-size:1.08rem;overflow-wrap:anywhere}
+.retest-status{display:inline-flex;align-items:center;padding:5px 10px;border-radius:8px;background:var(--canvas);border:1px solid var(--line);color:var(--ink);font-weight:700;font-size:.84rem}
+.retest-item details{border-top:1px solid var(--line);margin-top:14px;padding-top:10px}
+.retest-item summary{min-height:46px;padding:9px 0;font-weight:750;cursor:pointer}
+.retest-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px;margin:10px 0 16px}
+.retest-fields label{display:grid;gap:6px;font-weight:700;font-size:.94rem;min-width:0}
+.retest-fields select,.retest-fields input,.retest-fields textarea{width:100%;min-height:46px;background:var(--paper);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:10px;font:inherit}
+.retest-fields textarea{min-height:92px;resize:vertical}
+.retest-fields .wide{grid-column:1/-1}
+.retest-history{margin:15px 0 0;padding:0;list-style:none;display:grid;gap:10px}
+.retest-history li{border-left:3px solid var(--brand);padding:8px 12px;background:var(--canvas);border-radius:0 8px 8px 0;overflow-wrap:anywhere}
+.retest-history li p{margin:5px 0 0;white-space:pre-wrap}
+.retest-meta{font-size:.85rem;color:var(--muted)}
+@media(max-width:720px){.retest-fields{grid-template-columns:1fr}.retest-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.retest-item{padding:14px}}
+@media print{.retest-summary,.retest-item{break-inside:avoid-page}.retest-print-item{break-inside:avoid-page;border:1px solid #cbd6e0;padding:10pt 12pt;margin:12pt 0}.retest-print-item h3{margin:0 0 6pt}.retest-print-item p{margin:5pt 0;overflow-wrap:anywhere;white-space:pre-wrap}.retest-print-item .retest-meta{color:#526477}}

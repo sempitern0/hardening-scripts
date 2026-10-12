@@ -211,3 +211,20 @@ según las capacidades del dispositivo y del navegador. La aplicación no instal
 controladores, no descubre impresoras IPP ni modifica la configuración de impresión
 del sistema. Si necesitas una impresora de red, configúrala primero en el
 dispositivo o mediante la administración corporativa.
+
+## Seguimiento y reevaluación de correcciones
+
+Después de entregar la auditoría inicial, vuelve a abrir **el mismo expediente** y entra en el paso **Seguimiento**. Por cada hallazgo, abre «Registrar una nueva verificación», selecciona el resultado e indica la fecha, el profesional que realizó la comprobación y lo observado. Puedes vincular una evidencia ya registrada; para crear una nueva, utiliza el paso **Evidencias** y vuelve a Seguimiento.
+
+Resultados disponibles:
+
+- **Corrección verificada:** solo para una medida efectivamente comprobada; requiere definir previamente «Cómo comprobar que se ha solucionado» en el hallazgo. Actualiza su estado a «Cerrado». Se recomienda adjuntar evidencia y documentar el método de prueba.
+- **Debilidad persistente:** la condición sigue presente; actualiza el hallazgo a «Abierto».
+- **No se pudo verificar:** falta acceso, ventana de mantenimiento o prueba autorizada; se conserva el estado administrativo anterior. No implica que la corrección se haya realizado.
+- **Hallazgo reabierto:** se detecta de nuevo el problema tras haberlo revisado; vuelve a «Abierto».
+
+Cada comprobación queda registrada en orden dentro del expediente, sin reemplazar las anteriores. **Riesgo aceptado** aparece diferenciado: una aceptación documentada no constituye una corrección. Si se modifica manualmente el estado de un hallazgo y contradice la última revisión, el asistente señala «Estado por aclarar».
+
+Pulsa **Informe de reevaluación PDF** para generar un documento independiente con resultados, historial resumido, criterio de cierre y evidencia vinculada. Mantén también el informe original y una copia JSON del expediente; el PDF de reevaluación no sustituye al informe completo ni acredita firma electrónica, integridad criptográfica del histórico o que se haya revisado todo el entorno.
+
+**Privacidad y custodia:** estas revisiones pueden contener nombres, identificadores de activos y datos sensibles de clientes. Trabaja en almacenamiento protegido y exporta las copias JSON a destinos cifrados. Los datos no se envían automáticamente a ningún servicio.
