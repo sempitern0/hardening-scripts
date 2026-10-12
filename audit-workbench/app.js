@@ -13,27 +13,11 @@
   const palettes = ['ocean', 'forest', 'indigo', 'graphite', 'midnight', 'obsidian', 'pine-dark', 'amethyst-dark', 'crimson-dark'];
   const CVE_PATTERN = /^CVE-(?:1999|2\d{3})-\d{4,}$/i;
   const safeLogo = value => typeof value === 'string' && value.length <= 850000 && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(value) ? value : '';
-  const hardwareVendors = ['Dell', 'HPE / Hewlett Packard Enterprise', 'HP', 'Lenovo', 'Cisco', 'Fortinet', 'Palo Alto Networks', 'Juniper', 'Ubiquiti', 'MikroTik', 'Aruba / HPE', 'Netgear', 'TP-Link', 'Synology', 'QNAP', 'Supermicro', 'IBM', 'Fujitsu', 'Huawei', 'ASUS', 'Acer', 'Apple', 'Samsung', 'Intel', 'AMD', 'VMware', 'Proxmox', 'Nutanix', 'APC / Schneider Electric', 'Eaton', 'Zyxel', 'Sophos', 'SonicWall', 'WatchGuard', 'Brother', 'Epson', 'Canon'];
-  const hardwareModels = ['PowerEdge R350', 'PowerEdge R450', 'PowerEdge R550', 'PowerEdge R650', 'PowerEdge R750', 'PowerEdge R760', 'ProLiant DL360 Gen10', 'ProLiant DL380 Gen10', 'ProLiant DL360 Gen11', 'ProLiant DL380 Gen11', 'ThinkSystem SR630', 'ThinkSystem SR650', 'Catalyst 9200', 'Catalyst 9300', 'Catalyst 9500', 'FortiGate 40F', 'FortiGate 60F', 'FortiGate 80F', 'FortiGate 100F', 'FortiGate 200F', 'PA-440', 'PA-820', 'UniFi Dream Machine', 'UniFi Dream Machine Pro', 'UniFi Switch Pro', 'UniFi U6 Pro', 'UniFi U7 Pro', 'MikroTik CCR2004', 'MikroTik RB5009', 'Synology DS923+', 'Synology DS1522+', 'QNAP TS-464', 'QNAP TS-873A', 'Proxmox VE (VM)', 'VMware ESXi (VM)', 'Hyper-V (VM)', 'APC Smart-UPS', 'Eaton 9PX'];
-  // Exact family mapping: unknown vendors retain an explicit manual option.
-  // Do not infer compatibility or invent models from the global catalog.
-  const vendorModels = Object.freeze({
-    'Dell':['PowerEdge R350','PowerEdge R450','PowerEdge R550','PowerEdge R650','PowerEdge R750','PowerEdge R760'],
-    'HPE / Hewlett Packard Enterprise':['ProLiant DL360 Gen10','ProLiant DL380 Gen10','ProLiant DL360 Gen11','ProLiant DL380 Gen11'],
-    'Lenovo':['ThinkSystem SR630','ThinkSystem SR650'],
-    'Cisco':['Catalyst 9200','Catalyst 9300','Catalyst 9500'],
-    'Fortinet':['FortiGate 40F','FortiGate 60F','FortiGate 80F','FortiGate 100F','FortiGate 200F'],
-    'Palo Alto Networks':['PA-440','PA-820'],
-    'Ubiquiti':['UniFi Dream Machine','UniFi Dream Machine Pro','UniFi Switch Pro','UniFi U6 Pro','UniFi U7 Pro'],
-    'MikroTik':['MikroTik CCR2004','MikroTik RB5009'],
-    'Synology':['Synology DS923+','Synology DS1522+'],
-    'QNAP':['QNAP TS-464','QNAP TS-873A'],
-    'APC / Schneider Electric':['APC Smart-UPS'],
-    'Eaton':['Eaton 9PX'],
-    'VMware':['VMware ESXi (VM)'],
-    'Proxmox':['Proxmox VE (VM)'],
-    'Microsoft':['Hyper-V (VM)']
-  });
+  // The curated catalogue is offline and has no automatic compatibility claims.
+  // Existing custom models remain editable even when absent from the catalogue.
+  const vendorModels = window.AuditHardwareCatalog || Object.freeze({});
+  const hardwareVendors = Object.keys(vendorModels);
+  const hardwareModels = Object.values(vendorModels).flat();
   const presets = {
     hardware: ['Servidor físico', 'Servidor virtual', 'Estación de trabajo', 'Portátil', 'Tablet', 'Firewall', 'Switch', 'Router', 'Access point', 'NAS / SAN', 'Impresora', 'Hypervisor', 'UPS / SAI', 'IoT / OT'],
     operating: ['Windows 11 Pro', 'Windows 11 Enterprise', 'Windows 10 (EOL)', 'Windows Server 2025', 'Windows Server 2022', 'Windows Server 2019', 'Windows Server 2016', 'Windows Server 2012 R2 (EOL)', 'Debian 13', 'Debian 12', 'Debian 11', 'Ubuntu Server 26.04 LTS', 'Ubuntu Server 24.04 LTS', 'Ubuntu Server 22.04 LTS', 'Ubuntu Desktop 24.04 LTS', 'RHEL 10', 'RHEL 9', 'RHEL 8', 'Rocky Linux 10', 'Rocky Linux 9', 'AlmaLinux 10', 'AlmaLinux 9', 'Fedora Server', 'CentOS Stream 10', 'SUSE Linux Enterprise 15', 'openSUSE Leap', 'Arch Linux', 'Alpine Linux', 'Proxmox VE 9', 'Proxmox VE 8', 'VMware ESXi 8', 'VMware ESXi 7', 'Hyper-V Server / Windows Hyper-V', 'TrueNAS SCALE', 'pfSense Plus', 'pfSense CE', 'OPNsense', 'FortiOS', 'Cisco IOS / IOS XE', 'Cisco NX-OS', 'RouterOS', 'UniFi OS', 'Synology DSM 7', 'QTS / QuTS hero', 'macOS Sequoia', 'macOS Tahoe', 'iOS', 'iPadOS', 'Android', 'ChromeOS', 'FreeBSD', 'OpenBSD', 'Firmware propietario', 'SO no identificado'],
@@ -550,7 +534,7 @@
       // A native select is easier on touchscreens; unlisted values remain editable.
       const options=name==='asset'?[...new Set(['Todo el alcance',...state.assets.map(a=>str(a.name)).filter(Boolean)])]:block==='assets'&&name==='model'?(vendorModels[obj.vendor]||[]):choices;
       const custom=Boolean(value)&&!options.includes(value);
-      control=`<select id="${id}" ${attrs} data-preset="true" aria-label="${html(label)}"><option value="">Seleccionar…</option>${options.map(x=>`<option value="${html(x)}"${x===value?' selected':''}>${html(x)}</option>`).join('')}<option value="__custom__"${custom?' selected':''}>Otro / escribir…</option></select><input ${attrs} data-custom="true" aria-label="${html(label)} personalizado" placeholder="Especifica el valor" value="${custom?html(value):''}" maxlength="20000" ${custom?'':'hidden'}>`;
+      control=`<select id="${id}" ${attrs} data-preset="true" aria-label="${html(label)}"><option value="">${block==='assets'&&name==='model'&&!obj.vendor?'Selecciona primero un fabricante…':'Seleccionar…'}</option>${options.map(x=>`<option value="${html(x)}"${x===value?' selected':''}>${html(x)}</option>`).join('')}<option value="__custom__"${custom?' selected':''}>Otro / escribir…</option></select><input ${attrs} data-custom="true" aria-label="${html(label)} personalizado" placeholder="Especifica el valor" value="${custom?html(value):''}" maxlength="20000" ${custom?'':'hidden'}>`;
     }else control=`<input id="${id}" type="${type==='date'?'date':'text'}" ${attrs} value="${html(value)}" maxlength="20000"${key==='decimal'?' inputmode="decimal"':''}>`;
     return `<div class="field${type==='textarea'?' full':''}"><label for="${id}">${html(label)}</label>${control}</div>`;
   }
