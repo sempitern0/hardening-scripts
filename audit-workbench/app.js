@@ -2,6 +2,8 @@
 'use strict';
 (() => {
   const VERSION = 3;
+  const relations = globalThis.AuditRelations;
+  if (!relations) throw Error('No se ha cargado el módulo de relaciones de auditoría.');
   const SETTINGS_KEY = 'sysadmin-tools:audit-workbench:settings:v1';
   const CONNECTION_KEY = 'sysadmin-tools:audit-workbench:encrypted-nextcloud:v1';
   const LEGACY_STORE = 'sysadmin-tools:audit-workbench:v2';
@@ -80,7 +82,7 @@
   });
   const groups = {
     assets:{title:'Inventario de hardware',intro:'Hosts, servidores, dispositivos de red, periféricos e infraestructura física.',fields:[
-      ['name','Activo / hostname'],['type','Categoría / rol','picker',presets.hardware],['vendor','Fabricante','picker',hardwareVendors],['model','Modelo','picker',hardwareModels],['serial','Número de serie'],
+      ['id','Identificador del activo'],['name','Activo / hostname'],['type','Categoría / rol','picker',presets.hardware],['vendor','Fabricante','picker',hardwareVendors],['model','Modelo','picker',hardwareModels],['serial','Número de serie'],
       ['ip','IP / identificador'],['os','Sistema operativo / firmware','picker',presets.operating],['cpu','Procesador','picker',presets.cpu],['ram','Memoria RAM','picker',presets.ram],['storage','Tipo de almacenamiento','picker',presets.storage],['site','Ubicación / sede','picker',presets.site],
       ['owner','Responsable','picker',presets.owner],['criticality','Criticidad','select',['Sin valorar','Crítica','Alta','Media','Baja']],
       ['state','Estado / ciclo de vida','select',['Por revisar','En servicio','Obsoleto','Fuera de servicio']],['notes','Observaciones','textarea']]},
@@ -146,6 +148,10 @@
         if(block==='evidence'){
           const pic=typeof item.image==='string' && item.image.length<1400000?item.image:'';
           record.image=/^data:image\/jpeg;base64,[a-z0-9+/=]+$/i.test(pic)&&pic.length<1400000?pic:'';
+          record.links=relations.normalizeLinks(item.links);
+          record.fileName=str(item.fileName).slice(0,180);
+          record.fileBytes=Number.isSafeInteger(item.fileBytes) && item.fileBytes>=0 ? item.fileBytes : null;
+          record.fileSha256=/^[a-f0-9]{64}$/i.test(item.fileSha256||'')?item.fileSha256.toLowerCase():'';
         }
         return record;
       });
@@ -587,7 +593,24 @@
     return renderForm('meta',metaFields,'Cliente y alcance','Contexto, autorización, alcance, metodología y limitaciones de la evaluación.')+renderAuditTeam()+
       `<section class="card"><h2>Logo específico del informe (opcional)</h2><p class="subtle">Adjunta tu logo o el de la consultora (PNG, JPEG o WebP; máximo 3 MiB). Se convierte a JPEG y se incluye en el JSON exportado y en la portada del PDF. No se sube a Internet.</p><input id="logo-upload" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Seleccionar logotipo corporativo">${state.meta.logo?`<div class="logo-preview"><img src="${state.meta.logo}" alt="Logotipo corporativo incorporado"><button type="button" class="button danger small" id="logo-remove">Eliminar logotipo</button></div>`:''}</section>`;
   }
-  function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p><section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Cada dato registrado podrá aparecer en el informe y en la copia JSON.</p></div><button class="button accent" data-add="${block}">+ Añadir registro</button></div>${rows.length?rows.map((r,i)=>`<div class="entry"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="fields">${def.fields.map(f=>renderField(r,block,f,i)).join('')}</div>${block==='cves'?`<div class="cve-tools"><button class="button quiet small" type="button" data-cve-check="${i}">Consultar CVE online (opcional)</button><button class="button small" type="button" data-cve-link="${i}">Ver en CVE.org ↗</button><span class="subtle">Solo se envía el identificador CVE, nunca los datos del cliente.</span></div>`:''}${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Captura opcional</strong> (PNG, JPG, WebP hasta 5 MiB; se optimiza localmente)</label><input type="file" accept="image/png,image/jpeg,image/webp" data-image-index="${i}" id="evidence-upload-${i}">${r.image?`<img class="evidence-preview" alt="Evidencia incrustada" src="${r.image}"><button class="button small danger" data-clear-image="${i}">Quitar imagen</button>`:''}</div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
+  const relationLabels = {assets:'Activos',controls:'Controles',findings:'Hallazgos'};
+  function renderEvidenceRelations(evidence) {
+    const links=relations.normalizeLinks(evidence.links);
+    return `<div class="evidence-relations"><h3>Relacionar con el expediente</h3><p class="subtle">Selecciona los elementos afectados. No necesitas copiar identificadores manualmente.</p>
+      ${relations.CATEGORIES.map(kind=>{
+        const available=state[kind]||[];
+        const selected=links[kind].map(key=>{
+          const entry=available.find(item=>item._key===key);
+          return `<button type="button" class="relation-chip" data-unlink-evidence="${html(evidence._key)}" data-relation-kind="${kind}" data-relation-target="${html(key)}" aria-label="Desvincular ${html(relations.itemLabel(entry,kind))}">${html(relations.itemLabel(entry,kind))} ×</button>`;
+        }).join('');
+        return `<div class="relation-line"><label for="rel-${kind}-${html(evidence._key)}">${relationLabels[kind]}</label><select id="rel-${kind}-${html(evidence._key)}" data-add-evidence-link="${html(evidence._key)}" data-relation-kind="${kind}"><option value="">+ Vincular ${relationLabels[kind].toLowerCase()}…</option>${available.filter(item=>!links[kind].includes(item._key)).map(item=>`<option value="${html(item._key)}">${html(relations.itemLabel(item,kind))}</option>`).join('')}</select><div class="relation-chips">${selected||'<small class="subtle">Sin elementos vinculados</small>'}</div></div>`;
+      }).join('')}</div>`;
+  }
+  function renderLinkedEvidence(kind,item) {
+    const related=relations.linkedEvidence(state,kind,item._key);
+    return related.length?`<div class="related-evidence"><strong>${related.length} evidencia(s) vinculada(s)</strong><p>${related.map(e=>html(relations.itemLabel(e,'evidence'))).join(' · ')}</p></div>`:'';
+  }
+  function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p><section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Cada dato registrado podrá aparecer en el informe y en la copia JSON.</p></div>${block==='evidence'?'<button class="button quiet" data-export-manifest="true">Manifiesto SHA-256 (JSON)</button>':''}<button class="button accent" data-add="${block}">+ Añadir registro</button></div>${rows.length?rows.map((r,i)=>`<div class="entry"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="fields">${def.fields.map(f=>renderField(r,block,f,i)).join('')}</div>${['assets','controls','findings'].includes(block)?renderLinkedEvidence(block,r):''}${block==='evidence'?renderEvidenceRelations(r):''}${block==='cves'?`<div class="cve-tools"><button class="button quiet small" type="button" data-cve-check="${i}">Consultar CVE online (opcional)</button><button class="button small" type="button" data-cve-link="${i}">Ver en CVE.org ↗</button><span class="subtle">Solo se envía el identificador CVE, nunca los datos del cliente.</span></div>`:''}${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Adjuntar captura local</strong> (PNG, JPG, WebP hasta 5 MiB)</label><p class="subtle">Se guarda una copia optimizada. El SHA-256 identifica el archivo original, que debes conservar por separado.</p>${r.fileSha256?`<p class="evidence-digest">Archivo: ${html(r.fileName||'Sin nombre')} · ${(r.fileBytes||0).toLocaleString('es-ES')} bytes <span>SHA-256 ${html(r.fileSha256)}</span></p>`:''}<input type="file" accept="image/png,image/jpeg,image/webp" data-image-index="${i}" id="evidence-upload-${i}">${r.image?`<img class="evidence-preview" alt="Evidencia incrustada" src="${r.image}"><button class="button small danger" data-clear-image="${i}">Quitar imagen</button>`:''}</div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
   const settingsFields=[
     ['company','Nombre legal de la consultora'],['taxType','Identificador fiscal','select',['No indicado','NIF entidad / CIF','DNI / NIF persona física','NIE','NIF intracomunitario / otro']],
     ['taxId','Identificación fiscal'],['email','Email corporativo'],['phone','Teléfono'],
@@ -696,7 +719,7 @@
       <section class="card"><h2>Entrega bajo control del auditor</h2><p class="subtle">No se realiza ningún envío automático. El PDF se adjunta manualmente después de revisarlo.</p><div class="action-row"><button class="button accent" id="open-email">Preparar correo</button><button class="button quiet" id="native-share-json">Compartir JSON con el sistema</button><button class="button quiet" id="delivery-pdf">Generar PDF</button></div></section>
       <section class="card"><h2>Sincronización con nube</h2><p class="subtle">Google Drive, OneDrive, S3, Nextcloud y correo API requieren autorización, cifrado, autenticación y mecanismos de revocación. Todavía no están conectados. Exporta JSON y utiliza un cliente autorizado.</p></section>`;
   }
-  function renderDelivery(){const unresolved=state.controls.filter(x=>x.status==='Pendiente'||x.status==='No verificado').length;return `<span class="eyebrow">ENTREGA / REPORTING</span><h1 class="page-title">Informe final</h1><p class="lead">Última revisión editorial antes de entregar el resultado al cliente.</p><div class="notice">El PDF se crea con <strong>Imprimir → Guardar como PDF</strong> en tu navegador. No se necesita conexión, servidor ni librerías adicionales. Activa los gráficos de fondo si quieres conservar la composición visual.</div>${unresolved?`<div class="notice warn">Atención: hay ${unresolved} controles pendientes o no verificados. Se mostrarán así en el informe, no como conformes.</div>`:''}<section class="card"><div class="card-head"><div><h2>Conclusiones y cierre</h2><p class="subtle">Incluye un resumen ejecutivo entendible y un plan técnico accionable.</p></div></div><div class="fields">${finalFields.map(f=>renderField(state.final,'final',f)).join('')}</div></section><section class="card"><h2>Preparar entrega</h2><p class="subtle">El informe incorpora portada, confidencialidad, alcance, inventarios, controles, hallazgos, evidencias y recomendaciones.</p><div class="action-row"><button class="button accent" id="delivery-pdf">Generar informe PDF ↗</button><button class="button quiet" id="delivery-json">Guardar expediente JSON</button><button class="button quiet" data-go="backups">Copias / Excel / CSV</button><button class="button danger" id="delivery-reset">Nuevo expediente</button><button class="button quiet" id="native-share-json">Compartir JSON (opcional)</button><button class="button quiet" id="open-email">Preparar correo (sin adjuntos)</button></div></section>`}
+  function renderDelivery(){const unresolved=state.controls.filter(x=>x.status==='Pendiente'||x.status==='No verificado').length;const problems=relations.referenceProblems(state);return `<span class="eyebrow">ENTREGA / REPORTING</span><h1 class="page-title">Informe final</h1><p class="lead">Última revisión editorial antes de entregar el resultado al cliente.</p><div class="notice">El PDF se crea con <strong>Imprimir → Guardar como PDF</strong> en tu navegador. No se necesita conexión, servidor ni librerías adicionales. Activa los gráficos de fondo si quieres conservar la composición visual.</div>${problems.length?`<div class="notice warn"><strong>Revisar trazabilidad:</strong> ${problems.length} referencia(s) o identificadores por comprobar. ${html(problems.slice(0,5).join(' · '))}</div>`:''}${unresolved?`<div class="notice warn">Atención: hay ${unresolved} controles pendientes o no verificados. Se mostrarán así en el informe, no como conformes.</div>`:''}<section class="card"><div class="card-head"><div><h2>Conclusiones y cierre</h2><p class="subtle">Incluye un resumen ejecutivo entendible y un plan técnico accionable.</p></div></div><div class="fields">${finalFields.map(f=>renderField(state.final,'final',f)).join('')}</div></section><section class="card"><h2>Preparar entrega</h2><p class="subtle">El informe incorpora portada, confidencialidad, alcance, inventarios, controles, hallazgos, evidencias y recomendaciones.</p><div class="action-row"><button class="button accent" id="delivery-pdf">Generar informe PDF ↗</button><button class="button quiet" id="delivery-json">Guardar expediente JSON</button><button class="button quiet" data-go="backups">Copias / Excel / CSV</button><button class="button danger" id="delivery-reset">Nuevo expediente</button><button class="button quiet" id="native-share-json">Compartir JSON (opcional)</button><button class="button quiet" id="open-email">Preparar correo (sin adjuntos)</button></div></section>`}
   function render(){
     const inLibrary=['records','backups','online','settings','connections'].includes(page)||!currentId;
     byId('navigation').hidden=true;
@@ -777,8 +800,19 @@
     }
     if(t.dataset.imageIndex!==undefined&&t.files?.length){
       const id=currentId,recordKey=state.evidence[Number(t.dataset.imageIndex)]?._key;
-      try{const image=await resizeImage(t.files[0]);if(id!==currentId)throw Error('Ha cambiado el expediente.');const record=state.evidence.find(x=>x._key===recordKey);if(!record)throw Error('No se encontró la evidencia.');record.image=image;persist();render()}
+      try{const file=t.files[0];if(!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size>5*1024*1024)throw Error('Selecciona una imagen PNG, JPEG o WebP de hasta 5 MiB.');const digest=globalThis.crypto?.subtle ? Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await file.arrayBuffer())),b=>b.toString(16).padStart(2,'0')).join('') : '';const image=await resizeImage(file);if(id!==currentId)throw Error('Ha cambiado el expediente.');const record=state.evidence.find(x=>x._key===recordKey);if(!record)throw Error('No se encontró la evidencia.');record.image=image;record.fileName=file.name.slice(0,180);record.fileBytes=file.size;record.fileSha256=digest;record.sha256=digest;persist();render()}
       catch(err){alert('No se pudo incorporar la imagen: '+err.message);t.value=''}return;
+    }
+    if(t.dataset.addEvidenceLink!==undefined){
+      const evidence=state.evidence.find(row=>row._key===t.dataset.addEvidenceLink);
+      const kind=t.dataset.relationKind;
+      const target=state[kind]?.find(row=>row._key===t.value);
+      if(evidence&&relations.CATEGORIES.includes(kind)&&target){
+        evidence.links=relations.normalizeLinks(evidence.links);
+        if(!evidence.links[kind].includes(target._key))evidence.links[kind].push(target._key);
+        persist();render();
+      }
+      return;
     }
     if(t.dataset.block==='settings'){
       settings[t.dataset.field]=t.value;
@@ -869,6 +903,19 @@
     if(b.id==='backup-restore'){byId('input-import').click();return}
     if(b.id==='backup-export-xlsx'){await exportTabular('xlsx');return}
     if(b.id==='backup-export-csv'){await exportTabular('csv');return}
+    if(b.dataset.unlinkEvidence!==undefined){
+      const evidence=state.evidence.find(row=>row._key===b.dataset.unlinkEvidence);
+      const kind=b.dataset.relationKind;
+      if(evidence&&relations.CATEGORIES.includes(kind)){
+        evidence.links=relations.normalizeLinks(evidence.links);
+        evidence.links[kind]=evidence.links[kind].filter(key=>key!==b.dataset.relationTarget);
+        persist();render();
+      }
+      return;
+    }
+    if(b.dataset.exportManifest!==undefined){
+      download('manifiesto-evidencias-'+slug(state.meta.reportId)+'.json',JSON.stringify(relations.evidenceManifest(state),null,2),'application/json;charset=utf-8');return;
+    }
     if(b.dataset.new){await createAudit();return}
     if(b.dataset.backupAll){await backupAll();return}
     if(b.dataset.open){await switchAudit(b.dataset.open);return}
@@ -880,7 +927,7 @@
     if(b.dataset.cveCheck!==undefined){await lookupCve(Number(b.dataset.cveCheck),b);return}
     if(b.id==='native-share-json'){await shareAudit();return}
     if(b.id==='open-email'){draftEmail();return}
-    if(b.dataset.add){if(state[b.dataset.add].length>=LIMIT_ROWS)return alert('Límite de registros alcanzado.');const type=b.dataset.add;let row={_key:uid()};if(type==='findings')row={...row,id:'AUD-'+String(state.findings.length+1).padStart(3,'0'),severity:'Media',status:'Abierto'};if(type==='cves')row={...row,id:'',severity:'Sin evaluar',status:'Sin verificar'};if(type==='controls')row.status='Pendiente';if(type==='evidence')row.id='EVI-'+String(state.evidence.length+1).padStart(3,'0');state[type].push(row);persist();render();return}
+    if(b.dataset.add){if(state[b.dataset.add].length>=LIMIT_ROWS)return alert('Límite de registros alcanzado.');const type=b.dataset.add;let row={_key:uid()};if(['assets','controls','findings','evidence'].includes(type))row.id=relations.nextCode(state[type],type);if(type==='findings')row={...row,severity:'Media',status:'Abierto'};if(type==='cves')row={...row,id:'',severity:'Sin evaluar',status:'Sin verificar'};if(type==='controls')row.status='Pendiente';if(type==='evidence')row.links=relations.normalizeLinks(null);state[type].push(row);persist();render();return}
     if(b.dataset.remove){const k=b.dataset.remove,i=Number(b.dataset.index);if(confirm('¿Eliminar este registro y su contenido?')){state[k].splice(i,1);persist();render()}return}
     if(b.dataset.clearImage!==undefined){if(confirm('¿Eliminar la imagen incrustada?')){state.evidence[Number(b.dataset.clearImage)].image='';persist();render()}return}
     if(b.id==='delivery-pdf'){printReport();return}
@@ -993,7 +1040,7 @@
   byId('btn-pdf').addEventListener('click',printReport);
   const table = (fields,row) => `<table class="report-table"><tbody>${fields.map(([name,label])=>`<tr><th class="report-field-label">${html(label)}</th><td>${para(row[name])}</td></tr>`).join('')}</tbody></table>`;
   const section = (num,title,content) => `<section class="report-section"><h2>${num}. ${html(title)}</h2>${content}</section>`;
-  function reportRows(k){const rows=state[k];return rows.length?rows.map((row,i)=>`<h3>${i+1}. ${html(row.title||row.name||row.id||'Registro')}</h3>${table(groups[k].fields,row)}${k==='evidence'&&row.image?`<figure><img class="report-evidence" alt="Evidencia ${html(row.id)}" src="${row.image}"><figcaption class="report-note">${html(row.id||'Evidencia')}: ${html(row.title||'Captura adjunta')}</figcaption></figure>`:''}`).join(''):'<p class="report-empty">Sin registros incluidos en esta categoría.</p>'}
+  function reportRows(k){const rows=state[k];return rows.length?rows.map((row,i)=>`<h3>${i+1}. ${html(row.title||row.name||row.id||'Registro')}</h3>${table(groups[k].fields,row)}${k==='evidence'?`<p class="report-note"><strong>Integridad y vínculos:</strong> ${html(row.fileSha256?'SHA-256 original: '+row.fileSha256:'Archivo original sin huella calculada')} ${html(row.fileName?' · Archivo: '+row.fileName:'')} · ${html(relations.CATEGORIES.map(kind=>{const names=relations.normalizeLinks(row.links)[kind].map(key=>state[kind].find(x=>x._key===key)).filter(Boolean).map(x=>relations.itemLabel(x,kind));return names.length?relationLabels[kind]+': '+names.join(', '):''}).filter(Boolean).join(' · ')||'Sin relaciones explícitas')}</p>`:''}${k==='evidence'&&row.image?`<figure><img class="report-evidence" alt="Evidencia ${html(row.id)}" src="${row.image}"><figcaption class="report-note">${html(row.id||'Evidencia')}: ${html(row.title||'Captura adjunta')}</figcaption></figure>`:''}`).join(''):'<p class="report-empty">Sin registros incluidos en esta categoría.</p>'}
   function buildReport(){
     byId('report').dataset.palette=selectedPalette;
     const today=new Date().toLocaleDateString('es-ES');
@@ -1005,11 +1052,11 @@
     const identity=section(2,'Identificación, alcance y metodología',table(metaFields,meta)+`<h3>Equipo responsable de la auditoría</h3>${teamTable}`);
     const executive=section(3,'Resumen ejecutivo',`<p>${para(ending.executive)}</p><h3>Valoración del riesgo</h3><p>${para(ending.assessment)}</p><div class="report-stat-grid">${severity.map(s=>`<div><strong>${count[s]}</strong><small>${s}</small></div>`).join('')}</div><h3>Puntos fuertes</h3><p>${para(ending.strengths)}</p><h3>Debilidades principales</h3><p>${para(ending.weaknesses)}</p>`);
     const controls=section(8,'Controles y verificaciones',reportRows('controls'));
-    const findings=section(9,'Resumen de hallazgos y ficha técnica',`${state.findings.length?`<table class="report-table"><thead><tr><th>ID</th><th>Hallazgo</th><th>Severidad</th><th>Remediación</th></tr></thead><tbody>${state.findings.map(f=>`<tr><td>${html(f.id)}</td><td>${html(f.title)}</td><td>${html(f.severity)}</td><td>${para(f.recommendation)}</td></tr>`).join('')}</tbody></table>`:'<p class="report-empty">No hay hallazgos registrados.</p>'}${state.findings.map(f=>`<div class="report-finding"><h3>${html(f.id||'Hallazgo')} — ${html(f.title||'Sin título')} <span class="report-badge ${level(f.severity)}">${html(f.severity)}</span></h3>${table(groups.findings.fields,f)}${state.evidence.filter(e=>(f.evidenceIds||'').split(/[,;\s]+/).includes(e.id)&&e.image).map(e=>`<figure><img class="report-evidence" src="${e.image}" alt="Evidencia ${html(e.id)}"><figcaption class="report-note">${html(e.id)} — ${html(e.title)}</figcaption></figure>`).join('')}</div>`).join('')}`);
+    const findings=section(9,'Resumen de hallazgos y ficha técnica',`${state.findings.length?`<table class="report-table"><thead><tr><th>ID</th><th>Hallazgo</th><th>Severidad</th><th>Remediación</th></tr></thead><tbody>${state.findings.map(f=>`<tr><td>${html(f.id)}</td><td>${html(f.title)}</td><td>${html(f.severity)}</td><td>${para(f.recommendation)}</td></tr>`).join('')}</tbody></table>`:'<p class="report-empty">No hay hallazgos registrados.</p>'}${state.findings.map(f=>`<div class="report-finding"><h3>${html(f.id||'Hallazgo')} — ${html(f.title||'Sin título')} <span class="report-badge ${level(f.severity)}">${html(f.severity)}</span></h3>${table(groups.findings.fields,f)}${state.evidence.filter(e=>e.image&&((f.evidenceIds||'').split(/[,;\s]+/).includes(e.id)||relations.normalizeLinks(e.links).findings.includes(f._key))).map(e=>`<figure><img class="report-evidence" src="${e.image}" alt="Evidencia ${html(e.id)}"><figcaption class="report-note">${html(e.id)} — ${html(e.title)}</figcaption></figure>`).join('')}</div>`).join('')}`);
     const closing=section(11,'Conclusiones y plan de acción',table(finalFields.filter(f=>f[0]!=='executive'&&f[0]!=='strengths'&&f[0]!=='weaknesses'&&f[0]!=='assessment'),ending)+`<div class="report-signature">Generado localmente con Audit Workbench. Validación y autorización de entrega: ${html(ending.signoff||'Pendiente de firma')}.</div>`);
     byId('report').innerHTML=cover+legal+identity+executive+section(4,'Inventario de hardware',reportRows('assets'))+section(5,'Infraestructura de redes',reportRows('networks'))+section(6,'Software y servicios',reportRows('software'))+section(7,'Vulnerabilidades CVE registradas',reportRows('cves'))+controls+findings+section(10,'Registro de evidencias',reportRows('evidence'))+closing;
   }
-  function printReport(){const issues=invalidFields();if(issues.length&&!confirm(`Hay ${issues.length} campos con errores de formato o coherencia.\n\n${issues.slice(0,5).join('\n')}\n\n¿Generar el PDF igualmente?`))return;buildReport();window.print()}
+  function printReport(){const issues=[...invalidFields(),...relations.referenceProblems(state)];if(issues.length&&!confirm(`Hay ${issues.length} campos o referencias por revisar.\n\n${issues.slice(0,5).join('\n')}\n\n¿Generar el PDF igualmente?`))return;buildReport();window.print()}
   window.addEventListener('beforeprint',buildReport);
   byId('palette').addEventListener('change',event=>selectPalette(event.target.value));
   byId('open-library').addEventListener('click',async()=>{try{await flush();move('records')}catch(error){alert(error.message)}});

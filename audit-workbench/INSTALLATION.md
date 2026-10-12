@@ -60,7 +60,7 @@ Abre `http://127.0.0.1:8765/` **en ese mismo PC**. El origen localhost se consid
 
 Ejecuta el lanzador con `--update` (Bash) o `-Update` (PowerShell) desde una carpeta de origen confiable. Conserva los JSON exportados; estos son independientes del código. En PWA HTTPS, el navegador puede actualizar automáticamente los archivos de la shell; exporta tu backup **antes** de cambiar de versión/origen. El service worker solo almacena la aplicación y no exportaciones o expedientes.
 
-Para un futuro cambio de `hardening-scripts` a `sysadmin-tools`, adapta la URL y usa `AUDIT_WORKBENCH_REPO=usuario/nuevo-repo` / `-Repository usuario/nuevo-repo` mientras dure la transición. Los datos de navegador no migran entre **orígenes HTTPS diferentes**; exporta/importa.
+El repositorio actual es `sempitern0/sysadmin` y se instala desde `main`. Puedes cambiar de origen mediante `AUDIT_WORKBENCH_REPO=usuario/repositorio` o `-Repository usuario/repositorio`. Los datos del navegador no migran entre **orígenes HTTPS diferentes**: exporta primero el JSON e impórtalo en el nuevo origen.
 
 ## Resolución de incidencias
 

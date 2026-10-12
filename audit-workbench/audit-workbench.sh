@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Audit Workbench launcher for Linux/macOS. One-time download; offline afterwards.
+# Audit Workbench: installation of static offline assets; does not scan or harden hosts.
 set -Eeuo pipefail
 umask 077
 
-REPO="${AUDIT_WORKBENCH_REPO:-sempitern0/hardening-scripts}"
+REPO="${AUDIT_WORKBENCH_REPO:-sempitern0/sysadmin}"
 REF="${AUDIT_WORKBENCH_REF:-main}"
 DEST="${XDG_DATA_HOME:-$HOME/.local/share}/audit-workbench"
 UPDATE=0
@@ -11,17 +11,14 @@ NO_OPEN=0
 
 usage() {
   cat <<'HELP'
-Audit Workbench — asistente documental offline
-Uso: bash audit-workbench.sh [--dir RUTA] [--ref RAMA_O_SHA] [--update] [--no-open] [--help]
-  --dir      Directorio de instalación local (por defecto: ~/.local/share/audit-workbench)
-  --ref      Rama, etiqueta o SHA del repositorio (por defecto: main)
-  --update   Reemplazar archivos de aplicación; NO elimina expedientes JSON exportados
-  --no-open  Instalar sin abrir navegador
-
-Puedes definir AUDIT_WORKBENCH_REPO=owner/repo si cambias el nombre del repositorio.
-Si ejecutas el script desde audit-workbench/ en un checkout, usa esos
-archivos locales sin Internet. En caso contrario descarga los recursos de la PWA por HTTPS
-(solo en la instalación inicial). La app no hace solicitudes de red al usarla.
+Audit Workbench — auditorías offline
+Uso: bash audit-workbench.sh [--dir RUTA] [--ref RAMA_O_SHA] [--update] [--no-open]
+  --dir       Carpeta de instalación local
+  --ref       Rama, etiqueta o SHA en GitHub (por defecto main)
+  --update    Actualizar recursos de la aplicación sin tocar los expedientes del navegador
+  --no-open   No abrir automáticamente el navegador
+También puedes usar AUDIT_WORKBENCH_REPO=owner/repo.
+La primera descarga remota requiere Internet. La edición y el PDF funcionan offline.
 HELP
 }
 while (($#)); do
@@ -34,27 +31,26 @@ while (($#)); do
     *) echo "Argumento no reconocido: $1" >&2; usage >&2; exit 2;;
   esac
 done
-if [[ ! "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
-  echo 'Repositorio inválido (esperado owner/repo).' >&2; exit 2
-fi
-if [[ ! "$REF" =~ ^[A-Za-z0-9._/-]+$ || "$REF" == *..* || "$REF" == //* ]]; then
-  echo 'Ref de Git inválida.' >&2; exit 2
-fi
+[[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || { echo 'Repositorio inválido' >&2; exit 2; }
+[[ "$REF" =~ ^[A-Za-z0-9._/-]+$ && "$REF" != *..* && "$REF" != //* ]] || { echo 'Ref inválida' >&2; exit 2; }
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-LOCAL_SOURCE="${SCRIPT_DIR}"
-FILES=(index.html styles.css app.js manifest.webmanifest sw.js icons/icon-192.png icons/icon-512.png)
-needs_install=0
-for f in "${FILES[@]}"; do
-  [[ -s "${DEST}/${f}" ]] || needs_install=1
-done
-if ((UPDATE || needs_install)); then
+FILES=(
+  index.html normalize.css styles.css team.css contrast.css relations.css print.css
+  app.js audit-relations.js hardware-catalog.js exporters.js sw.js manifest.webmanifest
+  fonts/atkinson.css fonts/AtkinsonHyperlegible-Regular.woff2 fonts/AtkinsonHyperlegible-Bold.woff2
+  fonts/AtkinsonHyperlegible-Italic.woff2 fonts/AtkinsonHyperlegible-BoldItalic.woff2
+  icons/dragon.svg icons/icon-192.png icons/icon-512.png
+)
+needs_install=$UPDATE
+for file in "${FILES[@]}"; do [[ -s "${DEST}/${file}" ]] || needs_install=1; done
+if ((needs_install)); then
   mkdir -p -- "$DEST"
   stage="$(mktemp -d "${DEST}/.staging.XXXXXXXX")"
   trap 'rm -rf -- "$stage"' EXIT
   for file in "${FILES[@]}"; do
     mkdir -p -- "$(dirname -- "${stage}/${file}")"
-    if [[ -s "${LOCAL_SOURCE}/${file}" ]]; then
-      cp -- "${LOCAL_SOURCE}/${file}" "${stage}/${file}"
+    if [[ -s "${SCRIPT_DIR}/${file}" ]]; then
+      cp -- "${SCRIPT_DIR}/${file}" "${stage}/${file}"
     else
       url="https://raw.githubusercontent.com/${REPO}/${REF}/audit-workbench/${file}"
       if command -v curl >/dev/null 2>&1; then
@@ -62,22 +58,25 @@ if ((UPDATE || needs_install)); then
       elif command -v wget >/dev/null 2>&1; then
         wget -q --timeout=90 -O "${stage}/${file}" "$url"
       else
-        echo 'Requiere curl o wget para la instalación inicial desde GitHub.' >&2; exit 1
+        echo 'Requiere curl o wget para los archivos que no se encuentran localmente.' >&2; exit 1
       fi
     fi
     [[ -s "${stage}/${file}" ]] || { echo "Archivo de aplicación vacío: ${file}" >&2; exit 1; }
   done
-  grep -q 'Audit Workbench' "${stage}/index.html" && grep -q 'sysadmin-tools:audit-workbench:v2' "${stage}/app.js" || {
-    echo 'La descarga no parece corresponder con Audit Workbench; no se instala.' >&2; exit 1;
+  grep -q 'Audit Workbench' "${stage}/index.html" && grep -q 'AuditRelations' "${stage}/audit-relations.js" || {
+    echo 'Los archivos descargados no corresponden a Audit Workbench.' >&2; exit 1;
   }
-  for file in "${FILES[@]}"; do mkdir -p -- "$(dirname -- "${DEST}/${file}")"; mv -f -- "${stage}/${file}" "${DEST}/${file}"; chmod 600 -- "${DEST}/${file}"; done
+  for file in "${FILES[@]}"; do
+    mkdir -p -- "$(dirname -- "${DEST}/${file}")"
+    mv -f -- "${stage}/${file}" "${DEST}/${file}"
+    chmod 600 -- "${DEST}/${file}"
+  done
   echo "[OK] Aplicación instalada en: ${DEST}"
 fi
 html="${DEST}/index.html"
-[[ -s "$html" ]] || { echo 'No se pudo preparar el HTML' >&2; exit 1; }
 echo "[OK] Archivo local: ${html}"
-echo 'Los datos se editan en el navegador. Exporta periódicamente el JSON; usa Imprimir > Guardar como PDF.'
-if (( !NO_OPEN )); then
+echo 'Los expedientes se guardan en el navegador. Exporta el JSON a almacenamiento cifrado.'
+if (( ! NO_OPEN )); then
   if command -v xdg-open >/dev/null 2>&1; then xdg-open "$html" >/dev/null 2>&1 || echo "Abre manualmente: ${html}"
   elif command -v open >/dev/null 2>&1; then open "$html" || echo "Abre manualmente: ${html}"
   else echo "Abre manualmente: ${html}"; fi

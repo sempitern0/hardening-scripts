@@ -1,29 +1,28 @@
-# Audit Workbench - launcher for Windows PowerShell 5.1+ and PowerShell 7.
-# One-time HTTPS download; the actual audit app works offline afterwards.
+# Audit Workbench — instalador offline Windows, PowerShell 5.1+ / 7+.
 [CmdletBinding()]
 param(
     [string]$OutputDirectory = (Join-Path $env:LOCALAPPDATA 'SysadminTools\AuditWorkbench'),
     [string]$Ref = 'main',
-    [string]$Repository = 'sempitern0/hardening-scripts',
+    [string]$Repository = 'sempitern0/sysadmin',
     [switch]$Update,
     [switch]$NoOpen
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ($Repository -notmatch '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$') { throw 'Repositorio inválido (esperado owner/repo).' }
-if ($Ref -notmatch '^[A-Za-z0-9._/-]+$' -or $Ref.Contains('..') -or $Ref.StartsWith('//')) {
-    throw 'Ref de Git inválida.'
-}
-$files = @('index.html','styles.css','app.js','manifest.webmanifest','sw.js','icons/icon-192.png','icons/icon-512.png')
-# $PSScriptRoot is empty when executed via Invoke-Expression (irm ... | iex).
-# Local checkout takes precedence; piped one-liners download the app once.
+if ($Repository -notmatch '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$') { throw 'Repositorio inválido (owner/repo).' }
+if ($Ref -notmatch '^[A-Za-z0-9._/-]+$' -or $Ref.Contains('..') -or $Ref.StartsWith('//')) { throw 'Referencia Git inválida.' }
+$files = @(
+    'index.html','normalize.css','styles.css','team.css','contrast.css','relations.css','print.css',
+    'app.js','audit-relations.js','hardware-catalog.js','exporters.js','sw.js','manifest.webmanifest',
+    'fonts/atkinson.css','fonts/AtkinsonHyperlegible-Regular.woff2','fonts/AtkinsonHyperlegible-Bold.woff2',
+    'fonts/AtkinsonHyperlegible-Italic.woff2','fonts/AtkinsonHyperlegible-BoldItalic.woff2',
+    'icons/dragon.svg','icons/icon-192.png','icons/icon-512.png'
+)
 $source = if ($PSScriptRoot) { $PSScriptRoot } else { $null }
 $required = $Update.IsPresent
 foreach ($name in $files) {
     $path = Join-Path $OutputDirectory $name
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) {
-        $required = $true
-    }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) { $required = $true }
 }
 if ($required) {
     New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
@@ -41,25 +40,25 @@ if ($required) {
                 $url = "https://raw.githubusercontent.com/$Repository/$Ref/audit-workbench/$name"
                 Invoke-WebRequest -Uri $url -OutFile $stagedFile -UseBasicParsing -TimeoutSec 90 | Out-Null
             }
-            if (-not (Test-Path -LiteralPath $stagedFile -PathType Leaf) -or (Get-Item $stagedFile).Length -eq 0) {
-                throw "Archivo de aplicación vacío: $name"
+            if (-not (Test-Path -LiteralPath $stagedFile -PathType Leaf) -or (Get-Item -LiteralPath $stagedFile).Length -eq 0) {
+                throw "Archivo vacío: $name"
             }
         }
-        if (-not (Select-String -LiteralPath (Join-Path $stage 'index.html') -Pattern 'Audit Workbench' -Quiet) -or
-            -not (Select-String -LiteralPath (Join-Path $stage 'app.js') -Pattern 'sysadmin-tools:audit-workbench:v2' -SimpleMatch -Quiet)) {
-            throw 'La descarga no corresponde con Audit Workbench.'
+        if (-not (Select-String -LiteralPath (Join-Path $stage 'index.html') -Pattern 'Audit Workbench' -SimpleMatch -Quiet) -or
+            -not (Select-String -LiteralPath (Join-Path $stage 'audit-relations.js') -Pattern 'AuditRelations' -SimpleMatch -Quiet)) {
+            throw 'Los archivos no corresponden con Audit Workbench.'
         }
         foreach ($name in $files) {
-            $destinationParent = Split-Path -Parent (Join-Path $OutputDirectory $name)
-            if (-not (Test-Path -LiteralPath $destinationParent)) { New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null }
+            $parent = Split-Path -Parent (Join-Path $OutputDirectory $name)
+            if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
             Move-Item -LiteralPath (Join-Path $stage $name) -Destination (Join-Path $OutputDirectory $name) -Force
         }
-        Write-Host "[OK] Aplicación instalada: $OutputDirectory"
+        Write-Host "[OK] Aplicación instalada en: $OutputDirectory"
     } finally {
         Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 $index = Join-Path $OutputDirectory 'index.html'
 Write-Host "[OK] Archivo local: $index"
-Write-Host 'Guarda el JSON frecuentemente y utiliza Generar PDF > Guardar como PDF.'
+Write-Host 'Expedientes: en el navegador. Exporta copias JSON y conserva los originales de evidencias.'
 if (-not $NoOpen) { Start-Process -FilePath $index }

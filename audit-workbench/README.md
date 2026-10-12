@@ -22,20 +22,20 @@ Para descargar solo el instalador desde GitHub, revisarlo y ejecutarlo:
 
 ```bash
 curl -fL -o audit-workbench.sh \
-  'https://raw.githubusercontent.com/sempitern0/hardening-scripts/feature/offline-audit-workbench/audit-workbench/audit-workbench.sh'
+  'https://raw.githubusercontent.com/sempitern0/sysadmin/main/audit-workbench/audit-workbench.sh'
 less audit-workbench.sh
-AUDIT_WORKBENCH_REF=feature/offline-audit-workbench bash ./audit-workbench.sh
+AUDIT_WORKBENCH_REF=main bash ./audit-workbench.sh
 ```
 
 En Windows con PowerShell, descarga y revisa antes de ejecutar:
 
 ```powershell
-Invoke-WebRequest 'https://raw.githubusercontent.com/sempitern0/hardening-scripts/feature/offline-audit-workbench/audit-workbench/audit-workbench.ps1' -OutFile audit-workbench.ps1
+Invoke-WebRequest 'https://raw.githubusercontent.com/sempitern0/sysadmin/main/audit-workbench/audit-workbench.ps1' -OutFile audit-workbench.ps1
 Get-Content .\audit-workbench.ps1
-.\audit-workbench.ps1 -Ref feature/offline-audit-workbench
+.\audit-workbench.ps1 -Ref main
 ```
 
-> La rama `feature/offline-audit-workbench` es de desarrollo. Sustituye su URL por `main` cuando la versión haya sido publicada. Evita `curl | bash` o `irm | iex` en clientes de terceros; descarga e inspecciona el script antes de ejecutarlo. Para cambiar el repositorio usa `AUDIT_WORKBENCH_REPO` (Bash) o `-Repository` (PowerShell).
+> Los ejemplos anteriores instalan desde `main` del repositorio `sempitern0/sysadmin`. Evita `curl | bash` o `irm | iex` en clientes de terceros; descarga e inspecciona el script antes de ejecutarlo. Para cambiar el repositorio usa `AUDIT_WORKBENCH_REPO` (Bash) o `-Repository` (PowerShell).
 
 ## Contenido
 
@@ -75,6 +75,20 @@ Ambos formatos son **entregables tabulares** destinados a revisión, intercambio
 
 **Advertencia:** IndexedDB/localStorage pertenecen al perfil del navegador y al origen (`file://`, `https://servidor`, `http://localhost`). Borrar datos de sitio, usar incógnito, cambiar de navegador/perfil, reinstalar el sistema o cambiar la URL de origen **puede hacer desaparecer los expedientes locales**. Una PWA instalada no equivale a un backup; exporta los JSON con frecuencia. Los archivos de backup no están cifrados por la aplicación.
 
+## Evidencias vinculadas y trazabilidad (v12)
+
+En **Hardware**, **Controles**, **Hallazgos** y **Evidencias**, los registros nuevos reciben identificadores estables (`ACT-001`, `CTRL-001`, `FND-001` y `EVD-001`). Los identificadores anteriores se conservan: no se renumeran automáticamente expedientes existentes.
+
+1. Registra el activo y la comprobación o hallazgo que quieras documentar.
+2. En **Evidencias**, añade una ficha y usa **Relacionar con el expediente** para seleccionar los activos, controles y hallazgos pertinentes. Las selecciones se hacen mediante listas, sin copiar códigos. Puedes quitar una relación mediante su etiqueta.
+3. Opcionalmente, adjunta una captura local PNG/JPEG/WebP (máximo 5 MiB). La app calcula **SHA-256 del archivo original seleccionado** cuando el navegador dispone de Web Crypto y conserva en el JSON la huella, nombre y tamaño. La vista previa JPEG se comprime y puede tener otra huella.
+4. Conserva **el archivo original** en almacenamiento seguro fuera de Audit Workbench. La herramienta no almacena automáticamente los bytes originales: el hash no constituye por sí mismo una cadena de custodia, firma digital ni prueba de autenticidad.
+5. Pulsa **Manifiesto SHA-256 (JSON)** en Evidencias para descargar un resumen de nombres, hashes y asociaciones. Es un anexo de control, no un backup ni un manifiesto firmado.
+
+Las asociaciones usan identificadores internos estables: cambiar el nombre de un activo no rompe sus vínculos. Si eliminas un activo relacionado, **Informe final** te avisará de referencias que ya no existen, sin borrar silenciosamente la evidencia. Las referencias de texto antiguas también se conservan. Al exportar o restaurar un expediente JSON, las relaciones se preservan de forma opcional dentro del mismo esquema de datos v3.
+
+**Privacidad:** revisa las capturas para retirar secretos, identificadores y datos de personas que no sean necesarios. Calcula la huella antes de redactar u optimizar un original si necesitas conservar la trazabilidad de ambos estados.
+
 ## Generación de PDF
 
 Selecciona el tema y carga el logotipo en **Cliente y alcance**, revisa **Cláusulas y privacidad** y **Informe final**, y pulsa **Generar PDF**. En el diálogo de impresión del sistema selecciona **Guardar como PDF** (Android/iPadOS pueden utilizar la función de imprimir/compartir del navegador) y activa **gráficos de fondo** si tu navegador ofrece esa opción para reproducir todos los colores.
@@ -104,7 +118,7 @@ bash -n audit-workbench/audit-workbench.sh
 python audit-workbench/tests/test_e2e.py  # Requiere Chromium, Playwright y PyMuPDF en entorno de desarrollo
 ```
 
-El proyecto prioriza ECMAScript moderno sin empaquetador: funciones nativas, eventos delegados, persistencia versionada, escapado sistemático y sin `eval`, `innerHTML` de datos sin sanitizar ni bibliotecas remotas. La app está preparada para una futura separación por módulos, respetando su uso offline y su despliegue con HTML/JS estáticos.
+El proyecto utiliza pequeños módulos autocontenidos (`audit-relations.js`, `hardware-catalog.js`, `exporters.js` y `app.js`) y prioriza ECMAScript moderno sin empaquetador: funciones nativas, eventos delegados, persistencia versionada, escapado sistemático y sin `eval`, `innerHTML` de datos sin sanitizar ni bibliotecas remotas. La app está preparada para una futura separación por módulos, respetando su uso offline y su despliegue con HTML/JS estáticos.
 
 ## Interfaz y accesibilidad (v5)
 
