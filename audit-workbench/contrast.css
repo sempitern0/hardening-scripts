@@ -1,0 +1,85 @@
+/* Workbench v11 · coherent field surfaces across light/dark palettes.
+   Keeps inputs visually distinct from their parent cards without changing the
+   customer's print design or using inline styles prohibited by CSP. */
+:root {
+  --aw-field-bg: #fff;
+  --aw-field-border: #9ab4c8;
+  --aw-field-hover: #678ba6;
+  --aw-card-bg: color-mix(in srgb, var(--canvas) 70%, var(--brand-tint));
+  --aw-field-focus: var(--brand);
+}
+:root[data-palette="midnight"],
+:root[data-palette="obsidian"],
+:root[data-palette="pine-dark"],
+:root[data-palette="amethyst-dark"],
+:root[data-palette="crimson-dark"] {
+  --aw-field-bg: #101b27;
+  --aw-field-border: #637b91;
+  --aw-field-hover: #a0b5c8;
+  --aw-card-bg: color-mix(in srgb, var(--paper) 82%, var(--brand-tint));
+}
+#workspace .member-card,
+#workspace .entry,
+#workspace .auditor-choice,
+#workspace .connection-methods label {
+  background-color: var(--aw-card-bg);
+  border-color: var(--line);
+}
+#workspace .auditor-choice:has(input:checked) {
+  background-color: var(--brand-tint);
+  border-color: var(--aw-field-focus);
+}
+#workspace .field :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea),
+#workspace .backup-exports select,
+#workspace .wizard-jump select,
+#workspace .entry :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+  background: var(--aw-field-bg);
+  color: var(--ink);
+  border: 1.5px solid var(--aw-field-border);
+  box-shadow: 0 1px 2px #00000012;
+  min-height: 48px;
+  transition: border-color .16s ease, box-shadow .16s ease;
+}
+#workspace .field :is(input, select, textarea):hover,
+#workspace .backup-exports select:hover,
+#workspace .wizard-jump select:hover {
+  border-color: var(--aw-field-hover);
+}
+#workspace .field :is(input, select, textarea):focus-visible,
+#workspace .backup-exports select:focus-visible,
+#workspace .wizard-jump select:focus-visible {
+  background: var(--aw-field-bg);
+  border-color: var(--aw-field-focus);
+  outline: 3px solid color-mix(in srgb, var(--aw-field-focus) 32%, transparent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--aw-field-focus);
+}
+#workspace .field :is(input, select, textarea):disabled {
+  opacity: .7;
+  cursor: not-allowed;
+}
+#workspace .field :is(input, textarea)::placeholder,
+#workspace .entry :is(input, textarea)::placeholder {
+  color: var(--muted);
+  opacity: .85;
+}
+/* Explicit custom-value field remains hidden unless the operator chooses Other. */
+#workspace input[hidden] { display: none !important; }
+/* Printed inventory and finding tables need distinct cells without colored text blocks. */
+@media print {
+  #report .report-table td {
+    background: #fff !important;
+    color: #1c2d3b !important;
+  }
+  #report .report-table th {
+    background: var(--report-tint, #ebf3f5) !important;
+    color: var(--report-heading, #15394a) !important;
+  }
+  #report .report-table tbody tr:nth-child(even) td {
+    background: #f4f8fb !important;
+  }
+  #report .report-table :is(th, td) { border-color: #aabecb !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #workspace .field :is(input, select, textarea) { transition: none; }
+}
