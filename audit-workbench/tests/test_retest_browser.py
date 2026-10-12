@@ -16,7 +16,7 @@ with sync_playwright() as p:
     for css in ('normalize.css','styles.css','team.css','contrast.css','relations.css','templates.css','quality.css','retest.css','comparison.css'):
         page.add_style_tag(content=(ROOT/css).read_text(encoding='utf-8'))
     page.evaluate('''() => {const memory=new Map();Object.defineProperty(window,'indexedDB',{configurable:true,value:undefined});Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:k=>memory.get(k)||null,setItem:(k,v)=>memory.set(k,String(v)),removeItem:k=>memory.delete(k)}});}''')
-    for name in ('exporters.js','hardware-catalog.js','audit-relations.js','control-templates.js','audit-quality.js','audit-retest.js','audit-comparison.js','app.js'):
+    for name in ('exporters.js','hardware-catalog.js','audit-relations.js','control-templates.js','audit-quality.js','audit-retest.js','audit-comparison.js','audit-storage.js','app.js'):
         page.add_script_tag(content=(ROOT/name).read_text(encoding='utf-8'))
     page.locator('[data-new]').first.click()
     for field,val in {'client':'Cliente ejemplo','project':'Reevaluación anual','scope':'Servidores de producción'}.items():

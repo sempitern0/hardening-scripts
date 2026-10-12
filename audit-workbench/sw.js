@@ -1,9 +1,9 @@
 /* Audit Workbench service worker: immutable local shell only. No audit data is cached. */
 'use strict';
-const CACHE_NAME = 'audit-workbench-shell-v16-comparative-report';
+const CACHE_NAME = 'audit-workbench-shell-v17-modular-storage';
 const OPTIONAL_FONTS = ['Regular','Bold','Italic','BoldItalic'].map(weight => `./fonts/AtkinsonHyperlegible-${weight}.woff2`);
 const CORE = [
-  './', './index.html', './styles.css', './app.js',
+  './', './index.html', './styles.css', './app.js', './audit-storage.js',
   './normalize.css', './team.css', './contrast.css', './relations.css', './audit-relations.js', './templates.css', './quality.css', './audit-quality.js', './retest.css', './audit-retest.js', './comparison.css', './audit-comparison.js', './control-templates.js', './print.css', './exporters.js', './hardware-catalog.js', './fonts/atkinson.css', './manifest.webmanifest', './icons/dragon.svg', './icons/icon-192.png', './icons/icon-512.png'
 ];
 self.addEventListener('install', event => {

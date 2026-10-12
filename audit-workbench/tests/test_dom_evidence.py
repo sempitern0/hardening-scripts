@@ -19,7 +19,7 @@ with sync_playwright() as p:
     page.set_content(html,wait_until='load')
     # init script may not run for set_content; ensure fresh storage explicitly
     page.evaluate('''() => {const records=new Map();Object.defineProperty(window,'indexedDB',{value:undefined,configurable:true});Object.defineProperty(window,'localStorage',{value:{getItem:k=>records.get(k)||null,setItem:(k,v)=>records.set(k,String(v)),removeItem:k=>records.delete(k)},configurable:true}); }''')
-    for name in ('hardware-catalog.js','exporters.js','audit-relations.js','control-templates.js','audit-quality.js','audit-retest.js','audit-comparison.js','app.js'):
+    for name in ('hardware-catalog.js','exporters.js','audit-relations.js','control-templates.js','audit-quality.js','audit-retest.js','audit-comparison.js','audit-storage.js','app.js'):
         page.add_script_tag(content=(ROOT/name).read_text())
     page.wait_for_timeout(400)
     print('PAGE',page.locator('h1').all_text_contents()[:2],'errors',errors)

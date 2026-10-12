@@ -2,11 +2,13 @@
 'use strict';
 (() => {
   const VERSION = 3;
+  const storage = globalThis.AuditStorage;
   const relations = globalThis.AuditRelations;
   const templates = globalThis.AuditControlTemplates;
   const quality = globalThis.AuditQuality;
   const retest = globalThis.AuditRetest;
   const comparison = globalThis.AuditComparison;
+  if (!storage) throw Error('No se ha cargado el módulo de almacenamiento offline.');
   if (!relations) throw Error('No se ha cargado el módulo de relaciones de auditoría.');
   if (!templates) throw Error('No se ha cargado el catálogo de controles offline.');
   if (!quality) throw Error('No se ha cargado la revisión de calidad offline.');
@@ -196,38 +198,6 @@
     });
   }
   function auditorNames(meta){return meta.auditTeam?.length?meta.auditTeam.map(x=>x.name).join(', '):str(meta.auditor).trim()}
-  // Persistent multi-audit repository. IndexedDB is preferred for larger evidence images;
-  // localStorage fallback retains functionality in browsers where IDB is unavailable.
-  function openDatabase(){
-    return new Promise((resolve,reject)=>{
-      if(!('indexedDB' in globalThis))return reject(Error('IndexedDB no disponible'));
-      const request=indexedDB.open('audit-workbench-offline',1);
-      request.onupgradeneeded=()=>request.result.createObjectStore('audits',{keyPath:'id'});
-      request.onsuccess=()=>resolve(request.result);
-      request.onerror=()=>reject(request.error||Error('No se pudo abrir IndexedDB'));
-      request.onblocked=()=>reject(Error('Cierra las otras pestañas de la aplicación y reintenta.'));
-    });
-  }
-  function createRepository(){
-    let database=null;
-    const transaction=(kind,action)=>new Promise((resolve,reject)=>{
-      const tx=database.transaction('audits',kind),store=tx.objectStore('audits');
-      let result;
-      tx.oncomplete=()=>resolve(result);
-      tx.onerror=()=>reject(tx.error||Error('Error de almacenamiento'));
-      tx.onabort=()=>reject(tx.error||Error('Transacción cancelada'));
-      const req=action(store);
-      if(req)req.onsuccess=()=>{result=req.result};
-    });
-    const fallback=()=>JSON.parse(localStorage.getItem(FALLBACK_KEY)||'[]');
-    return {
-      get mode(){return database?'IndexedDB':'almacenamiento local'},
-      async init(){try{database=await openDatabase();return}catch(error){console.warn('IndexedDB no disponible; almacenamiento local alternativo:',error);localStorage.getItem(FALLBACK_KEY)}},
-      async list(){return database?transaction('readonly',s=>s.getAll()):fallback()},
-      async put(record){if(database)return transaction('readwrite',s=>s.put(record));const records=fallback().filter(r=>r.id!==record.id);records.push(record);localStorage.setItem(FALLBACK_KEY,JSON.stringify(records))},
-      async remove(id){if(database)return transaction('readwrite',s=>s.delete(id));localStorage.setItem(FALLBACK_KEY,JSON.stringify(fallback().filter(r=>r.id!==id)))}
-    };
-  }
   const DEFAULT_SETTINGS = () => ({
     company:'',taxType:'NIF entidad / CIF',taxId:'',email:'',phone:'',address:'',postal:'',
     prefix:'AUD',logo:'',sequences:{},members:[]
@@ -448,7 +418,7 @@
     const previous=Date.parse(backupPrefs.lastFolderAt||'');
     if((!Number.isFinite(previous)||Date.now()-previous>=30*60*1000) && changedSinceLastBackup())void backupToFolder();
   },60*1000);
-  const repository=createRepository();
+  const repository=storage.createRepository({fallbackKey:FALLBACK_KEY});
   const byId=id=>document.getElementById(id);
   let state=fresh(),currentId='',page='records',records=[],storageError=false,dirty=false,saveTimer=null,writeQueue=Promise.resolve();
   let selectedPalette='ocean', deferredInstallPrompt=null;

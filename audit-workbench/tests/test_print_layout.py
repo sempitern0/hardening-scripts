@@ -9,23 +9,10 @@ import fitz
 
 ROOT = Path(__file__).resolve().parents[1]
 html = (ROOT / 'index.html').read_text(encoding='utf-8')
-html = '\n'.join(line for line in html.splitlines() if 'Content-Security-Policy' not in line)
-for file in ('normalize.css', 'styles.css', 'team.css', 'fonts/atkinson.css'):
-    html = html.replace(f'<link rel="stylesheet" href="{file}">',
-                        '<style>' + (ROOT / file).read_text(encoding='utf-8') + '</style>')
-html = html.replace('<link rel="stylesheet" href="print.css" media="print">',
-                    '<style media="print">' + (ROOT / 'print.css').read_text(encoding='utf-8') + '</style>')
-shim = '''<script>
-window.testAuditStore = new Map();
-Object.defineProperty(window, 'indexedDB', {configurable:true,value:null});
-Object.defineProperty(window, 'localStorage', {configurable:true,value:{
- getItem:k=>window.testAuditStore.get(k)||null,
- setItem:(k,v)=>window.testAuditStore.set(k,String(v)),
- removeItem:k=>window.testAuditStore.delete(k)
-}});
-</script>'''
-html = html.replace('<script src="app.js" defer></script>',
-                    shim + '<script>' + (ROOT / 'app.js').read_text(encoding='utf-8') + '</script>')
+import re
+html = re.sub(r'<meta http-equiv="Content-Security-Policy"[^>]*>', '', html)
+html = re.sub(r'<script[^>]+src="[^"]+"[^>]*></script>', '', html)
+html = re.sub(r'<link[^>]+rel="stylesheet"[^>]*>', '', html)
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True, executable_path='/usr/bin/chromium',
@@ -35,6 +22,11 @@ with sync_playwright() as playwright:
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.on('dialog', lambda dialog: dialog.accept())
     page.set_content(html)
+    for css in ('normalize.css','styles.css','team.css','contrast.css','relations.css','templates.css','quality.css','retest.css','comparison.css','print.css'):
+        page.add_style_tag(content=(ROOT/css).read_text(encoding='utf-8'))
+    page.evaluate('''() => {const m=new Map();Object.defineProperty(window,'indexedDB',{configurable:true,value:undefined});Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:k=>m.get(k)||null,setItem:(k,v)=>m.set(k,String(v)),removeItem:k=>m.delete(k)}});}''')
+    for name in ('exporters.js','hardware-catalog.js','audit-relations.js','control-templates.js','audit-quality.js','audit-retest.js','audit-comparison.js','audit-storage.js','app.js'):
+        page.add_script_tag(content=(ROOT/name).read_text(encoding='utf-8'))
     page.locator('[data-new]').first.click()
     for selector, value in (
         ('[data-field="client"]', 'Empresa de prueba S.L.'),

@@ -1,0 +1,35 @@
+name: Audit Workbench checks
+on:
+  push:
+    paths:
+      - 'audit-workbench/**'
+      - '.github/workflows/audit-workbench-ci.yml'
+  pull_request:
+    paths:
+      - 'audit-workbench/**'
+      - '.github/workflows/audit-workbench-ci.yml'
+permissions:
+  contents: read
+jobs:
+  offline-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in audit-workbench/*.js; do node --check "$file"; done
+      - name: Run offline unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in audit-workbench/tests/*.cjs; do node "$file"; done
+      - name: Check Bash launcher syntax
+        run: bash -n audit-workbench/audit-workbench.sh
+      - name: Verify installable resource references
+        run: node audit-workbench/tests/test_shell_resources.cjs

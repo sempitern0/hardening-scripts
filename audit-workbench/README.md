@@ -237,3 +237,15 @@ En **Seguimiento** aparece un resumen para dirección con el porcentaje de corre
 Al registrar la **primera verificación** se congela automáticamente una referencia de los hallazgos (identificación, severidad y estado). Si el expediente ya tenía reevaluaciones anteriores a esta versión, no se inventa su estado inicial: se muestra «Sin referencia histórica» hasta que se fije una fotografía **del estado actual**, que servirá únicamente para comparaciones futuras. El número de hallazgos nuevos o eliminados se señala para evitar interpretar porcentajes fuera de contexto.
 
 Un hallazgo aceptado, no comprobable, sin reevaluar o con información contradictoria **nunca cuenta como corrección verificada**. Los datos de referencia se incluyen en el JSON, pero las copias antiguas siguen importándose. Conserva el informe inicial firmado y los originales de evidencia como respaldo externo.
+
+## Fiabilidad y almacenamiento local
+
+La biblioteca conserva los expedientes en **IndexedDB**, con alternativa en el almacenamiento local del mismo navegador. La separación interna del módulo de persistencia no modifica el formato de los JSON ni la ubicación de los expedientes actuales. **Nunca almacenes los backups en la carpeta pública que sirve la aplicación.**
+
+Si el navegador no permite acceder a los datos, evita borrar los datos del sitio o reinstalar: utiliza las copias JSON previamente exportadas y consulta al administrador de sistemas. Las copias descargadas siguen siendo responsabilidad del auditor.
+
+### Comprobaciones automáticas
+
+Los cambios en Audit Workbench pasan una comprobación de sintaxis JavaScript, pruebas unitarias offline y validación del instalador Bash en GitHub Actions. Las pruebas de navegador (incluida la impresión A4 y la persistencia real en IndexedDB) requieren Chromium y Playwright; se pueden ejecutar por separado en un entorno de pruebas antes de distribuir una versión estable.
+
+La extracción del módulo `audit-storage.js` **no cambia los expedientes existentes ni su ubicación**. Si actualizas desde una PWA instalada, permite que el navegador active la nueva versión y comprueba que siguen presentes las auditorías; conserva siempre una copia JSON fuera del navegador.

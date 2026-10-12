@@ -13,7 +13,7 @@ if ($Repository -notmatch '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$') { throw 'Reposito
 if ($Ref -notmatch '^[A-Za-z0-9._/-]+$' -or $Ref.Contains('..') -or $Ref.StartsWith('//')) { throw 'Referencia Git inválida.' }
 $files = @(
     'index.html','normalize.css','styles.css','team.css','contrast.css','relations.css','templates.css','quality.css','retest.css','comparison.css','print.css',
-    'app.js','audit-relations.js','control-templates.js','audit-quality.js','audit-retest.js','audit-comparison.js','hardware-catalog.js','exporters.js','sw.js','manifest.webmanifest',
+    'app.js','audit-storage.js','audit-relations.js','control-templates.js','audit-quality.js','audit-retest.js','audit-comparison.js','hardware-catalog.js','exporters.js','sw.js','manifest.webmanifest',
     'fonts/atkinson.css','fonts/AtkinsonHyperlegible-Regular.woff2','fonts/AtkinsonHyperlegible-Bold.woff2',
     'fonts/AtkinsonHyperlegible-Italic.woff2','fonts/AtkinsonHyperlegible-BoldItalic.woff2',
     'icons/dragon.svg','icons/icon-192.png','icons/icon-512.png'
