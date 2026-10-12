@@ -228,3 +228,12 @@ Cada comprobación queda registrada en orden dentro del expediente, sin reemplaz
 Pulsa **Informe de reevaluación PDF** para generar un documento independiente con resultados, historial resumido, criterio de cierre y evidencia vinculada. Mantén también el informe original y una copia JSON del expediente; el PDF de reevaluación no sustituye al informe completo ni acredita firma electrónica, integridad criptográfica del histórico o que se haya revisado todo el entorno.
 
 **Privacidad y custodia:** estas revisiones pueden contener nombres, identificadores de activos y datos sensibles de clientes. Trabaja en almacenamiento protegido y exporta las copias JSON a destinos cifrados. Los datos no se envían automáticamente a ningún servicio.
+
+
+## Comparativa ejecutiva de reevaluación
+
+En **Seguimiento** aparece un resumen para dirección con el porcentaje de correcciones verificadas, hallazgos de severidad alta/crítica sin cierre comprobado, riesgos aceptados y decisiones pendientes. Es un recuento de hallazgos, **no una puntuación de riesgo económico ni una certificación**. El PDF independiente de reevaluación incluye los mismos datos.
+
+Al registrar la **primera verificación** se congela automáticamente una referencia de los hallazgos (identificación, severidad y estado). Si el expediente ya tenía reevaluaciones anteriores a esta versión, no se inventa su estado inicial: se muestra «Sin referencia histórica» hasta que se fije una fotografía **del estado actual**, que servirá únicamente para comparaciones futuras. El número de hallazgos nuevos o eliminados se señala para evitar interpretar porcentajes fuera de contexto.
+
+Un hallazgo aceptado, no comprobable, sin reevaluar o con información contradictoria **nunca cuenta como corrección verificada**. Los datos de referencia se incluyen en el JSON, pero las copias antiguas siguen importándose. Conserva el informe inicial firmado y los originales de evidencia como respaldo externo.

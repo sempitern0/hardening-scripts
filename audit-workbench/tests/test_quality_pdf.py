@@ -16,10 +16,10 @@ with sync_playwright() as p:
  page=b.new_page(viewport={'width':1250,'height':820},accept_downloads=True)
  errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
  page.set_content(src,wait_until='load')
- for css in ['normalize.css','styles.css','team.css','contrast.css','relations.css','templates.css','print.css','quality.css','retest.css']:
+ for css in ['normalize.css','styles.css','team.css','contrast.css','relations.css','templates.css','print.css','quality.css','retest.css','comparison.css']:
   page.add_style_tag(content=(ROOT/css).read_text(encoding='utf-8'))
  page.evaluate('''() => {const m=new Map();Object.defineProperty(window,'indexedDB',{value:undefined,configurable:true});Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:k=>m.get(k)||null,setItem:(k,v)=>m.set(k,String(v)),removeItem:k=>m.delete(k)}})}''')
- for js in ['exporters.js','hardware-catalog.js','audit-relations.js','control-templates.js','audit-quality.js','audit-retest.js','app.js']:
+ for js in ['exporters.js','hardware-catalog.js','audit-relations.js','control-templates.js','audit-quality.js','audit-retest.js','audit-comparison.js','app.js']:
   page.add_script_tag(content=(ROOT/js).read_text(encoding='utf-8'))
  page.locator('[data-new]').first.click()
  page.locator('#wizard-step-select').select_option('findings')

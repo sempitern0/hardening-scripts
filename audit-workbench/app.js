@@ -6,10 +6,12 @@
   const templates = globalThis.AuditControlTemplates;
   const quality = globalThis.AuditQuality;
   const retest = globalThis.AuditRetest;
+  const comparison = globalThis.AuditComparison;
   if (!relations) throw Error('No se ha cargado el módulo de relaciones de auditoría.');
   if (!templates) throw Error('No se ha cargado el catálogo de controles offline.');
   if (!quality) throw Error('No se ha cargado la revisión de calidad offline.');
   if (!retest) throw Error('No se ha cargado el módulo de reevaluación.');
+  if (!comparison) throw Error('No se ha cargado el resumen comparativo offline.');
   const SETTINGS_KEY = 'sysadmin-tools:audit-workbench:settings:v1';
   const CONNECTION_KEY = 'sysadmin-tools:audit-workbench:encrypted-nextcloud:v1';
   const LEGACY_STORE = 'sysadmin-tools:audit-workbench:v2';
@@ -127,7 +129,7 @@
       ['sha256','SHA-256 del original (opcional)'],['notes','Detalle, custodia y observaciones','textarea']]}
   };
   const severity = ['Crítica','Alta','Media','Baja','Informativa'];
-  const fresh = () => ({schemaVersion:VERSION,meta:{classification:'Confidencial',type:'Auditoría de infraestructura',revision:'1.0',logo:'',reportAuto:'yes',auditTeam:[]},final:{disclaimer:'La evaluación refleja los sistemas y las evidencias examinados durante el período indicado. Las comprobaciones no ejecutadas y las exclusiones se detallan en el alcance.'},legal:legalDefaults(),assets:[],networks:[],software:[],cves:[],controls:[],findings:[],evidence:[]});
+  const fresh = () => ({schemaVersion:VERSION,meta:{classification:'Confidencial',type:'Auditoría de infraestructura',revision:'1.0',logo:'',reportAuto:'yes',auditTeam:[]},final:{disclaimer:'La evaluación refleja los sistemas y las evidencias examinados durante el período indicado. Las comprobaciones no ejecutadas y las exclusiones se detallan en el alcance.'},legal:legalDefaults(),assets:[],networks:[],software:[],cves:[],controls:[],findings:[],evidence:[],followupBaseline:null});
   const str = v => typeof v === 'string' ? v.slice(0,20000) : '';
   const html = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const uid = () => globalThis.crypto && crypto.randomUUID ? crypto.randomUUID() : 'id-'+Date.now()+'-'+Math.random().toString(36).slice(2);
@@ -145,6 +147,7 @@
     out.meta.logo=safeLogo(raw.meta.logo);
     out.meta.reportAuto=raw.meta.reportAuto==='no'?'no':'yes';
     out.meta.auditTeam=normalizeAuditTeam(raw.meta.auditTeam);
+    out.followupBaseline=comparison.normalizeBaseline(raw.followupBaseline);
     for(const [block,definition] of Object.entries(groups)){
       if(block==='cves' && raw[block]===undefined)continue;
       if(!Array.isArray(raw[block])||raw[block].length>LIMIT_ROWS)throw Error('Datos no válidos en '+block);
@@ -776,6 +779,24 @@
       <section class="card"><h2>Aspectos que conviene revisar</h2>${audit.issues.length?`${[['blockers','Imprescindibles'],['warnings','Avisos y recomendaciones']].map(([key,title])=>audit[key].length?`<details class="quality-review-section" ${key==='blockers'||!audit.blockers.length?'open':''}><summary>${title} (${audit[key].length})</summary><div class="quality-issues">${audit[key].map(issue=>`<div class="quality-issue"><span class="quality-severity ${issue.severity}">${issue.severity==='blocker'?'Imprescindible':'Aviso'}</span><p>${html(issue.message)}</p><button type="button" class="button quiet small" data-quality-section="${html(issue.section)}" data-quality-key="${html(issue.key)}">Revisar →</button></div>`).join('')}</div></details>`:'').join('')}`:'<p class="notice">Todos los puntos comprobados están resueltos. La revisión profesional del contenido sigue siendo necesaria.</p>'}</section>
       <section class="card"><h2>Plan de remediación automático</h2><p class="subtle">Se ordena por severidad técnica y deja al final los casos cerrados o mitigados. No asigna plazos ni prioridades inventadas.</p>${renderPlanSummary(audit.plan)}<div class="action-row"><button class="button accent" type="button" data-go="delivery">Ir al informe final →</button><button class="button quiet" type="button" data-go="findings">Editar hallazgos</button></div></section>`;
   }
+  function renderComparison(){
+    const result=comparison.compare(state,retest);
+    const n=result.counts,has=result.hasBaseline;
+    const metrics=[
+      [has?result.initialTotal:'—','Hallazgos de referencia'],
+      [has?result.verifiedPercent+' %':'—','Correcciones verificadas sobre la referencia'],
+      [has?result.priorityNotVerified:'—','Alta/crítica sin verificación de cierre'],
+      [n.accepted+(result.addedCounts.accepted||0),'Riesgos aceptados (no corregidos)']
+    ];
+    const text=result.decisions.slice(0,5).map(row=>`<tr><td>${html(row.id||'Sin código')} · ${html(row.title||'Sin título')}</td><td>${html(row.severity)}</td><td>${html(row.owner||'Sin asignar')}</td><td>${html(row.deadline||'Por acordar')}</td></tr>`).join('');
+    return `<section class="card" aria-label="Resumen ejecutivo del seguimiento"><div class="card-head"><div><h2>¿Estamos reduciendo la exposición?</h2><p class="subtle">Indicadores verificados para dirección. No equivalen a un cálculo automático del riesgo empresarial.</p></div></div>
+      <div class="comparison-summary">${metrics.map(([num,label])=>`<div class="comparison-metric"><strong>${html(num)}</strong><span>${html(label)}</span></div>`).join('')}</div>
+      <p class="comparison-note">${html(result.limitations)}</p>
+      ${has?`<p class="comparison-note">Referencia: ${html(result.baseline.capturedAt.slice(0,10))} · Aún sin cierre verificado: ${result.initialTotal-result.counts.verified} de ${result.initialTotal} · Nuevos hallazgos desde la referencia: ${result.added} · Eliminados del expediente: ${result.counts.missing}${result.severityChanged?' · Severidades modificadas: '+result.severityChanged:''}.</p>`:`<p class="comparison-note">Para futuros seguimientos se fijará automáticamente una referencia antes de la primera verificación. Si el expediente ya tiene revisiones, puedes fijar una referencia actual para próximas comparaciones.</p>`}
+      ${result.decisions.length?`<h3>Decisiones prioritarias pendientes (${result.decisions.length})</h3><table class="comparison-table"><thead><tr><th>Hallazgo</th><th>Severidad</th><th>Responsable</th><th>Fecha objetivo</th></tr></thead><tbody>${text}</tbody></table>`:'<p class="subtle">No hay hallazgos abiertos de severidad Alta o Crítica identificados en el expediente actual.</p>'}
+      <div class="comparison-actions">${!has&&state.findings.length?'<button type="button" class="button quiet" id="comparison-capture">Fijar referencia actual para próximos seguimientos</button>':''}<button type="button" class="button quiet" data-go="quality">Revisar calidad y evidencias →</button></div>
+    </section>`;
+  }
   function renderFollowup(){
     const counts=retest.summary(state);
     const tiles=[['verified','Correcciones verificadas'],['pending','Persistentes'],['reopened','Reabiertos'],['accepted','Riesgos aceptados'],['unverified','No comprobables'],['inconsistent','Estado por aclarar'],['not-reviewed','Sin reevaluar']];
@@ -783,6 +804,7 @@
     return `<span class="eyebrow">SEGUIMIENTO / REEVALUACIÓN</span><h1 class="page-title">¿Qué ha corregido el cliente?</h1><p class="lead">Documenta cada revisión en su hallazgo. Solo marca como corregido lo que has comprobado: una promesa de corrección no es una verificación.</p>
       <section class="card"><h2>Estado de las correcciones</h2><div class="retest-summary">${tiles.map(([key,label])=>`<div><strong>${counts[key]}</strong><span>${label}</span></div>`).join('')}</div><p class="subtle">Se muestra el último resultado de cada hallazgo. Los históricos permanecen conservados en el expediente.</p>
       <div class="action-row"><button type="button" class="button accent" id="retest-pdf" ${!state.findings.length?'disabled':''}>Informe de reevaluación PDF ↗</button><button type="button" class="button quiet" data-go="findings">Editar hallazgos</button></div></section>
+      ${renderComparison()}
       ${state.findings.length?state.findings.map((finding,index)=>{
         const latest=retest.latest(finding),status=retest.outcome(finding);
         const label=status==='accepted'?'Riesgo aceptado':status==='not-reviewed'?'Sin reevaluar':status==='inconsistent'?'Estado por aclarar':retest.RESULTS[status];
@@ -961,6 +983,14 @@
   });
   workspace.addEventListener('click',async e=>{
     const b=e.target.closest('button');if(!b)return;
+    if(b.id==='comparison-capture'){
+      if(state.followupBaseline)return;
+      if(!state.findings.length){alert('Registra primero los hallazgos de la auditoría.');return;}
+      const alreadyReviewed=state.findings.some(f=>retest.normalize(f.retests).length);
+      if(!confirm(alreadyReviewed?'Esta referencia describe el estado ACTUAL, no el informe inicial. ¿Fijarla para comparar revisiones posteriores?':'Se fijará una fotografía de los hallazgos actuales para futuras comparativas. No será editable. ¿Continuar?'))return;
+      try{state.followupBaseline=comparison.capture(state,'manual-current');persist();render();}catch(error){alert(error.message)}
+      return;
+    }
     if(b.dataset.saveRetest!==undefined){
       const finding=state.findings.find(f=>f._key===b.dataset.saveRetest);
       const card=b.closest('[data-retest-key]');
@@ -970,6 +1000,11 @@
         const data={result:read('result'),date:read('date'),by:read('by'),notes:read('notes'),evidenceKey:read('evidenceKey')};
         if(data.result==='verified'&&!data.evidenceKey&&!confirm('No has vinculado evidencia de la corrección. ¿Guardar igualmente la comprobación documentada?'))return;
         const entry=retest.record(finding,data,state.evidence,uid);
+        // Congelar una línea de referencia antes de la PRIMERA reevaluación,
+        // nunca reconstruir el pasado a partir de estados actuales.
+        if(!state.followupBaseline&&!state.findings.some(f=>retest.normalize(f.retests).length)){
+          state.followupBaseline=comparison.capture(state,'before-first-retest');
+        }
         retest.apply(finding,entry);persist();render();
       }catch(error){alert('No se pudo registrar la reevaluación: '+error.message)}
       return;
@@ -1217,7 +1252,7 @@
   }
   function buildRetestReport(){
     byId('report').dataset.palette=selectedPalette;
-    const meta=state.meta,counts=retest.summary(state),today=new Date().toLocaleDateString('es-ES');
+    const meta=state.meta,counts=retest.summary(state),comparisonState=comparison.compare(state,retest),today=new Date().toLocaleDateString('es-ES');
     const title='Informe de reevaluación de seguridad';
     const cover=`<div class="report-cover"><div class="sup">SYSADMIN / SECURITY · SEGUIMIENTO DE CORRECCIONES</div>${meta.logo?`<img class="report-logo" src="${meta.logo}" alt="Logo corporativo">`:''}<h1>Informe de<br>reevaluación</h1><h2>${html(meta.project||'Auditoría técnica')}</h2><p class="classify">${html(meta.classification||'Confidencial')}</p><div class="cover-meta"><div><span class="report-number">CLIENTE</span><h3>${html(meta.client||'No indicado')}</h3><p>Referencia: ${html(meta.reportId||'No indicada')}</p></div><div><span class="report-number">FECHA DE EMISIÓN</span><h3>${html(today)}</h3><p>Documento de seguimiento · Rev. ${html(meta.revision||'1.0')}</p></div></div></div>`;
     const summary=section(1,'Alcance de la reevaluación',`<p>Este documento recoge exclusivamente los resultados de verificaciones posteriores registrados en el expediente ${html(meta.reportId||'')}. No equivale a una nueva auditoría integral ni garantiza ausencia de riesgos.</p><p><strong>Auditoría de referencia:</strong> ${html(meta.project||'No documentada')} · <strong>Cliente:</strong> ${html(meta.client||'No documentado')}</p><p><strong>Total de hallazgos:</strong> ${counts.total} · <strong>Correcciones verificadas:</strong> ${counts.verified} · <strong>Persistentes:</strong> ${counts.pending} · <strong>Reabiertos:</strong> ${counts.reopened} · <strong>No comprobables:</strong> ${counts.unverified} · <strong>Sin reevaluar:</strong> ${counts['not-reviewed']} · <strong>Estados por aclarar:</strong> ${counts.inconsistent} · <strong>Riesgos aceptados:</strong> ${counts.accepted}.</p>`);
@@ -1227,9 +1262,20 @@
       const e=last?retest.evidenceFor(last,state):null;
       return `<div class="retest-print-item"><h3>${html(finding.id||'Hallazgo '+(i+1))} · ${html(finding.title||'Sin título')}</h3><p><strong>Última clasificación:</strong> ${html(label)} · <strong>Severidad:</strong> ${html(finding.severity||'Sin evaluar')} · <strong>Estado administrativo:</strong> ${html(finding.status||'No indicado')}</p><p><strong>Remediación propuesta:</strong> ${para(finding.recommendation)}</p><p><strong>Criterio de verificación:</strong> ${para(finding.verification)}</p>${last?`<p><strong>Última comprobación:</strong> ${html(last.date)} · ${html(last.by)}</p><p>${para(last.notes)}</p>${e||last.evidenceId?`<p class="retest-meta"><strong>Evidencia referenciada:</strong> ${html(last.evidenceId||e?.id||'Sin código')} · ${html(e?.title||'Conservar original y expediente de referencia')}${last.evidenceSha256?' · SHA-256: '+html(last.evidenceSha256):''}${!e?' · Original no disponible en este expediente':''}</p>`:''}`:'<p>Este hallazgo todavía no cuenta con una reevaluación documentada.</p>'}${history.length>1?`<p class="retest-meta">Historial: ${history.map(h=>html(h.date)+' ('+html(retest.RESULTS[h.result])+')').join(' → ')}</p>`:''}</div>`;
     }).join('');
-    const details=section(2,'Resultado por hallazgo',entries||'<p>Sin hallazgos registrados.</p>');
-    const closing=section(3,'Consideraciones y entrega',`<p>Una corrección se considera verificada solo cuando existe una comprobación documentada con su resultado. Los riesgos aceptados no se computan como corregidos. Los activos y sistemas no revisados en esta visita permanecen fuera de este documento.</p><p>Responsable de revisión: ${html(auditorNames(meta)||'Pendiente de identificar')}. Documento generado localmente: ${html(today)}.</p>`);
-    byId('report').innerHTML=cover+summary+details+closing;
+    const cmp=comparisonState,c=cmp.counts;
+    const metricRows=[
+      ['Hallazgos en referencia',cmp.hasBaseline?cmp.initialTotal:'Sin referencia histórica'],
+      ['Correcciones verificadas (referencia)',cmp.hasBaseline?c.verified+' de '+cmp.initialTotal+' ('+cmp.verifiedPercent+' %)':'No calculable'],
+      ['Alta/crítica sin cierre verificado (referencia)',cmp.hasBaseline?cmp.priorityNotVerified+' de '+cmp.priorityInitial:'No calculable'],
+      ['Riesgos aceptados (no corregidos)',c.accepted+(cmp.addedCounts.accepted||0)],
+      ['Hallazgos nuevos respecto a referencia',cmp.hasBaseline?cmp.added:'No calculable'],
+      ['Referencias eliminadas del expediente',cmp.hasBaseline?c.missing:'No calculable']
+    ];
+    const keyRows=cmp.decisions.slice(0,10).map(row=>`<tr><td>${html(row.id||'Sin código')} · ${html(row.title||'Sin título')}</td><td>${html(row.severity)}</td><td>${html(row.owner||'Sin asignar')}</td><td>${html(row.deadline||'Por acordar')}</td></tr>`).join('');
+    const comparisonSection=section(2,'Evolución y decisiones para dirección',`<p>${html(cmp.limitations)}</p><div class="comparison-summary">${metricRows.slice(0,4).map(([label,value],index)=>`<div class="comparison-metric"><strong>${html(index===1&&cmp.hasBaseline?cmp.verifiedPercent+' %':value)}</strong><span>${html(label)}</span></div>`).join('')}</div><table class="report-table"><thead><tr><th>Indicador</th><th>Resultado</th></tr></thead><tbody>${metricRows.map(([label,value])=>`<tr><td>${html(label)}</td><td>${html(value)}</td></tr>`).join('')}</tbody></table><h3>Prioridades técnicas pendientes</h3>${keyRows?`<table class="report-table"><thead><tr><th>Hallazgo</th><th>Severidad</th><th>Responsable</th><th>Fecha objetivo</th></tr></thead><tbody>${keyRows}</tbody></table>`:'<p>Sin hallazgos de severidad alta o crítica pendientes en el inventario actual.</p>'}<p class="report-note">Una aceptación de riesgo no es una corrección. Los hallazgos no comprobables, sin reevaluar o con estados contradictorios permanecen sin verificación de cierre. Los indicadores son recuentos documentales, no mediciones de pérdidas económicas evitadas.</p>`);
+    const details=section(3,'Resultado por hallazgo',entries||'<p>Sin hallazgos registrados.</p>');
+    const closing=section(4,'Consideraciones y entrega',`<p>Una corrección se considera verificada solo cuando existe una comprobación documentada con su resultado. Los riesgos aceptados no se computan como corregidos. Los activos y sistemas no revisados en esta visita permanecen fuera de este documento.</p><p>Responsable de revisión: ${html(auditorNames(meta)||'Pendiente de identificar')}. Documento generado localmente: ${html(today)}.</p>`);
+    byId('report').innerHTML=cover+summary+comparisonSection+details+closing;
   }
   function printRetestReport(){
     if(!state.findings.length){alert('Registra al menos un hallazgo para preparar una reevaluación.');return;}
