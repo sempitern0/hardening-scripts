@@ -18,7 +18,15 @@ assert.equal(new Set(g.TERMS.map(x=>x.id)).size,g.TERMS.length,'Duplicate term I
 const app=fs.readFileSync(path.join(root,'js/app.js'),'utf8'),css=fs.readFileSync(path.join(root,'css/glossary.css'),'utf8'),sw=fs.readFileSync(path.join(root,'sw.js'),'utf8');
 for(const marker of ['glossary-index','glossary-detail','glossary-category','glossary-search','renderGlossaryDetail','data-glossary-select'])assert(app.includes(marker),marker);
 assert(css.includes('.glossary-layout')&&css.includes('@media(max-width:760px)'),'Adaptive layout missing');
-assert(sw.includes('v24-glossary-standards'),'Service worker cache not invalidated');
+assert(sw.includes('v25-incident-help'),'Service worker cache not invalidated');
+const incident=g.TERMS.find(t=>t.title==='Respuesta a incidentes');
+assert(incident?.help?.phone==='017','INCIBE help must be limited to incident response');
+assert(incident.help.officialUrl.startsWith('https://www.incibe.es/'),'INCIBE official help URL');
+assert(incident.help.reportUrl.startsWith('https://www.incibe.es/'),'Incident notification URL');
+assert(g.TERMS.filter(t=>t.help).length===1,'Assistance should not clutter the rest of the glossary');
+assert(g.search('017').some(t=>t.id===incident.id),'Phone number should be searchable');
+assert(app.includes('<details class="glossary-help-resource">'),'Assistance must be collapsible');
+assert(app.includes('renderGlossaryHelp(t)'),'Help render missing');
 assert(g.TERMS.length>=135,'Expected extended acronyms and standards');
 for(const name of ['ISO/IEC 27001','ISO/IEC 27002','ISO 22301','IANA','RFC','NIST CSF','OWASP Top 10'])assert(g.TERMS.some(t=>t.title===name),'Missing standard: '+name);
 for(const acronym of ['CVE','CVSS','CWE','CPE'])assert(g.TERMS.find(t=>t.title===acronym)?.fullName,'Missing expanded acronym: '+acronym);
