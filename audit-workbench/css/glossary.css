@@ -35,3 +35,17 @@
 .glossary-shell :is(button,input):focus-visible{outline:3px solid var(--brand);outline-offset:2px}
 @media(max-width:760px){.glossary-layout{grid-template-columns:1fr;gap:.75rem}.glossary-index{max-height:12rem}.glossary-detail{min-height:0}.glossary-toolbar{grid-template-columns:1fr}.glossary-counter{padding:.5rem 0}}
 @media print{.glossary-shell,.glossary-help{display:none!important}}
+
+/* Diagnostic guides keep the existing reading panel usable on tablets. */
+.glossary-diagnostic{display:grid;grid-template-columns:minmax(8rem,28%) minmax(0,1fr);gap:.55rem 1rem;margin:.7rem 0 1.1rem;line-height:1.55}
+.glossary-diagnostic dt{font-weight:750;color:var(--ink)}
+.glossary-diagnostic dd{margin:0;overflow-wrap:anywhere}
+.glossary-command{min-width:0;margin:.8rem 0 1.15rem;padding:0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--canvas)}
+.glossary-command-head{display:flex;align-items:center;justify-content:space-between;gap:.6rem;padding:.6rem .85rem;border-bottom:1px solid var(--line)}
+.glossary-command-platform{font-size:.86rem;font-weight:750;color:var(--ink)}
+.glossary-copy{font:inherit;font-size:.82rem;font-weight:700;color:var(--brand);background:var(--paper);border:1px solid var(--line);border-radius:7px;padding:.35rem .6rem;cursor:pointer}
+.glossary-command pre{margin:0;padding:.85rem;max-width:100%;overflow-x:auto;font-size:.85rem;line-height:1.55;color:var(--ink);white-space:pre}
+.glossary-command code{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}
+.glossary-command p{font-size:.9rem;margin:0;padding:.7rem .85rem;border-top:1px solid var(--line);overflow-wrap:anywhere}
+.glossary-console-intro{font-size:.9rem;color:var(--muted)}
+@media(max-width:500px){.glossary-diagnostic{grid-template-columns:1fr;gap:.2rem}.glossary-diagnostic dd{margin-bottom:.75rem}.glossary-detail{padding:.9rem}.glossary-command pre{font-size:.78rem}}
