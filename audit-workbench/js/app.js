@@ -573,11 +573,22 @@
   function renderGlossaryIndex(terms){
     return terms.length?terms.map(t=>`<button type="button" class="glossary-entry ${t.id===glossarySelected?'is-active':''}" data-glossary-select="${html(t.id)}" aria-pressed="${t.id===glossarySelected}"><span class="glossary-entry-title">${glossaryEmphasis(t.title)}</span><span class="glossary-entry-category">${html(t.category)}</span></button>`).join(''):'<p class="glossary-empty">No hay coincidencias. Prueba otra palabra o categoría.</p>';
   }
+  function renderGlossaryGuide(t){
+    const guide=glossary?.GUIDES?.[t.id];
+    if(!guide)return '';
+    return `<section class="glossary-section glossary-troubleshoot"><h3>Diagnóstico y troubleshooting</h3>
+      <dl class="glossary-diagnostic"><dt>Patrón o síntoma</dt><dd>${html(guide.symptom)}</dd><dt>Cómo investigarlo</dt><dd>${html(guide.verify)}</dd><dt>Interpretación</dt><dd>${html(guide.interpret)}</dd></dl></section>
+      <section class="glossary-section glossary-console"><h3>Alternativas por consola</h3>
+        <p class="glossary-console-intro">Comandos de referencia; solo lectura salvo conexiones explícitamente indicadas. Sustituye rutas y destinos, verifica permisos y alcance. La aplicación no ejecuta nada.</p>
+        ${guide.commands.map((item,i)=>`<div class="glossary-command"><div class="glossary-command-head"><span class="glossary-command-platform">${html(item.platform)}</span><button type="button" class="glossary-copy" data-glossary-copy="${i}" data-glossary-id="${html(t.id)}" aria-label="Copiar comando ${html(item.platform)}">Copiar</button></div><pre><code>${html(item.command)}</code></pre><p><strong>Qué observar:</strong> ${html(item.lookFor)}</p></div>`).join('')}
+      </section>`;
+  }
   function renderGlossaryDetail(t){
     if(!t)return '<div class="glossary-empty">Selecciona un concepto del índice.</div>';
     return `<article class="glossary-article"><span class="glossary-kicker">${html(t.category)}</span><h2>${html(t.title)}</h2><div class="glossary-definition">${glossaryEmphasis(t.description)}</div>
       ${t.why?`<section class="glossary-section glossary-why"><h3>Por qué importa</h3><p>${glossaryEmphasis(t.why)}</p></section>`:''}
       <section class="glossary-section glossary-check"><h3>Qué comprobar en la auditoría</h3><p>${glossaryEmphasis(t.check)}</p></section>
+      ${renderGlossaryGuide(t)}
       ${t.example?`<section class="glossary-section glossary-example"><h3>Ejemplo</h3><p>${html(t.example)}</p></section>`:''}
       ${t.aliases?.length?`<p class="glossary-aliases"><strong>También se busca como:</strong> ${html(t.aliases.join(', '))}</p>`:''}
       <p class="glossary-disclaimer">Referencia orientativa. Documenta la prueba realizada y contrasta los criterios con el contexto del cliente.</p></article>`;
@@ -1023,6 +1034,27 @@
   });
   workspace.addEventListener('click',async e=>{
     const b=e.target.closest('button');if(!b)return;
+    if(b.dataset.glossaryCopy!==undefined){
+      const term=glossary?.byId(b.dataset.glossaryId);
+      const command=glossary?.GUIDES?.[term?.id]?.commands?.[Number(b.dataset.glossaryCopy)]?.command;
+      if(!command)return;
+      try{
+        if(!navigator.clipboard?.writeText)throw Error('Clipboard API no disponible');
+        await navigator.clipboard.writeText(command);
+        b.textContent='Copiado';
+      }catch(_error){
+        const previous=document.getElementById('glossary-copy-fallback');
+        previous?.remove();
+        const textarea=document.createElement('textarea');
+        textarea.id='glossary-copy-fallback';
+        textarea.value=command;textarea.setAttribute('readonly','');textarea.style.position='fixed';textarea.style.left='-9999px';
+        document.body.appendChild(textarea);textarea.select();
+        const copied=typeof document.execCommand==='function'&&document.execCommand('copy');
+        textarea.remove();
+        b.textContent=copied?'Copiado':'Selecciona el comando para copiarlo';
+      }
+      return;
+    }
     if(b.dataset.glossaryTerm){openGlossary(b.dataset.glossaryTerm);return;}
     if(b.dataset.glossarySelect){glossarySelected=b.dataset.glossarySelect;filterGlossary(glossaryQuery);return;}
     if(b.dataset.glossaryCategory){glossaryCategory=b.dataset.glossaryCategory;glossarySelected='';render();return;}
