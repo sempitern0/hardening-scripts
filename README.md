@@ -130,21 +130,21 @@ REBOOT / RE-AUDIT
 
 Shared principles:
 
-- detectar antes de modificar;
-- no reprovisionar silenciosamente infraestructura existente;
-- conservar una ruta de recuperación;
-- separar auditoría de remediación;
-- pedir confirmación explícita en operaciones de alto impacto;
-- utilizar herramientas nativas del sistema siempre que sea razonable;
-- no almacenar contraseñas administrativas;
-- conservar logs y evidencia operativa;
-- validar DNS, Kerberos y conectividad antes de interpretar un fallo como un problema de credenciales;
-- no aplicar rollback agresivo cuando el estado de una operación de dominio es ambiguo;
-- no afirmar cumplimiento CIS completo por validar únicamente un subconjunto de controles.
+- detect before modifying;
+- never silently reprovision existing infrastructure;
+- preserve a recovery path;
+- keep auditing and remediation separate;
+- require explicit confirmation for high-impact operations;
+- use native system tools whenever practical;
+- never store administrative passwords;
+- retain logs and operational evidence;
+- verify DNS, Kerberos, and connectivity before interpreting a failure as a credentials issue;
+- avoid aggressive rollback when the state of a domain operation is ambiguous;
+- do not claim full CIS compliance based on validating only a subset of controls.
 
 ### What the project does not attempt
 
-No pretende sustituir el diseño de Active Directory ni convertir un DC en un instalador de un clic. Decisiones como topología DNS, trusts, delegación, políticas Kerberos, LDAP channel binding, segmentación de red o estrategia de backup siguen requiriendo criterio de administración.
+It does not attempt to replace Active Directory design or turn a DC into a one-click installer. Decisions such as DNS topology, trusts, delegation, Kerberos policies, LDAP channel binding, network segmentation, and backup strategy still require administrative judgment.
 
 ---
 
@@ -158,11 +158,11 @@ git clone https://github.com/sempitern0/sysadmin.git
 cd sysadmin
 ```
 
-Antes de ejecutar un script con privilegios, revísalo y comprueba el modo que vas a utilizar.
+Before running a script with elevated privileges, review it and check the mode you intend to use.
 
 ### 2. Choose a workflow
 
-Para **documentar una auditoría**, utiliza Audit Workbench siguiendo su [guía](./audit-workbench/README.md). Para **auditar u operar AD**, empieza por el modo de lectura del asistente correspondiente.
+To **document an audit**, use Audit Workbench and follow its [guide](./audit-workbench/README.md). To **audit or operate AD**, start with the relevant assistant's read-only mode.
 
 ### 3. Start with an audit
 
@@ -192,14 +192,14 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\windows-ad-client-assistant.ps1 -Mode Audit
 ```
 
-> Ejecutar una auditoría antes del provisioning o hardening ayuda a detectar DNS incorrecto, roles existentes, interfaces inesperadas, estados pendientes y otros conflictos antes de modificar el host.
+> Running an audit before provisioning or hardening helps reveal incorrect DNS, existing roles, unexpected interfaces, pending states, and other conflicts before changing the host.
 
 ---
 
 <a id="control-plane-samba-ad"></a>
 ## Samba AD Control Plane
 
-`debian-ad-assistant.sh` administra un Samba Active Directory Domain Controller sobre Debian / Ubuntu Server.
+`debian-ad-assistant.sh` manages a Samba Active Directory Domain Controller on Debian / Ubuntu Server.
 
 ### Primary targets
 
@@ -208,9 +208,9 @@ Set-ExecutionPolicy -Scope Process Bypass
 - Bash;
 - systemd;
 - Samba AD DC;
-- IPv4 como camino principal de administración/AD.
+- IPv4 as the primary administration/AD path.
 
-Otros derivados Debian pueden funcionar en modo best-effort, pero no se consideran targets equivalentes hasta ser probados.
+Other Debian derivatives may work on a best-effort basis, but they are not considered equivalent targets until tested.
 
 ### Common operations
 
@@ -223,7 +223,7 @@ sudo bash ./debian-ad-assistant.sh --status
 sudo bash ./debian-ad-assistant.sh --backup
 ```
 
-Consulta siempre la ayuda de la versión instalada para el conjunto completo de modos:
+Always consult the installed version's help for the full set of modes:
 
 ```bash
 sudo bash ./debian-ad-assistant.sh --help
@@ -235,16 +235,16 @@ sudo bash ./debian-ad-assistant.sh --help
 sudo bash ./debian-ad-assistant.sh --bootstrap
 ```
 
-Antes de iniciar:
+Before starting:
 
-- define hostname definitivo;
-- utiliza una dirección estable para el DC;
-- decide el dominio DNS y realm;
-- verifica hora y conectividad;
-- conserva acceso por consola/hipervisor si vas a modificar red o firewall;
-- no reutilices un servidor con una instalación Samba desconocida como si estuviera vacío.
+- define the permanent hostname;
+- use a stable address for the DC;
+- choose the DNS domain and realm;
+- verify time and connectivity;
+- retain console/hypervisor access if you intend to change networking or firewall rules;
+- do not reuse a server with an unknown Samba installation as if it were empty.
 
-El asistente detecta una base AD existente y evita reprovisionarla como un dominio nuevo.
+The assistant detects an existing AD database and avoids reprovisioning it as a new domain.
 
 #### Daily administration
 
@@ -252,7 +252,7 @@ El asistente detecta una base AD existente y evita reprovisionarla como un domin
 sudo bash ./debian-ad-assistant.sh --manage
 ```
 
-El control plane agrupa funciones por workspace:
+The control plane groups functions by workspace:
 
 ```text
 [O] Daily operations       [D] Directory
@@ -261,30 +261,30 @@ El control plane agrupa funciones por workspace:
 [M] Maintenance            [A] All modules
 ```
 
-Áreas principales:
+Main areas:
 
-- usuarios y grupos;
-- equipos y permisos;
+- users and groups;
+- computers and permissions;
 - Group Policy;
 - DNS y Kerberos;
-- validación del DC;
+- DC validation;
 - hardening;
-- dependencias;
+- dependencies;
 - backups;
-- migración;
+- migration;
 - Suricata IDS;
-- operaciones remotas;
-- decommission/reset controlado.
+- remote operations;
+- controlled decommission/reset.
 
 #### Installable CLI
 
-El asistente puede instalar accesos directos administrativos:
+The assistant can install administrative command shortcuts:
 
 ```bash
 sudo bash ./debian-ad-assistant.sh --install-cli
 ```
 
-Después pueden estar disponibles comandos como:
+Commands such as the following may then be available:
 
 ```text
 adctl
@@ -308,17 +308,17 @@ ad-status
 ad-backup
 ```
 
-Tras sustituir el script principal por una versión nueva, refresca los shortcuts para evitar operar una copia instalada anterior.
+After replacing the main script with a new version, refresh the shortcuts to avoid running an older installed copy.
 
 #### After a reboot
 
-Un DC no debe considerarse validado solo porque el provisioning haya terminado. Tras reiniciar comprueba, como mínimo:
+A DC must not be considered validated simply because provisioning has completed. After rebooting, check at least:
 
 ```bash
 sudo bash ./debian-ad-assistant.sh --validate
 ```
 
-Y revisa:
+And inspect:
 
 ```bash
 systemctl status samba-ad-dc --no-pager
