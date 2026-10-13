@@ -7,6 +7,7 @@ const root=path.resolve(__dirname,'..');
 const ctx={};ctx.globalThis=ctx;
 vm.runInNewContext(fs.readFileSync(path.join(root,'js/glossary.js'),'utf8'),ctx);
 const g=ctx.AuditGlossary;
+const app=fs.readFileSync(path.join(root,'js/app.js'),'utf8'),css=fs.readFileSync(path.join(root,'css/glossary.css'),'utf8'),sw=fs.readFileSync(path.join(root,'sw.js'),'utf8');
 assert(g.CONTEXT_HELP.fields.networks.cidr==='term-3','CIDR context missing');
 assert(g.CONTEXT_HELP.fields.findings.likelihood==='term-81','Risk context mismatch');
 assert(g.CONTEXT_HELP.fields.findings.residual==='term-16','Residual risk context mismatch');
@@ -24,7 +25,7 @@ assert(g.search('dns','Redes').some(x=>x.title==='DNS'),'Category filter failed'
 assert(g.search('dns','Identidad').every(x=>x.category==='Identidad'));
 assert(g.TERMS.every(t=>t.title&&t.description&&t.check&&t.why),'Missing explanatory content');
 assert.equal(new Set(g.TERMS.map(x=>x.id)).size,g.TERMS.length,'Duplicate term IDs');
-const app=fs.readFileSync(path.join(root,'js/app.js'),'utf8'),css=fs.readFileSync(path.join(root,'css/glossary.css'),'utf8'),sw=fs.readFileSync(path.join(root,'sw.js'),'utf8');
+
 for(const marker of ['glossary-index','glossary-detail','glossary-category','glossary-search','renderGlossaryDetail','data-glossary-select'])assert(app.includes(marker),marker);
 assert(css.includes('.glossary-layout')&&css.includes('@media(max-width:760px)'),'Adaptive layout missing');
 assert(sw.includes('v27-inventory-intake'),'Service worker cache not invalidated');
