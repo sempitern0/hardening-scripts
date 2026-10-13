@@ -94,6 +94,7 @@
     if(field==='clientTaxId')return documentPlaceholder(obj?.clientIdType);
     if(field==='contactId')return documentPlaceholder(obj?.contactIdType);
     if(block==='settings'&&field==='taxId')return documentPlaceholder(obj?.taxType);
+    if(block==='member')return {name:'Nombre y apellidos',email:'auditor@consultora.es',role:'Auditor técnico / responsable'}[field]||'';
     return EXAMPLES[block]?.[field]||'';
   }
 
