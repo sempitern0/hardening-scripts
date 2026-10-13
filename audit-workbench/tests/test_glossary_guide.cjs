@@ -18,7 +18,18 @@ assert.equal(new Set(g.TERMS.map(x=>x.id)).size,g.TERMS.length,'Duplicate term I
 const app=fs.readFileSync(path.join(root,'js/app.js'),'utf8'),css=fs.readFileSync(path.join(root,'css/glossary.css'),'utf8'),sw=fs.readFileSync(path.join(root,'sw.js'),'utf8');
 for(const marker of ['glossary-index','glossary-detail','glossary-category','glossary-search','renderGlossaryDetail','data-glossary-select'])assert(app.includes(marker),marker);
 assert(css.includes('.glossary-layout')&&css.includes('@media(max-width:760px)'),'Adaptive layout missing');
-assert(sw.includes('v23-glossary-diagnostics'),'Service worker cache not invalidated');
+assert(sw.includes('v24-glossary-standards'),'Service worker cache not invalidated');
+assert(g.TERMS.length>=135,'Expected extended acronyms and standards');
+for(const name of ['ISO/IEC 27001','ISO/IEC 27002','ISO 22301','IANA','RFC','NIST CSF','OWASP Top 10'])assert(g.TERMS.some(t=>t.title===name),'Missing standard: '+name);
+for(const acronym of ['CVE','CVSS','CWE','CPE'])assert(g.TERMS.find(t=>t.title===acronym)?.fullName,'Missing expanded acronym: '+acronym);
+assert(g.search('Common Vulnerabilities and Exposures').some(t=>t.title==='CVE'),'Expanded acronym not indexed');
+assert(g.TERMS.some(t=>t.references?.some(r=>r.url.includes('iana.org'))),'Missing official IANA references');
+assert(g.GUIDES['term-25'].commands.some(c=>c.platform==='macOS'),'Missing macOS diagnostics');
+const requiredIcons=['windows','linux','macos'].map(x=>'icons/os-'+x+'.svg');
+const shell=fs.readFileSync(path.join(root,'audit-workbench.sh'),'utf8');
+const powershell=fs.readFileSync(path.join(root,'audit-workbench.ps1'),'utf8');
+for(const icon of requiredIcons){assert(fs.existsSync(path.join(root,icon)),icon);assert(sw.includes('./'+icon),icon+' PWA');assert(shell.includes(icon),icon+' Bash');assert(powershell.includes(icon),icon+' PowerShell');}
+assert(app.includes('glossaryPlatformIcon')&&app.includes('glossary-references'),'Missing icon or link rendering');
 assert(Object.keys(g.GUIDES).length>=50,'Expected practical diagnostic guides');
 assert(g.GUIDES['term-25'].commands.some(x=>x.command.includes('dig')),'DNS diagnostic missing');
 assert(g.search('journalctl').some(x=>x.title==='SIEM'||x.title==='Registro de auditoría'),'Console commands should be searchable');
