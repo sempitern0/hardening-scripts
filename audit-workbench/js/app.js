@@ -515,7 +515,14 @@
     const copy=structuredCloneSafe(original.audit);copy.meta.project=(copy.meta.project||'Auditoría')+' · Copia';
     await createAudit(copy);
   }
-  function downloadBlob(filename,blob){const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),60000)}
+  function downloadBlob(filename,blob){
+    const url=URL.createObjectURL(blob);
+    const anchor=document.createElement('a');
+    anchor.href=url;anchor.download=filename;anchor.hidden=true;
+    document.body.appendChild(anchor);
+    try{anchor.click();}
+    finally{anchor.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);}
+  }
   function download(filename,content,type){downloadBlob(filename,new Blob([content],{type}))}
   function renderField(obj,block,def,index){
     const [name,label,type,choices]=def;
@@ -970,7 +977,7 @@
       <div class="notice ${audit.ready?'':'warn'}">${audit.ready?'Revisión básica superada.':'Pendientes '+audit.blockers.length+' datos imprescindibles: el documento se emitirá como BORRADOR si decides continuar.'} ${audit.warnings.length} avisos adicionales. <button class="button quiet small" data-go="quality">Revisar calidad →</button></div>
       <section class="card"><div class="card-head"><div><h2>Conclusiones y cierre</h2><p class="subtle">Explica los riesgos en lenguaje comprensible y las decisiones necesarias.</p></div></div><div class="fields">${finalFields.map(f=>renderField(state.final,'final',f)).join('')}</div></section>
       <section class="card"><h2>Plan de remediación generado</h2><p class="subtle">Se utilizarán los hallazgos ya documentados. Para completar una acción, edita su ficha.</p>${renderPlanSummary(audit.plan)}<button type="button" class="button quiet" data-go="findings">Revisar responsables, fechas y verificación</button></section>
-      <section class="card"><h2>Preparar entrega</h2><p class="subtle">El PDF contiene el informe y el plan de remediación; el JSON permite continuar la auditoría.</p><div class="action-row"><button class="button accent" id="delivery-pdf">Generar borrador PDF ↗</button><button class="button accent" id="delivery-pdf-final">Informe definitivo PDF ↗</button><button class="button quiet" id="retest-pdf">Informe de reevaluación PDF ↗</button><button class="button quiet" id="delivery-json">Guardar expediente JSON</button><button class="button quiet" data-go="backups">Copias / Excel / CSV</button><button class="button danger" id="delivery-reset">Nuevo expediente</button><button class="button quiet" id="native-share-json">Compartir JSON (opcional)</button><button class="button quiet" id="open-email">Preparar correo (sin adjuntos)</button></div></section>`;
+      <section class="card"><h2>Preparar entrega</h2><p class="subtle">El PDF contiene el informe y el plan de remediación; el JSON permite continuar la auditoría.</p><div class="action-row"><button class="button accent" id="delivery-pdf">Generar borrador PDF ↗</button><button class="button accent" id="delivery-pdf-final">Informe definitivo PDF ↗</button><button class="button quiet" id="retest-pdf">Informe de reevaluación PDF ↗</button><button class="button quiet" id="delivery-json">Descargar expediente JSON ↓</button><button class="button quiet" data-go="backups">Copias / Excel / CSV</button><button class="button danger" id="delivery-reset">Nuevo expediente</button><button class="button quiet" id="native-share-json">Compartir JSON (opcional)</button><button class="button quiet" id="open-email">Preparar correo (sin adjuntos)</button></div><p id="delivery-export-status" class="export-inline-status" role="status" aria-live="polite">La copia JSON se guarda mediante una descarga del navegador, no dentro de la carpeta de la PWA.</p></section>`;
   }
 
   function render(){
@@ -1432,7 +1439,42 @@
       storeBackupPrefs();if(page==='backups')render();
     }catch(error){alert('No se pudo exportar el backup: '+error.message)}
   }
-  function exportJson(audit=state){const name='auditoria-'+slug(audit.meta.client)+'-'+new Date().toISOString().slice(0,10)+'.json';download(name,JSON.stringify(audit,null,2),'application/json;charset=utf-8')}
+  let exportFeedbackTimer=null;
+  function showExportFeedback(message,isError=false){
+    let notice=byId('export-feedback-toast');
+    if(!notice){
+      notice=document.createElement('div');
+      notice.id='export-feedback-toast';
+      notice.className='export-feedback-toast';
+      notice.setAttribute('role','status');
+      notice.setAttribute('aria-live','polite');
+      document.body.appendChild(notice);
+    }
+    notice.textContent=message;
+    notice.classList.toggle('error',isError);
+    notice.hidden=false;
+    const inline=byId('delivery-export-status');
+    if(inline)inline.textContent=message;
+    clearTimeout(exportFeedbackTimer);
+    exportFeedbackTimer=setTimeout(()=>{notice.hidden=true},9000);
+  }
+  function exportJson(audit=state){
+    try{
+      if(!audit||typeof audit!=='object'||!audit.meta||typeof audit.meta!=='object')
+        throw Error('No se ha identificado un expediente válido. Selecciona una auditoría antes de exportar.');
+      const filename='auditoria-'+slug(audit.meta.client)+'-'+new Date().toISOString().slice(0,10)+'.json';
+      const payload=JSON.stringify(audit,null,2);
+      if(!payload)throw Error('No ha sido posible serializar el expediente.');
+      download(filename,payload,'application/json;charset=utf-8');
+      const message='Descarga solicitada: '+filename+'. Verifica el archivo en las descargas del navegador.';
+      showExportFeedback(message);
+      return filename;
+    }catch(error){
+      showExportFeedback('No se pudo preparar el JSON: '+error.message,true);
+      console.error('Error al exportar JSON',error);
+      return null;
+    }
+  }
   async function importJson(file){
     try{
       if(file.size>40*1024*1024)throw Error('El archivo supera 40 MiB. Exporta los expedientes individualmente o separa los backups.');
@@ -1454,7 +1496,7 @@
   }
   byId('btn-import').addEventListener('click',()=>byId('input-import').click());
   byId('input-import').addEventListener('change',async e=>{if(e.target.files?.[0])await importJson(e.target.files[0]);e.target.value=''});
-  byId('btn-export').addEventListener('click',exportJson);
+  byId('btn-export').addEventListener('click',()=>exportJson());
   byId('btn-pdf').addEventListener('click',printReport);
   const table = (fields,row) => `<table class="report-table"><tbody>${fields.map(([name,label])=>`<tr><th class="report-field-label">${html(label)}</th><td>${para(row[name])}</td></tr>`).join('')}</tbody></table>`;
   const section = (num,title,content) => `<section class="report-section"><h2>${num}. ${html(title)}</h2>${content}</section>`;
@@ -1466,16 +1508,16 @@
     const count=Object.fromEntries(severity.map(s=>[s,state.findings.filter(x=>x.severity===s).length]));
     const meta=state.meta,ending=state.final;
     const cover=`<div class="report-cover"><div class="sup">SYSADMIN / SECURITY · AUDIT REPORT <span class="report-theme-name">${html(selectedPalette)}</span></div>${meta.logo?`<img class="report-logo" src="${meta.logo}" alt="Logo corporativo">`:''}<h1>Informe de auditoría<br>informática</h1><h2>${html(meta.project||'Infraestructura, sistemas y ciberseguridad')}</h2><p class="classify">${html(meta.classification||'Confidencial')}</p><div class="cover-meta"><div><span class="report-number">CLIENTE</span><h3>${html(meta.client||'No indicado')}</h3><p>${html(meta.contact||'')}</p></div><div><span class="report-number">ENTREGA</span><h3>${html(today)}</h3><p>Ref. ${html(meta.reportId||'Sin referencia')} · Rev. ${html(meta.revision||'1.0')}</p><p>${html(auditorNames(meta)||'Equipo auditor pendiente de asignar')}</p><p>${html(settings.company||'')}</p><p>${html(settings.taxId||'')}</p></div></div></div>`;
-    const legal=section(1,'Confidencialidad, alcance legal y custodia',`<p class="report-note">Cláusulas modelo que deben adaptarse al contrato específico y validarse antes de la entrega. RGPD (UE) 2016/679 y LOPDGDD 3/2018, según resulte aplicable.</p>${legalFields.map(([key,label])=>`<h3>${html(label)}</h3><p>${para(state.legal[key])}</p>`).join('')}<h3>Nota adicional del auditor</h3><p>${para(ending.disclaimer)}</p>`);
+    const legal=section(1,'Confidencialidad, alcance legal y custodia',`<p class="report-note">Cláusulas modelo que deben adaptarse al contrato específico y validarse antes de la entrega. RGPD (UE) 2016/679 y LOPDGDD 3/2018, según resulte aplicable.</p>${legalFields.map(([key,label])=>`<h3>${html(label)}</h3><p>${para(state.legal[key])}</p>`).join('')}`);
     const teamTable=meta.auditTeam?.length?`<table class="report-table"><thead><tr><th>Profesional</th><th>Documento</th><th>Función</th><th>Contacto</th></tr></thead><tbody>${meta.auditTeam.map(m=>`<tr><td>${html(m.name)}</td><td>${html(m.documentId?(m.idType||'DNI')+' · '+m.documentId:'No documentado')}</td><td>${html(m.role||'No indicada')}</td><td>${html(m.email||'No indicado')}</td></tr>`).join('')}</tbody></table>`:`<p>${html(auditorNames(meta)||'No se han asignado profesionales.')}</p>`;
     const identity=section(2,'Identificación, alcance y metodología',table(metaFields,meta)+`<h3>Equipo responsable de la auditoría</h3>${teamTable}`);
     const summaryCounts={assets:state.assets.length,controls:state.controls.length,verified:state.controls.filter(c=>!['Pendiente','No verificado',''].includes(str(c.status).trim())).length,findings:state.findings.length};
     const executive=section(3,'Resumen ejecutivo',`<p>${para(ending.executive)}</p><div class="report-summary-metrics"><div><strong>${summaryCounts.assets}</strong><span>Activos inventariados</span></div><div><strong>${summaryCounts.verified}/${summaryCounts.controls}</strong><span>Controles con resultado</span></div><div><strong>${summaryCounts.findings}</strong><span>Hallazgos registrados</span></div></div><h3>Valoración del riesgo</h3><p>${para(ending.assessment)}</p><div class="report-stat-grid">${severity.map(s=>`<div><strong>${count[s]}</strong><small>${s}</small></div>`).join('')}</div><h3>Puntos fuertes</h3><p>${para(ending.strengths)}</p><h3>Debilidades principales</h3><p>${para(ending.weaknesses)}</p>`);
     const controls=section(8,'Controles y verificaciones',reportRows('controls'));
     const findings=section(9,'Resumen de hallazgos y ficha técnica',`${state.findings.length?`<table class="report-table"><thead><tr><th>ID</th><th>Hallazgo</th><th>Severidad</th><th>Remediación</th></tr></thead><tbody>${state.findings.map(f=>`<tr><td>${html(f.id)}</td><td>${html(f.title)}</td><td>${html(f.severity)}</td><td>${para(f.recommendation)}</td></tr>`).join('')}</tbody></table>`:'<p class="report-empty">No hay hallazgos registrados.</p>'}${state.findings.map(f=>`<div class="report-finding"><h3>${html(f.id||'Hallazgo')} — ${html(f.title||'Sin título')} <span class="report-badge ${level(f.severity)}">${html(f.severity)}</span></h3>${table(groups.findings.fields,f)}${f.originControlKey?`<p class="report-note"><strong>Control de origen:</strong> ${html(relations.itemLabel(state.controls.find(c=>c._key===f.originControlKey),'controls'))}</p>`:''}${state.evidence.filter(e=>e.image&&((f.evidenceIds||'').split(/[,;\s]+/).includes(e.id)||relations.normalizeLinks(e.links).findings.includes(f._key))).map(e=>`<figure><img class="report-evidence" src="${e.image}" alt="Evidencia ${html(e.id)}"><figcaption class="report-note">${html(e.id)} — ${html(e.title)}</figcaption></figure>`).join('')}</div>`).join('')}`);
-    const reviewed=reviewState(reportDeliveryMode);
+    const reviewed=reviewState('final'); // El borrador debe mostrar también los impedimentos para una entrega definitiva.
     const actionPlan=section(11,'Plan de remediación y comprobación',reviewed.plan.length?reviewed.plan.map(item=>`<div class="report-action"><h3>${html(item.id)} · ${html(item.title)} <span class="report-badge ${level(item.severity)}">${html(item.severity)}</span></h3><p><strong>Estado:</strong> ${html(item.status)} · <strong>Responsable:</strong> ${html(item.owner||'Pendiente de asignar')} · <strong>Fecha objetivo:</strong> ${html(item.deadline||'Por acordar')}</p><p><strong>Acción correctiva:</strong> ${para(item.recommendation||'Sin definir')}</p><p><strong>Criterio de verificación:</strong> ${para(item.verification||'Sin definir')}</p></div>`).join(''):'<p class="report-empty">No se registraron hallazgos que requieran remediación. Esta observación no implica ausencia de riesgos fuera del alcance revisado.</p>');
-    const draftMarker=reportDeliveryMode==='final'&&reviewed.ready?'':`<aside class="report-draft"><strong>BORRADOR · NO VALIDADO PARA ENTREGA</strong><p>${reviewed.blockers.length} comprobaciones imprescindibles y ${reviewed.warnings.length} advertencias. Documento de trabajo, no constituye informe definitivo.</p></aside>`;
+    const draftMarker=reportDeliveryMode==='final'&&reviewed.ready?'':`<aside class="report-draft"><strong>BORRADOR · NO VALIDADO PARA ENTREGA</strong><p>${reviewed.blockers.length} impedimentos para entregar y ${reviewed.warnings.length} advertencias. Documento de trabajo, no constituye informe definitivo.</p></aside>`;
     const closing=section(12,'Conclusiones y plan de acción',table(finalFields.filter(f=>f[0]!=='executive'&&f[0]!=='strengths'&&f[0]!=='weaknesses'&&f[0]!=='assessment'),ending)+`<div class="report-signature">Generado localmente con Audit Workbench. Validación y autorización de entrega: ${html(ending.signoff||'Pendiente de firma')}.</div>`);
     const toc=section(0,'Contenido del informe',`<nav class="report-toc" aria-label="Índice del informe">${[
       [3,'Resumen ejecutivo'],[2,'Identificación, alcance y metodología'],[9,'Hallazgos y ficha técnica'],
