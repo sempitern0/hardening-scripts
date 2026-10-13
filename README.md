@@ -11,7 +11,7 @@
 
 El **hardening es una capacidad del conjunto, no su propósito exclusivo**. Los asistentes de Active Directory ayudan a desplegar y operar entornos Windows/Linux; [Audit Workbench](./audit-workbench/README.md) permite documentar auditorías desde el navegador, incluso sin conexión. Son herramientas independientes que comparten un enfoque de operación conservador.
 
-> **Alcance actual:** seis asistentes de consola en la raíz, enfocados principalmente en Active Directory y sus sistemas clientes, más una PWA de auditoría en \`audit-workbench/\`. No es una suite de inventariado remoto automático, un escáner de vulnerabilidades ni una plataforma central de gestión. El catálogo crecerá según se incorporen herramientas verificadas.
+> **Alcance actual:** seis asistentes de consola en la raíz, enfocados principalmente en Active Directory y sus sistemas clientes, más una PWA de auditoría en `audit-workbench/`. No es una suite de inventariado remoto automático, un escáner de vulnerabilidades ni una plataforma central de gestión. El catálogo crecerá según se incorporen herramientas verificadas.
 
 > **Antes de intervenir en producción:** revisa el código y la ayuda de cada script; ejecuta primero las comprobaciones de auditoría o diagnóstico; define alcance y permisos; conserva backups restaurables y una vía alternativa de acceso administrativo. Los flujos que modifican infraestructura requieren preparación y validación propias.
 
@@ -62,13 +62,13 @@ El **hardening es una capacidad del conjunto, no su propósito exclusivo**. Los 
 
 | Herramienta | Plataforma principal | Uso |
 |---|---|---|
-| [\`audit-workbench/\`](./audit-workbench/README.md) | Navegador de escritorio o tablet; PWA | Auditoría técnica, inventario, controles, evidencias, remediación, informes y backups opcionales |
-| [\`debian-ad-assistant.sh\`](./debian-ad-assistant.sh) | Debian 13 / Ubuntu Server 26.04 LTS | Samba AD DC: aprovisionamiento, operación, validación, backup, DNS/GPO, seguridad |
-| [\`rhel-ad-assistant.sh\`](./rhel-ad-assistant.sh) | Rocky / AlmaLinux 9–10 | Samba AD DC condicionado a capacidad AD-DC y soporte del sistema |
-| [\`windows-ad-assistant.ps1\`](./windows-ad-assistant.ps1) | Windows Server 2019 / 2022 / 2025 | AD DS, administración de directorio, diagnóstico, recuperación y hardening |
-| [\`linux-ad-client-assistant.sh\`](./linux-ad-client-assistant.sh) | Linux con APT o DNF/YUM y systemd | Unión reversible de clientes Linux a AD, diagnóstico y snapshots |
-| [\`rhel-ad-client-assistant.sh\`](./rhel-ad-client-assistant.sh) | Linux con APT o DNF/YUM y systemd | Variante de cliente AD Linux con flujos de unión, recuperación y seguridad |
-| [\`windows-ad-client-assistant.ps1\`](./windows-ad-client-assistant.ps1) | Windows / PowerShell 5.1+ | Ciclo de vida de membresía AD, preflight, diagnóstico y restauración |
+| [`audit-workbench/`](./audit-workbench/README.md) | Navegador de escritorio o tablet; PWA | Auditoría técnica, inventario, controles, evidencias, remediación, informes y backups opcionales |
+| [`debian-ad-assistant.sh`](./debian-ad-assistant.sh) | Debian 13 / Ubuntu Server 26.04 LTS | Samba AD DC: aprovisionamiento, operación, validación, backup, DNS/GPO, seguridad |
+| [`rhel-ad-assistant.sh`](./rhel-ad-assistant.sh) | Rocky / AlmaLinux 9–10 | Samba AD DC condicionado a capacidad AD-DC y soporte del sistema |
+| [`windows-ad-assistant.ps1`](./windows-ad-assistant.ps1) | Windows Server 2019 / 2022 / 2025 | AD DS, administración de directorio, diagnóstico, recuperación y hardening |
+| [`linux-ad-client-assistant.sh`](./linux-ad-client-assistant.sh) | Linux con APT o DNF/YUM y systemd | Unión reversible de clientes Linux a AD, diagnóstico y snapshots |
+| [`rhel-ad-client-assistant.sh`](./rhel-ad-client-assistant.sh) | Linux con APT o DNF/YUM y systemd | Variante de cliente AD Linux con flujos de unión, recuperación y seguridad |
+| [`windows-ad-client-assistant.ps1`](./windows-ad-client-assistant.ps1) | Windows / PowerShell 5.1+ | Ciclo de vida de membresía AD, preflight, diagnóstico y restauración |
 
 **Orientación rápida:**
 
@@ -77,7 +77,7 @@ El **hardening es una capacidad del conjunto, no su propósito exclusivo**. Los 
 - **Gestionar clientes de dominio:** utiliza uno de los asistentes de cliente, no el de provisionamiento del DC.
 - **Endurecer un sistema:** evalúa primero el impacto sobre identidad, DNS, aplicaciones y continuidad; hardening es una operación posible, no el resultado automático de una auditoría.
 
-> **Nota de soporte RHEL:** Red Hat no ofrece soporte para usar Samba como AD Domain Controller en RHEL. \`rhel-ad-assistant.sh\` bloquea ese provisionamiento salvo aceptación explícita de una operación no soportada mediante \`--allow-unsupported-rhel-dc\`. No se recomienda asumir equivalencia con Rocky/AlmaLinux ni desplegarlo sin evaluar el soporte.
+> **Nota de soporte RHEL:** Red Hat no ofrece soporte para usar Samba como AD Domain Controller en RHEL. `rhel-ad-assistant.sh` bloquea ese provisionamiento salvo aceptación explícita de una operación no soportada mediante `--allow-unsupported-rhel-dc`. No se recomienda asumir equivalencia con Rocky/AlmaLinux ni desplegarlo sin evaluar el soporte.
 
 ---
 
@@ -86,7 +86,7 @@ El **hardening es una capacidad del conjunto, no su propósito exclusivo**. Los 
 
 **[Abrir documentación de Audit Workbench](./audit-workbench/README.md)** · [Instalación](./audit-workbench/INSTALLATION.md) · [Seguridad](./audit-workbench/SECURITY.md)
 
-La PWA de \`audit-workbench/\` es un producto complementario a los asistentes de consola; **no los ejecuta desde el navegador ni escanea automáticamente la red**.
+La PWA de `audit-workbench/` es un producto complementario a los asistentes de consola; **no los ejecuta desde el navegador ni escanea automáticamente la red**.
 
 - Bibliotecas de expedientes con persistencia local y exportación/importación JSON.
 - Inventario de hardware, software y redes; captura asistida CSV/JSON y recopiladores locales de solo lectura.
@@ -96,12 +96,12 @@ La PWA de \`audit-workbench/\` es un producto complementario a los asistentes de
 
 **Ejecución local opcional** desde la raíz del repositorio:
 
-\`\`\`bash
+```bash
 cd audit-workbench
 python3 -m http.server 8765 --bind 127.0.0.1
-\`\`\`
+```
 
-Abre \`http://127.0.0.1:8765\`. Para tablets, primera instalación PWA, política de origen y HTTPS, sigue [INSTALLATION.md](./audit-workbench/INSTALLATION.md). Los expedientes almacenados en un origen de navegador no se sincronizan por el mero hecho de publicar la aplicación.
+Abre `http://127.0.0.1:8765`. Para tablets, primera instalación PWA, política de origen y HTTPS, sigue [INSTALLATION.md](./audit-workbench/INSTALLATION.md). Los expedientes almacenados en un origen de navegador no se sincronizan por el mero hecho de publicar la aplicación.
 
 
 ---
@@ -332,24 +332,24 @@ samba-tool dbcheck --cross-ncs
 <a id="control-plane-enterprise-linux"></a>
 ## Control Plane Samba AD · Rocky / AlmaLinux
 
-\`rhel-ad-assistant.sh\` proporciona un asistente de Samba AD DC para **Rocky Linux 9/10 y AlmaLinux 9/10**, condicionado a que el Samba instalado exponga realmente las capacidades de controlador de dominio.
+`rhel-ad-assistant.sh` proporciona un asistente de Samba AD DC para **Rocky Linux 9/10 y AlmaLinux 9/10**, condicionado a que el Samba instalado exponga realmente las capacidades de controlador de dominio.
 
-\`\`\`bash
+```bash
 sudo bash ./rhel-ad-assistant.sh --audit
 sudo bash ./rhel-ad-assistant.sh --validate
 sudo bash ./rhel-ad-assistant.sh --status
 sudo bash ./rhel-ad-assistant.sh --manage
-\`\`\`
+```
 
 Para un dominio **nuevo** y solo después de validar soporte y prerrequisitos:
 
-\`\`\`bash
+```bash
 sudo bash ./rhel-ad-assistant.sh --bootstrap
-\`\`\`
+```
 
-También dispone de espacios de trabajo de DNS, GPO/SYSVOL, seguridad, Kerberos, IDS, copias y operaciones remotas. Consulta \`--help\` para los modos vigentes; no confundas validación de AD con soporte oficial del producto.
+También dispone de espacios de trabajo de DNS, GPO/SYSVOL, seguridad, Kerberos, IDS, copias y operaciones remotas. Consulta `--help` para los modos vigentes; no confundas validación de AD con soporte oficial del producto.
 
-**Limitación crítica:** en RHEL, el rol Samba AD DC no está soportado por Red Hat. El asistente exige \`--allow-unsupported-rhel-dc\` y confirmación expresa para permitir ese escenario excepcional; esta guía no lo recomienda como instalación estándar. No desactives SELinux ni sustituyas las validaciones de capacidad para forzar la operación.
+**Limitación crítica:** en RHEL, el rol Samba AD DC no está soportado por Red Hat. El asistente exige `--allow-unsupported-rhel-dc` y confirmación expresa para permitir ese escenario excepcional; esta guía no lo recomienda como instalación estándar. No desactives SELinux ni sustituyas las validaciones de capacidad para forzar la operación.
 
 ---
 
@@ -479,16 +479,16 @@ El flujo de join incluye:
 
 ### RHEL AD Client Assistant
 
-\`rhel-ad-client-assistant.sh\` es otra variante de asistente de **cliente Linux de Active Directory** (no un DC). Su código contempla familias APT y DNF/YUM, con systemd como base del ciclo de vida automatizado.
+`rhel-ad-client-assistant.sh` es otra variante de asistente de **cliente Linux de Active Directory** (no un DC). Su código contempla familias APT y DNF/YUM, con systemd como base del ciclo de vida automatizado.
 
-\`\`\`bash
+```bash
 sudo bash ./rhel-ad-client-assistant.sh --audit
 sudo bash ./rhel-ad-client-assistant.sh --connectivity
 sudo bash ./rhel-ad-client-assistant.sh --diagnostics
 sudo bash ./rhel-ad-client-assistant.sh --status
-\`\`\`
+```
 
-Para cambios de membresía dispone de \`--join\`, \`--leave\`, \`--switch\`, \`--restore\` y \`--snapshots\`. Los flujos requieren permisos y validación de DNS/Kerberos; ejecuta \`--help\` en la versión que vayas a usar. \`linux-ad-client-assistant.sh\` y esta variante **no necesitan desplegarse juntas**: selecciona una implementación tras comprobar sus diferencias y compatibilidad.
+Para cambios de membresía dispone de `--join`, `--leave`, `--switch`, `--restore` y `--snapshots`. Los flujos requieren permisos y validación de DNS/Kerberos; ejecuta `--help` en la versión que vayas a usar. `linux-ad-client-assistant.sh` y esta variante **no necesitan desplegarse juntas**: selecciona una implementación tras comprobar sus diferencias y compatibilidad.
 
 ### Windows AD Client Assistant
 
