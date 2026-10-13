@@ -59,4 +59,15 @@ for(const [id,guide] of Object.entries(g.GUIDES)){
 }
 assert(app.includes('renderGlossaryGuide')&&app.includes('data-glossary-copy'),'Diagnostic UI missing');
 assert(css.includes('.glossary-command')&&css.includes('.glossary-diagnostic'),'Diagnostic styles missing');
+const catalogSource=fs.readFileSync(path.join(root,'js/hardware-catalog.js'),'utf8');
+const inventoryCatalog={};inventoryCatalog.window=inventoryCatalog;
+require('node:vm').runInNewContext(catalogSource,inventoryCatalog);
+const hw=inventoryCatalog.AuditHardwareCatalog;
+assert(Object.keys(hw).length>=45,'Not enough hardware vendors for desktop/laptop inventory');
+for(const brand of ['Dell','HP','Lenovo','ASUS','Acer','Apple','MSI','Dynabook','Framework','Microsoft'])
+ assert(hw[brand]?.length>0,'Missing PC manufacturer: '+brand);
+assert(hw.Dell.some(x=>x.includes('Latitude'))&&hw.Lenovo.some(x=>x.includes('ThinkPad')),'Missing laptop families');
+assert(app.includes('class="field-heading"')&&app.includes('glossary-help')&&app.includes('<svg viewBox="0 0 24 24"'),'Glossary buttons must be independent SVG controls');
+assert(app.includes('backToAudit()')&&app.includes('glossary-inline-back'),'Glossary return shortcut missing');
+assert(!app.includes('${html(label)}${help}</label>'),'Help must not be nested inside label');
 console.log('PASS offline glossary: concepts, synonyms, filters, contextual guidance');
