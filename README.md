@@ -1,33 +1,46 @@
-# Hardening Scripts · Active Directory Control Planes
+# sysadmin · Herramientas de administración de sistemas
 
-[![Status](https://img.shields.io/badge/status-active%20development-0A7EA4)](#estado-del-proyecto)
-[![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Debian](https://img.shields.io/badge/Debian-13-A81D33?logo=debian&logoColor=white)](#control-plane-samba-ad)
-[![Ubuntu](https://img.shields.io/badge/Ubuntu%20Server-26.04%20LTS-E95420?logo=ubuntu&logoColor=white)](#control-plane-samba-ad)
-[![Windows Server](https://img.shields.io/badge/Windows%20Server-2019%20%7C%202022%20%7C%202025-0078D4?logo=windows&logoColor=white)](#control-plane-windows-server)
-[![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white)](#control-plane-windows-server)
-[![Security](https://img.shields.io/badge/model-audit--first%20%7C%20recovery--aware-success)](#principios-de-operacion)
+[![Estado](https://img.shields.io/badge/estado-desarrollo%20activo-0A7EA4)](#estado-del-proyecto)
+[![Licencia](https://img.shields.io/badge/licencia-MIT-2E8540)](./LICENSE)
+[![Linux](https://img.shields.io/badge/plataforma-Linux-455A64?logo=linux&logoColor=white)](#que-herramienta-usar)
+[![Windows](https://img.shields.io/badge/plataforma-Windows-0078D4?logo=windows&logoColor=white)](#que-herramienta-usar)
+[![Audit Workbench](https://img.shields.io/badge/PWA-Audit%20Workbench-5B5FC7)](./audit-workbench/)
+[![Seguridad](https://img.shields.io/badge/enfoque-audit--first%20%7C%20recovery--aware-25806D)](#principios-de-operacion)
 
-Herramientas autocontenidas para desplegar, auditar, operar, endurecer y recuperar entornos **Active Directory** sobre:
+**sysadmin** reúne herramientas para facilitar tareas reales de **administración de sistemas e infraestructura**: diagnóstico, auditoría, inventario, gestión de identidades y dominios, mantenimiento, operaciones remotas, respaldo, recuperación y seguridad.
 
-- Samba AD DC en Debian / Ubuntu Server;
-- Active Directory Domain Services en Windows Server;
-- clientes y member servers Linux;
-- clientes y member servers Windows.
+El **hardening es una capacidad del conjunto, no su propósito exclusivo**. Los asistentes de Active Directory ayudan a desplegar y operar entornos Windows/Linux; [Audit Workbench](./audit-workbench/README.md) permite documentar auditorías desde el navegador, incluso sin conexión. Son herramientas independientes que comparten un enfoque de operación conservador.
 
-El proyecto está orientado a administración técnica real: primero detecta el estado actual, presenta el contexto operativo, conserva evidencia y snapshots cuando corresponde y solicita confirmación antes de cambios sensibles.
+> **Alcance actual:** seis asistentes de consola en la raíz, enfocados principalmente en Active Directory y sus sistemas clientes, más una PWA de auditoría en \`audit-workbench/\`. No es una suite de inventariado remoto automático, un escáner de vulnerabilidades ni una plataforma central de gestión. El catálogo crecerá según se incorporen herramientas verificadas.
 
-> **Importante**
-> Active Directory, DNS, Kerberos, Group Policy, firewall y servicios de dominio son infraestructura crítica. Valida los procedimientos en laboratorio, conserva una vía de administración alternativa y mantén backups externos y restaurables antes de intervenir sistemas de producción.
+> **Antes de intervenir en producción:** revisa el código y la ayuda de cada script; ejecuta primero las comprobaciones de auditoría o diagnóstico; define alcance y permisos; conserva backups restaurables y una vía alternativa de acceso administrativo. Los flujos que modifican infraestructura requieren preparación y validación propias.
 
----
+## Explorar por necesidad
+
+| Necesito… | Componente |
+|---|---|
+| Documentar una auditoría, inventariar activos, vincular evidencias y generar informes | **[Audit Workbench](./audit-workbench/README.md)** · PWA offline-first |
+| Operar, auditar y recuperar un dominio Samba AD sobre Debian/Ubuntu | [Debian AD Assistant](./debian-ad-assistant.sh) |
+| Administrar un Samba AD DC en Rocky/AlmaLinux con comprobación de soporte | [Enterprise Linux AD Assistant](./rhel-ad-assistant.sh) |
+| Operar y diagnosticar AD DS en Windows Server | [Windows AD Assistant](./windows-ad-assistant.ps1) |
+| Unir, diagnosticar o retirar un cliente Linux de Active Directory | [Linux AD Client](./linux-ad-client-assistant.sh) o [RHEL AD Client](./rhel-ad-client-assistant.sh) |
+| Gestionar de forma reversible la pertenencia de Windows a un dominio | [Windows AD Client](./windows-ad-client-assistant.ps1) |
+| Revisar configuración de seguridad y aplicar medidas de endurecimiento justificadas | Workspaces de **Security/Hardening** de los asistentes compatibles |
+
+### Componentes y documentación
+
+- **[Audit Workbench](./audit-workbench/README.md):** funcionamiento, inventarios, diccionario técnico, evidencias y entrega de informes. Incluye [instalación y PWA](./audit-workbench/INSTALLATION.md), [modelo de seguridad](./audit-workbench/SECURITY.md) y [notas legales](./audit-workbench/LEGAL.md).
+- **Asistentes en la raíz:** scripts autocontenidos, descargables individualmente, con sus propias opciones, dependencias y registros. No es necesario instalar Audit Workbench para utilizarlos.
+- **Guía operativa de Active Directory (más abajo):** pasos concretos para provisionamiento, DNS, Kerberos, GPO, IDS, snapshots, hardening y troubleshooting.
 
 ## Contenido
 
 - [Qué herramienta usar](#que-herramienta-usar)
+- [Audit Workbench: auditoría y gestión de evidencias](#audit-workbench)
 - [Principios de operación](#principios-de-operacion)
 - [Inicio rápido](#inicio-rapido)
-- [Control Plane Samba AD](#control-plane-samba-ad)
+- [Control Plane Samba AD (Debian / Ubuntu)](#control-plane-samba-ad)
+- [Control Plane Samba AD (Rocky / AlmaLinux)](#control-plane-enterprise-linux)
 - [Control Plane Windows Server](#control-plane-windows-server)
 - [Asistentes de clientes AD](#asistentes-de-clientes-ad)
 - [DNS: requisito fundamental](#dns-requisito-fundamental)
@@ -47,28 +60,49 @@ El proyecto está orientado a administración técnica real: primero detecta el 
 <a id="que-herramienta-usar"></a>
 ## Qué herramienta usar
 
-| Archivo | Plataforma | Uso principal |
+| Herramienta | Plataforma principal | Uso |
 |---|---|---|
-| `debian-ad-assistant.sh` | Debian / Ubuntu Server | Provisioning y operación de Samba Active Directory Domain Controller |
-| `windows-ad-assistant.ps1` | Windows Server | Provisioning, auditoría y operación de AD DS nativo |
-| `linux-ad-client-assistant.sh` | Linux | Unión reversible de clientes/member servers a Active Directory |
-| `windows-ad-client-assistant.ps1` | Windows | Unión reversible y transaccional de clientes/member servers a Active Directory |
+| [\`audit-workbench/\`](./audit-workbench/README.md) | Navegador de escritorio o tablet; PWA | Auditoría técnica, inventario, controles, evidencias, remediación, informes y backups opcionales |
+| [\`debian-ad-assistant.sh\`](./debian-ad-assistant.sh) | Debian 13 / Ubuntu Server 26.04 LTS | Samba AD DC: aprovisionamiento, operación, validación, backup, DNS/GPO, seguridad |
+| [\`rhel-ad-assistant.sh\`](./rhel-ad-assistant.sh) | Rocky / AlmaLinux 9–10 | Samba AD DC condicionado a capacidad AD-DC y soporte del sistema |
+| [\`windows-ad-assistant.ps1\`](./windows-ad-assistant.ps1) | Windows Server 2019 / 2022 / 2025 | AD DS, administración de directorio, diagnóstico, recuperación y hardening |
+| [\`linux-ad-client-assistant.sh\`](./linux-ad-client-assistant.sh) | Linux con APT o DNF/YUM y systemd | Unión reversible de clientes Linux a AD, diagnóstico y snapshots |
+| [\`rhel-ad-client-assistant.sh\`](./rhel-ad-client-assistant.sh) | Linux con APT o DNF/YUM y systemd | Variante de cliente AD Linux con flujos de unión, recuperación y seguridad |
+| [\`windows-ad-client-assistant.ps1\`](./windows-ad-client-assistant.ps1) | Windows / PowerShell 5.1+ | Ciclo de vida de membresía AD, preflight, diagnóstico y restauración |
 
-Elección rápida:
+**Orientación rápida:**
 
-```text
-Quiero administrar un Domain Controller
-│
-├─ Samba AD sobre Linux       → debian-ad-assistant.sh
-└─ Microsoft AD DS            → windows-ad-assistant.ps1
+- **Auditar y documentar sin administrar un DC:** empieza por Audit Workbench. No depende de un dominio.
+- **Administrar un controlador:** utiliza el asistente del sistema operativo del DC y consulta su modo de auditoría antes de modificar nada.
+- **Gestionar clientes de dominio:** utiliza uno de los asistentes de cliente, no el de provisionamiento del DC.
+- **Endurecer un sistema:** evalúa primero el impacto sobre identidad, DNS, aplicaciones y continuidad; hardening es una operación posible, no el resultado automático de una auditoría.
 
-Quiero unir un equipo al dominio
-│
-├─ Linux                      → linux-ad-client-assistant.sh
-└─ Windows                    → windows-ad-client-assistant.ps1
-```
+> **Nota de soporte RHEL:** Red Hat no ofrece soporte para usar Samba como AD Domain Controller en RHEL. \`rhel-ad-assistant.sh\` bloquea ese provisionamiento salvo aceptación explícita de una operación no soportada mediante \`--allow-unsupported-rhel-dc\`. No se recomienda asumir equivalencia con Rocky/AlmaLinux ni desplegarlo sin evaluar el soporte.
 
-Los asistentes de Linux y Windows persiguen **paridad funcional**, no implementaciones idénticas. Cada plataforma utiliza las herramientas nativas apropiadas para DNS, identidad, servicios, backup y administración remota.
+---
+
+<a id="audit-workbench"></a>
+## Audit Workbench · auditoría y gestión de evidencias
+
+**[Abrir documentación de Audit Workbench](./audit-workbench/README.md)** · [Instalación](./audit-workbench/INSTALLATION.md) · [Seguridad](./audit-workbench/SECURITY.md)
+
+La PWA de \`audit-workbench/\` es un producto complementario a los asistentes de consola; **no los ejecuta desde el navegador ni escanea automáticamente la red**.
+
+- Bibliotecas de expedientes con persistencia local y exportación/importación JSON.
+- Inventario de hardware, software y redes; captura asistida CSV/JSON y recopiladores locales de solo lectura.
+- Controles, hallazgos, evidencias vinculadas, diccionario técnico con ayuda contextual y seguimiento.
+- Validación previa al informe, borrador/entrega, exportaciones y generación de PDF mediante impresión del navegador.
+- Copias locales y opciones de distribución remota activadas expresamente (consulta los requisitos de seguridad y servidor).
+
+**Ejecución local opcional** desde la raíz del repositorio:
+
+\`\`\`bash
+cd audit-workbench
+python3 -m http.server 8765 --bind 127.0.0.1
+\`\`\`
+
+Abre \`http://127.0.0.1:8765\`. Para tablets, primera instalación PWA, política de origen y HTTPS, sigue [INSTALLATION.md](./audit-workbench/INSTALLATION.md). Los expedientes almacenados en un origen de navegador no se sincronizan por el mero hecho de publicar la aplicación.
+
 
 ---
 
@@ -121,11 +155,15 @@ No pretende sustituir el diseño de Active Directory ni convertir un DC en un in
 ### 1. Clonar y revisar
 
 ```bash
-git clone https://github.com/sempitern0/hardening-scripts.git
-cd hardening-scripts
+git clone https://github.com/sempitern0/sysadmin.git
+cd sysadmin
 ```
 
 Antes de ejecutar un script con privilegios, revísalo y comprueba el modo que vas a utilizar.
+
+### 2. Elegir el flujo
+
+Para **documentar una auditoría**, utiliza Audit Workbench siguiendo su [guía](./audit-workbench/README.md). Para **auditar u operar AD**, empieza por el modo de lectura del asistente correspondiente.
 
 ### 2. Empezar por auditoría
 
@@ -291,6 +329,30 @@ samba-tool dbcheck --cross-ncs
 
 ---
 
+<a id="control-plane-enterprise-linux"></a>
+## Control Plane Samba AD · Rocky / AlmaLinux
+
+\`rhel-ad-assistant.sh\` proporciona un asistente de Samba AD DC para **Rocky Linux 9/10 y AlmaLinux 9/10**, condicionado a que el Samba instalado exponga realmente las capacidades de controlador de dominio.
+
+\`\`\`bash
+sudo bash ./rhel-ad-assistant.sh --audit
+sudo bash ./rhel-ad-assistant.sh --validate
+sudo bash ./rhel-ad-assistant.sh --status
+sudo bash ./rhel-ad-assistant.sh --manage
+\`\`\`
+
+Para un dominio **nuevo** y solo después de validar soporte y prerrequisitos:
+
+\`\`\`bash
+sudo bash ./rhel-ad-assistant.sh --bootstrap
+\`\`\`
+
+También dispone de espacios de trabajo de DNS, GPO/SYSVOL, seguridad, Kerberos, IDS, copias y operaciones remotas. Consulta \`--help\` para los modos vigentes; no confundas validación de AD con soporte oficial del producto.
+
+**Limitación crítica:** en RHEL, el rol Samba AD DC no está soportado por Red Hat. El asistente exige \`--allow-unsupported-rhel-dc\` y confirmación expresa para permitir ese escenario excepcional; esta guía no lo recomienda como instalación estándar. No desactives SELinux ni sustituyas las validaciones de capacidad para forzar la operación.
+
+---
+
 <a id="control-plane-windows-server"></a>
 ## Control Plane Windows Server
 
@@ -414,6 +476,19 @@ El flujo de join incluye:
 - validación post-join;
 - rollback local cuando la membresía todavía no ha sido comprometida;
 - recuperación de intentos interrumpidos.
+
+### RHEL AD Client Assistant
+
+\`rhel-ad-client-assistant.sh\` es otra variante de asistente de **cliente Linux de Active Directory** (no un DC). Su código contempla familias APT y DNF/YUM, con systemd como base del ciclo de vida automatizado.
+
+\`\`\`bash
+sudo bash ./rhel-ad-client-assistant.sh --audit
+sudo bash ./rhel-ad-client-assistant.sh --connectivity
+sudo bash ./rhel-ad-client-assistant.sh --diagnostics
+sudo bash ./rhel-ad-client-assistant.sh --status
+\`\`\`
+
+Para cambios de membresía dispone de \`--join\`, \`--leave\`, \`--switch\`, \`--restore\` y \`--snapshots\`. Los flujos requieren permisos y validación de DNS/Kerberos; ejecuta \`--help\` en la versión que vayas a usar. \`linux-ad-client-assistant.sh\` y esta variante **no necesitan desplegarse juntas**: selecciona una implementación tras comprobar sus diferencias y compatibilidad.
 
 ### Windows AD Client Assistant
 
