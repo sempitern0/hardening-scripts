@@ -736,10 +736,10 @@
     const term=id?glossary.byId(id):null;
     return term?`<p class="glossary-stage-hint">Referencia técnica: <button type="button" class="glossary-stage-link" data-glossary-term="${html(term.id)}" title="Consultar definición y comprobaciones de ${html(term.title)}">${html(term.title)} ↗</button></p>`:'';
   }
-  let intakePreview=null,intakeSelected=new Set(),intakeError='';
+  let intakePreview=null,intakeSelected=new Set(),intakeError='',intakeBlock='assets';
   const intake=globalThis.AuditInventoryImport;
   function renderIntake(){
-    const block=intakePreview?.block||'assets';
+    const block=intakePreview?.block||intakeBlock;
     return `<span class="eyebrow">INVENTARIO / CAPTURA OPCIONAL</span><h1 class="page-title">Captura asistida de activos</h1>
       <p class="lead">Importa información obtenida mediante herramientas autorizadas. La vista previa no escribe en el expediente.</p>
       <section class="card"><h2>Seleccionar archivo</h2>
@@ -999,7 +999,7 @@
       try{
         const file=t.files[0];
         if(file.size>intake.LIMIT_BYTES)throw Error('Archivo superior a 2 MiB.');
-        const block=byId('intake-block')?.value||'assets';
+        const block=byId('intake-block')?.value||intakeBlock;intakeBlock=block;
         const result=intake.parse(await file.text(),{block,filename:file.name,size:file.size});
         intakePreview=result;
         intakeSelected=new Set(intake.reconcile(result,state[block]).filter(x=>x.status==='nuevo').map(x=>x.index));
@@ -1007,7 +1007,7 @@
       }catch(error){intakePreview=null;intakeSelected.clear();intakeError='No se pudo importar: '+error.message;}
       render();return;
     }
-    if(t.id==='intake-block'){intakePreview=null;intakeSelected.clear();intakeError='Selecciona un nuevo archivo para la sección elegida.';render();return;}
+    if(t.id==='intake-block'){intakeBlock=t.value;intakePreview=null;intakeSelected.clear();intakeError='Selecciona un nuevo archivo para la sección elegida.';render();return;}
     if(t.dataset.intakeRow!==undefined){const n=Number(t.dataset.intakeRow);if(t.checked)intakeSelected.add(n);else intakeSelected.delete(n);render();return;}
     if(t.dataset.findingControl!==undefined){
       const finding=state.findings.find(f=>f._key===t.dataset.findingControl);
