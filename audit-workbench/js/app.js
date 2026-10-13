@@ -544,7 +544,8 @@
   function pill(v){return `<span class="pill ${level(v)}">${html(v||'Sin clasificar')}</span>`}
   function metric(title,note,count){return `<div class="stat"><span class="metric">${count}</span><span class="metric-caption">${title}</span><span class="metric-foot">${note}</span></div>`}
   let glossaryQuery='', glossaryCategory='Todas', glossarySelected='';
-  let glossaryReturn=null;
+  let glossaryReturn=null,lastAuditPage='engagement';
+  function backToAudit(){const origin=glossaryReturn;glossaryReturn=null;const destination=origin?.page||lastAuditPage;move(destination);const target=origin?.field?byId(origin.field):null;if(target){target.scrollIntoView({block:'center'});target.focus({preventScroll:true});}else if(origin?.scrollY!==undefined)window.scrollTo(0,origin.scrollY);}
   function glossaryResults(){return glossary?.search(glossaryQuery,glossaryCategory)||[]}
   function glossaryEmphasis(value){
     const safe=html(value);
@@ -560,7 +561,7 @@
     if(!terms.some(t=>t.id===glossarySelected))glossarySelected=terms[0]?.id||'';
     const selected=glossary?.byId(glossarySelected);
     const cats=['Todas',...(glossary?.CATEGORIES||[])];
-    return `<span class="eyebrow">CONSULTA TÉCNICA · OFFLINE</span>${glossaryReturn?'<div class="glossary-return"><button class="button quiet small" type="button" data-glossary-back="true">← Volver al campo de auditoría</button></div>':''}<h1 class="page-title">Diccionario técnico</h1>
+    return `<span class="eyebrow">CONSULTA TÉCNICA · OFFLINE</span>${glossaryReturn||currentId?'<div class="glossary-return"><button class="button quiet" type="button" data-glossary-back="true">← Volver a la auditoría</button></div>':''}<h1 class="page-title">Diccionario técnico</h1>
       <p class="lead">Busca un concepto, selecciona una categoría y consulta una explicación práctica sin salir del asistente.</p>
       <section class="glossary-shell" aria-label="Diccionario técnico">
         <div class="glossary-toolbar"><label for="glossary-search">Buscar términos o sinónimos</label>
@@ -613,7 +614,7 @@
   }
   function renderGlossaryDetail(t){
     if(!t)return '<div class="glossary-empty">Selecciona un concepto del índice.</div>';
-    return `<article class="glossary-article"><span class="glossary-kicker">${html(t.category)}</span><h2>${html(t.title)}</h2>${glossaryTermPlatforms(t)}${t.fullName?`<p class="glossary-fullname"><strong>Denominación completa:</strong> ${html(t.fullName)}</p>`:''}<div class="glossary-definition">${glossaryEmphasis(t.description)}</div>
+    return `<article class="glossary-article">${glossaryReturn||currentId?'<button type="button" class="glossary-inline-back" data-glossary-back="true">← Volver al asistente</button>':''}<span class="glossary-kicker">${html(t.category)}</span><h2>${html(t.title)}</h2>${glossaryTermPlatforms(t)}${t.fullName?`<p class="glossary-fullname"><strong>Denominación completa:</strong> ${html(t.fullName)}</p>`:''}<div class="glossary-definition">${glossaryEmphasis(t.description)}</div>
       ${t.why?`<section class="glossary-section glossary-why"><h3>Por qué importa</h3><p>${glossaryEmphasis(t.why)}</p></section>`:''}
       <section class="glossary-section glossary-check"><h3>Qué comprobar en la auditoría</h3><p>${glossaryEmphasis(t.check)}</p></section>
       ${renderGlossaryGuide(t)}
@@ -624,7 +625,7 @@
       <p class="glossary-disclaimer">Referencia orientativa. Documenta la prueba realizada y contrasta los criterios con el contexto del cliente.</p></article>`;
   }
   function openGlossary(term,origin){
-    glossaryReturn=origin||null;
+    glossaryReturn=origin||{page:lastAuditPage,scrollY:window.scrollY};
     const selected=glossary?.byId(term)||glossary?.search(term)?.[0];
     glossaryQuery=selected?'':(term||'');glossaryCategory='Todas';glossarySelected=selected?.id||'';
     page='glossary';render();scrollTo(0,0);
@@ -998,7 +999,7 @@
     byId('wizard-step-select')?.addEventListener('change',event=>move(event.target.value));
     for(const target of workspace.querySelectorAll('.field [data-field]:not([data-preset])'))updateValidation(target);
   }
-  function move(section){if(!['records','backups','online','settings','connections','glossary'].includes(section)&&!currentId){alert('Primero crea o abre una auditoría desde la biblioteca.');return}if(['records','backups','online','settings','connections','glossary'].includes(section)||section==='intake'||nav.some(n=>n[0]===section)){page=section;render();scrollTo(0,0)}}
+  function move(section){if(nav.some(n=>n[0]===section))lastAuditPage=section;if(section==='glossary'&&page!=='glossary')glossaryReturn={page:page==='records'?lastAuditPage:page,scrollY:window.scrollY};if(!['records','backups','online','settings','connections','glossary'].includes(section)&&!currentId){alert('Primero crea o abre una auditoría desde la biblioteca.');return}if(['records','backups','online','settings','connections','glossary'].includes(section)||section==='intake'||nav.some(n=>n[0]===section)){page=section;render();scrollTo(0,0)}}
   function fieldTarget(target){const {block,field,index}=target.dataset;if(!block||!field)return null;if(block==='meta'||block==='final'||block==='legal')return state[block];if(groups[block]&&index!==undefined)return state[block][Number(index)];return null}
   const workspace=byId('workspace');
   byId('global-navigation').addEventListener('click',e=>{const b=e.target.closest('[data-go]');if(b)move(b.dataset.go)});
@@ -1188,11 +1189,10 @@
       return;
     }
     if(b.dataset.glossaryBack!==undefined){
-      const origin=glossaryReturn;glossaryReturn=null;
-      if(origin){move(origin.page);const target=origin.field?byId(origin.field):null;if(target){target.scrollIntoView({block:'center'});target.focus({preventScroll:true});}}
+      backToAudit();
       return;
     }
-    if(b.dataset.glossaryTerm){openGlossary(b.dataset.glossaryTerm,{page:page,field:b.dataset.glossaryField||''});return;}
+    if(b.dataset.glossaryTerm){openGlossary(b.dataset.glossaryTerm,{page,field:b.dataset.glossaryField||'',scrollY:window.scrollY});return;}
     if(b.dataset.glossarySelect){glossarySelected=b.dataset.glossarySelect;filterGlossary(glossaryQuery);return;}
     if(b.dataset.glossaryCategory){glossaryCategory=b.dataset.glossaryCategory;glossarySelected='';render();return;}
     if(b.id==='comparison-capture'){
