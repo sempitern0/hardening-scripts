@@ -23,8 +23,17 @@
     "description": "Red lógica de capa 2 identificada habitualmente con una etiqueta IEEE 802.1Q.",
     "check": "Comprueba puertos de acceso/trunk, VLAN nativa y políticas inter-VLAN.",
     "why": "Una VLAN por sí sola no garantiza aislamiento: deben existir reglas inter-VLAN.",
-    "aliases": [],
-    "example": ""
+    "aliases": [
+      "Virtual Local Area Network"
+    ],
+    "example": "",
+    "fullName": "Virtual Local Area Network",
+    "references": [
+      {
+        "label": "Estándares IEEE 802.1Q (consulta la norma vigente)",
+        "url": "https://standards.ieee.org/"
+      }
+    ]
   },
   {
     "id": "term-3",
@@ -33,8 +42,17 @@
     "description": "Notación que expresa dirección de red y longitud del prefijo, por ejemplo 192.168.10.0/24.",
     "check": "Valida solapamientos y comprueba si las rutas permiten el tráfico esperado.",
     "why": "Un prefijo mal definido puede ampliar el alcance o provocar solapamientos.",
-    "aliases": [],
-    "example": ""
+    "aliases": [
+      "Classless Inter-Domain Routing"
+    ],
+    "example": "",
+    "fullName": "Classless Inter-Domain Routing",
+    "references": [
+      {
+        "label": "IANA - registros de direcciones IP",
+        "url": "https://www.iana.org/numbers"
+      }
+    ]
   },
   {
     "id": "term-4",
@@ -56,9 +74,17 @@
     "aliases": [
       "2FA",
       "doble factor",
-      "autenticación multifactor"
+      "autenticación multifactor",
+      "Multi-Factor Authentication"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Multi-Factor Authentication",
+    "references": [
+      {
+        "label": "Guías NIST de identidad digital",
+        "url": "https://pages.nist.gov/800-63-4/"
+      }
+    ]
   },
   {
     "id": "term-6",
@@ -77,8 +103,25 @@
     "description": "Identificador público de una vulnerabilidad; no demuestra por sí solo que un activo sea vulnerable.",
     "check": "Confirma producto, versión, configuración, exposición y evidencia de afectación.",
     "why": "Distingue una referencia publicada de una afectación realmente demostrada.",
-    "aliases": [],
-    "example": ""
+    "aliases": [
+      "Common Vulnerabilities and Exposures"
+    ],
+    "example": "",
+    "fullName": "Common Vulnerabilities and Exposures",
+    "references": [
+      {
+        "label": "CVE Program",
+        "url": "https://www.cve.org/"
+      },
+      {
+        "label": "NVD - búsqueda de CVE",
+        "url": "https://nvd.nist.gov/vuln/search"
+      },
+      {
+        "label": "CISA KEV",
+        "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
+      }
+    ]
   },
   {
     "id": "term-8",
@@ -87,8 +130,21 @@
     "description": "Sistema de puntuación de características técnicas de vulnerabilidades.",
     "check": "No lo uses como única medida de riesgo; considera exposición y criticidad del activo.",
     "why": "Una puntuación técnica no sustituye la evaluación de riesgo de negocio.",
-    "aliases": [],
-    "example": ""
+    "aliases": [
+      "Common Vulnerability Scoring System"
+    ],
+    "example": "",
+    "fullName": "Common Vulnerability Scoring System",
+    "references": [
+      {
+        "label": "FIRST CVSS",
+        "url": "https://www.first.org/cvss/"
+      },
+      {
+        "label": "NVD",
+        "url": "https://nvd.nist.gov/"
+      }
+    ]
   },
   {
     "id": "term-9",
@@ -107,8 +163,17 @@
     "description": "Tecnología de detección y respuesta sobre endpoints.",
     "check": "Comprueba cobertura, política aplicada, telemetría y capacidad de reacción.",
     "why": "Permite detectar comportamientos sospechosos y apoyar la respuesta.",
-    "aliases": [],
-    "example": ""
+    "aliases": [
+      "Endpoint Detection and Response"
+    ],
+    "example": "",
+    "fullName": "Endpoint Detection and Response",
+    "references": [
+      {
+        "label": "MITRE ATT&CK para detección y contexto",
+        "url": "https://attack.mitre.org/"
+      }
+    ]
   },
   {
     "id": "term-11",
@@ -118,7 +183,17 @@
     "check": "Contrasta la configuración efectiva con una referencia apropiada y documenta excepciones.",
     "why": "Reduce servicios, permisos y configuraciones innecesarias.",
     "aliases": [],
-    "example": ""
+    "example": "",
+    "references": [
+      {
+        "label": "CIS Benchmarks",
+        "url": "https://www.cisecurity.org/cis-benchmarks"
+      },
+      {
+        "label": "NIST CSF",
+        "url": "https://www.nist.gov/cyberframework"
+      }
+    ]
   },
   {
     "id": "term-12",
@@ -127,8 +202,17 @@
     "description": "Pérdida máxima de datos tolerada, expresada como intervalo temporal.",
     "check": "Contrasta RPO acordado con frecuencia y resultados de copias.",
     "why": "Ayuda a determinar cuántos datos puede tolerar perder el negocio.",
-    "aliases": [],
-    "example": "Ejemplo: un RPO de 4 horas permite perder hasta cuatro horas de cambios."
+    "aliases": [
+      "Recovery Point Objective"
+    ],
+    "example": "Ejemplo: un RPO de 4 horas permite perder hasta cuatro horas de cambios.",
+    "fullName": "Recovery Point Objective",
+    "references": [
+      {
+        "label": "NIST: continuidad y recuperación",
+        "url": "https://csrc.nist.gov/pubs/sp/800/34/r1/upd1/final"
+      }
+    ]
   },
   {
     "id": "term-13",
@@ -137,8 +221,17 @@
     "description": "Tiempo objetivo para recuperar un servicio después de una interrupción.",
     "check": "Comprueba con pruebas de restauración y dependencias reales.",
     "why": "Ayuda a planificar cuándo debe volver a operar un servicio.",
-    "aliases": [],
-    "example": "Ejemplo: un RTO de 2 horas fija la recuperación objetivo del servicio."
+    "aliases": [
+      "Recovery Time Objective"
+    ],
+    "example": "Ejemplo: un RTO de 2 horas fija la recuperación objetivo del servicio.",
+    "fullName": "Recovery Time Objective",
+    "references": [
+      {
+        "label": "NIST: planes de contingencia",
+        "url": "https://csrc.nist.gov/pubs/sp/800/34/r1/upd1/final"
+      }
+    ]
   },
   {
     "id": "term-14",
@@ -190,8 +283,17 @@
     "description": "Traducción de direcciones de red; no sustituye un control de acceso.",
     "check": "Revisa reglas de publicación y relación con filtrado de firewall.",
     "why": "Una traducción de direcciones no implica que el acceso esté restringido.",
-    "aliases": [],
-    "example": ""
+    "aliases": [
+      "Network Address Translation"
+    ],
+    "example": "",
+    "fullName": "Network Address Translation",
+    "references": [
+      {
+        "label": "RFC 3022: NAT tradicional",
+        "url": "https://www.rfc-editor.org/rfc/rfc3022"
+      }
+    ]
   },
   {
     "id": "term-19",
@@ -200,8 +302,17 @@
     "description": "Canal protegido entre extremos o redes sobre un transporte no confiable.",
     "check": "Comprueba autenticación, algoritmos, segmentación y revocación.",
     "why": "Protege tránsito, pero necesita autenticación y acceso delimitado.",
-    "aliases": [],
-    "example": ""
+    "aliases": [
+      "Virtual Private Network"
+    ],
+    "example": "",
+    "fullName": "Virtual Private Network",
+    "references": [
+      {
+        "label": "Catálogo de especificaciones RFC",
+        "url": "https://www.rfc-editor.org/"
+      }
+    ]
   },
   {
     "id": "term-20",
@@ -234,9 +345,17 @@
     "check": "Revisa orden, destino, origen, excepciones y registros de las reglas.",
     "why": "Un permiso excesivo puede abrir acceso entre segmentos.",
     "aliases": [
-      "lista de control de acceso"
+      "lista de control de acceso",
+      "Access Control List"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Access Control List",
+    "references": [
+      {
+        "label": "Glosario NIST",
+        "url": "https://csrc.nist.gov/glossary/term/access_control_list"
+      }
+    ]
   },
   {
     "id": "term-23",
@@ -271,9 +390,21 @@
     "check": "Comprueba resolutores, registros, zonas, transferencias y resolución interna.",
     "why": "Una configuración incorrecta facilita desvíos o interrupciones.",
     "aliases": [
-      "domain name system"
+      "domain name system",
+      "Domain Name System"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Domain Name System",
+    "references": [
+      {
+        "label": "IANA - zonas raíz",
+        "url": "https://www.iana.org/domains/root/db"
+      },
+      {
+        "label": "RFC Editor",
+        "url": "https://www.rfc-editor.org/"
+      }
+    ]
   },
   {
     "id": "term-26",
@@ -283,9 +414,17 @@
     "check": "Verifica rangos, reservas, opciones críticas y servidores autorizados.",
     "why": "Un servidor DHCP no autorizado puede desviar tráfico.",
     "aliases": [
-      "asignación automática IP"
+      "asignación automática IP",
+      "Dynamic Host Configuration Protocol"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Dynamic Host Configuration Protocol",
+    "references": [
+      {
+        "label": "RFC 2131: DHCP",
+        "url": "https://www.rfc-editor.org/rfc/rfc2131"
+      }
+    ]
   },
   {
     "id": "term-27",
@@ -311,7 +450,13 @@
       "RDP",
       "gestión remota"
     ],
-    "example": ""
+    "example": "",
+    "references": [
+      {
+        "label": "IANA - puertos y servicios",
+        "url": "https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml"
+      }
+    ]
   },
   {
     "id": "term-29",
@@ -322,9 +467,17 @@
     "why": "Protege confidencialidad e integridad en tránsito.",
     "aliases": [
       "transport layer security",
-      "SSL"
+      "SSL",
+      "Transport Layer Security"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Transport Layer Security",
+    "references": [
+      {
+        "label": "RFC 8446: TLS 1.3",
+        "url": "https://www.rfc-editor.org/rfc/rfc8446"
+      }
+    ]
   },
   {
     "id": "term-30",
@@ -376,7 +529,13 @@
       "confianza cero",
       "ztna"
     ],
-    "example": ""
+    "example": "",
+    "references": [
+      {
+        "label": "NIST SP 800-207",
+        "url": "https://csrc.nist.gov/pubs/sp/800/207/final"
+      }
+    ]
   },
   {
     "id": "term-34",
@@ -401,7 +560,17 @@
     "aliases": [
       "cis benchmarks"
     ],
-    "example": ""
+    "example": "",
+    "references": [
+      {
+        "label": "CIS Benchmarks",
+        "url": "https://www.cisecurity.org/cis-benchmarks"
+      },
+      {
+        "label": "CIS Controls",
+        "url": "https://www.cisecurity.org/controls"
+      }
+    ]
   },
   {
     "id": "term-36",
@@ -413,7 +582,13 @@
     "aliases": [
       "puerto abierto"
     ],
-    "example": ""
+    "example": "",
+    "references": [
+      {
+        "label": "IANA - puertos y servicios",
+        "url": "https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml"
+      }
+    ]
   },
   {
     "id": "term-37",
@@ -448,9 +623,17 @@
     "check": "Valida disponibilidad, versión y uso con cifrado o atestación.",
     "why": "Mejora la protección de claves y ciertas verificaciones de arranque.",
     "aliases": [
-      "trusted platform module"
+      "trusted platform module",
+      "Trusted Platform Module"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Trusted Platform Module",
+    "references": [
+      {
+        "label": "Trusted Computing Group: TPM",
+        "url": "https://trustedcomputinggroup.org/resource/tpm-library-specification/"
+      }
+    ]
   },
   {
     "id": "term-40",
@@ -513,9 +696,17 @@
     "check": "Comprueba versión, origen, actualización y relación con vulnerabilidades.",
     "why": "Facilita evaluar impacto de fallos en dependencias.",
     "aliases": [
-      "software bill of materials"
+      "software bill of materials",
+      "Software Bill of Materials"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Software Bill of Materials",
+    "references": [
+      {
+        "label": "CISA: inventario de componentes de software",
+        "url": "https://www.cisa.gov/sbom"
+      }
+    ]
   },
   {
     "id": "term-45",
@@ -563,9 +754,17 @@
     "check": "Verifica cifrado, firmas, certificados y servicios que dependen de él.",
     "why": "Conexiones no protegidas pueden exponer consultas o autenticaciones.",
     "aliases": [
-      "directorio LDAP"
+      "directorio LDAP",
+      "Lightweight Directory Access Protocol / LDAP over TLS"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Lightweight Directory Access Protocol / LDAP over TLS",
+    "references": [
+      {
+        "label": "RFC 4511: LDAP",
+        "url": "https://www.rfc-editor.org/rfc/rfc4511"
+      }
+    ]
   },
   {
     "id": "term-49",
@@ -588,9 +787,17 @@
     "check": "Revisa bóveda, aprobación, sesiones, rotación y cuentas de emergencia.",
     "why": "Reduce exposición de credenciales administrativas.",
     "aliases": [
-      "privileged access management"
+      "privileged access management",
+      "Privileged Access Management"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Privileged Access Management",
+    "references": [
+      {
+        "label": "NIST: controles de privilegios",
+        "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+      }
+    ]
   },
   {
     "id": "term-51",
@@ -613,9 +820,17 @@
     "check": "Comprueba sesiones, MFA, proveedores y revocación.",
     "why": "Centraliza controles, pero el proveedor de identidad requiere protección especial.",
     "aliases": [
-      "single sign-on"
+      "single sign-on",
+      "Single Sign-On"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Single Sign-On",
+    "references": [
+      {
+        "label": "NIST: identidad y federación",
+        "url": "https://pages.nist.gov/800-63-4/"
+      }
+    ]
   },
   {
     "id": "term-53",
@@ -625,9 +840,17 @@
     "check": "Revisa asignaciones, separación de tareas y privilegios acumulados.",
     "why": "Facilita limitar permisos por necesidad operativa.",
     "aliases": [
-      "role based access control"
+      "role based access control",
+      "Role-Based Access Control"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Role-Based Access Control",
+    "references": [
+      {
+        "label": "NIST: RBAC",
+        "url": "https://csrc.nist.gov/projects/role-based-access-control"
+      }
+    ]
   },
   {
     "id": "term-54",
@@ -663,9 +886,17 @@
     "check": "Relaciona el defecto observado con su clase y evidencia técnica.",
     "why": "Ayuda a entender la causa raíz y evitar repeticiones.",
     "aliases": [
-      "common weakness enumeration"
+      "common weakness enumeration",
+      "Common Weakness Enumeration"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Common Weakness Enumeration",
+    "references": [
+      {
+        "label": "Catálogo de debilidades de software",
+        "url": "https://cwe.mitre.org/"
+      }
+    ]
   },
   {
     "id": "term-57",
@@ -675,9 +906,17 @@
     "check": "Confirma que la versión y la variante corresponden al activo real.",
     "why": "Las coincidencias imprecisas causan falsos positivos.",
     "aliases": [
-      "common platform enumeration"
+      "common platform enumeration",
+      "Common Platform Enumeration"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Common Platform Enumeration",
+    "references": [
+      {
+        "label": "Nomenclatura de plataformas de NVD",
+        "url": "https://nvd.nist.gov/products/cpe"
+      }
+    ]
   },
   {
     "id": "term-58",
@@ -687,9 +926,17 @@
     "check": "Registra fecha y fuente de la consulta; combina con exposición y riesgo de negocio.",
     "why": "Aporta señal de priorización, no prueba explotación ni compromiso.",
     "aliases": [
-      "exploit prediction scoring system"
+      "exploit prediction scoring system",
+      "Exploit Prediction Scoring System"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Exploit Prediction Scoring System",
+    "references": [
+      {
+        "label": "Modelo de probabilidad de explotación FIRST",
+        "url": "https://www.first.org/epss/"
+      }
+    ]
   },
   {
     "id": "term-59",
@@ -700,9 +947,17 @@
     "why": "Ayuda a priorizar, sin sustituir la confirmación de afectación.",
     "aliases": [
       "known exploited vulnerabilities",
-      "KEV"
+      "KEV",
+      "Known Exploited Vulnerabilities Catalog"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Known Exploited Vulnerabilities Catalog",
+    "references": [
+      {
+        "label": "Catálogo CISA de vulnerabilidades explotadas",
+        "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
+      }
+    ]
   },
   {
     "id": "term-60",
@@ -1162,9 +1417,17 @@
     "check": "Verifica fuentes, tiempos, reglas, responsables y respuesta a alertas.",
     "why": "Los eventos sin supervisión útil aportan poco valor.",
     "aliases": [
-      "security information event management"
+      "security information event management",
+      "Security Information and Event Management"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Security Information and Event Management",
+    "references": [
+      {
+        "label": "NIST: gestión de logs de seguridad",
+        "url": "https://csrc.nist.gov/pubs/sp/800/92/final"
+      }
+    ]
   },
   {
     "id": "term-98",
@@ -1174,9 +1437,17 @@
     "check": "Comprueba cobertura, escalado, evidencias y tiempos de respuesta.",
     "why": "La herramienta no sustituye un proceso de respuesta.",
     "aliases": [
-      "security operations center"
+      "security operations center",
+      "Security Operations Center"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Security Operations Center",
+    "references": [
+      {
+        "label": "NIST: respuesta a incidentes",
+        "url": "https://csrc.nist.gov/pubs/sp/800/61/r3/final"
+      }
+    ]
   },
   {
     "id": "term-99",
@@ -1199,9 +1470,17 @@
     "check": "Contrasta fuentes fiables y desviaciones entre equipos.",
     "why": "Fechas incoherentes dificultan correlacionar incidentes.",
     "aliases": [
-      "network time protocol"
+      "network time protocol",
+      "Network Time Protocol"
     ],
-    "example": ""
+    "example": "",
+    "fullName": "Network Time Protocol",
+    "references": [
+      {
+        "label": "RFC 5905: NTP",
+        "url": "https://www.rfc-editor.org/rfc/rfc5905"
+      }
+    ]
   },
   {
     "id": "term-101",
@@ -1213,7 +1492,13 @@
     "aliases": [
       "indicator of compromise"
     ],
-    "example": ""
+    "example": "",
+    "references": [
+      {
+        "label": "MITRE ATT&CK",
+        "url": "https://attack.mitre.org/"
+      }
+    ]
   },
   {
     "id": "term-102",
@@ -1225,7 +1510,13 @@
     "aliases": [
       "incident response"
     ],
-    "example": ""
+    "example": "",
+    "references": [
+      {
+        "label": "NIST SP 800-61",
+        "url": "https://csrc.nist.gov/pubs/sp/800/61/r3/final"
+      }
+    ]
   },
   {
     "id": "term-103",
@@ -1251,6 +1542,595 @@
       "secuestro de datos"
     ],
     "example": ""
+  },
+  {
+    "id": "term-105",
+    "title": "ISO/IEC 27001",
+    "category": "Normativa y estándares",
+    "description": "Norma de sistemas de gestión de seguridad de la información (SGSI).",
+    "check": "Revisa alcance, análisis de riesgos, declaración de aplicabilidad, auditorías internas y tratamiento.",
+    "why": "Certificación de un alcance no garantiza que todos los activos estén cubiertos.",
+    "aliases": [
+      "Information security management systems"
+    ],
+    "example": "",
+    "fullName": "Information security management systems",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.iso.org/isoiec-27001-information-security.html"
+      }
+    ]
+  },
+  {
+    "id": "term-106",
+    "title": "ISO/IEC 27002",
+    "category": "Normativa y estándares",
+    "description": "Guía de controles de seguridad de la información, utilizada como referencia para seleccionar medidas.",
+    "check": "Relaciona controles elegidos con los riesgos, evidencias y su aplicabilidad.",
+    "why": "No es una certificación independiente de seguridad.",
+    "aliases": [
+      "Information security controls"
+    ],
+    "example": "",
+    "fullName": "Information security controls",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.iso.org/standard/75652.html"
+      }
+    ]
+  },
+  {
+    "id": "term-107",
+    "title": "ISO/IEC 27005",
+    "category": "Normativa y estándares",
+    "description": "Orientaciones para gestionar riesgos de seguridad de la información.",
+    "check": "Valida metodología, criterios de aceptación y propietarios de riesgos.",
+    "why": "Una matriz de riesgos sin evidencias ni seguimiento no acredita gestión.",
+    "aliases": [
+      "Guidance on managing information security risks"
+    ],
+    "example": "",
+    "fullName": "Guidance on managing information security risks",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.iso.org/search.html?q=ISO%2FIEC%2027005"
+      }
+    ]
+  },
+  {
+    "id": "term-108",
+    "title": "ISO/IEC 27701",
+    "category": "Normativa y estándares",
+    "description": "Requisitos y orientaciones para la gestión de información de privacidad (PIMS).",
+    "check": "Comprueba alcance, roles de responsable/encargado y controles de privacidad.",
+    "why": "No sustituye la evaluación de obligaciones legales de protección de datos.",
+    "aliases": [
+      "Privacy information management system"
+    ],
+    "example": "",
+    "fullName": "Privacy information management system",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.iso.org/search.html?q=ISO%2FIEC%2027701"
+      }
+    ]
+  },
+  {
+    "id": "term-109",
+    "title": "ISO 22301",
+    "category": "Normativa y estándares",
+    "description": "Norma de gestión de continuidad de negocio (BCMS).",
+    "check": "Revisa BIA, estrategias, escenarios, ensayos y revisión de objetivos RTO/RPO.",
+    "why": "Tener documentos no prueba que la recuperación cumpla los objetivos.",
+    "aliases": [
+      "Business continuity management systems"
+    ],
+    "example": "",
+    "fullName": "Business continuity management systems",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.iso.org/standard/75106.html"
+      }
+    ]
+  },
+  {
+    "id": "term-110",
+    "title": "NIST CSF",
+    "category": "Normativa y estándares",
+    "description": "Marco de ciberseguridad NIST para gestionar riesgos con funciones y perfiles.",
+    "check": "Contrasta funciones Identify, Protect, Detect, Respond, Recover y Govern contra resultados observables.",
+    "why": "No confundir uso voluntario del marco con una certificación.",
+    "aliases": [
+      "National Institute of Standards and Technology Cybersecurity Framework"
+    ],
+    "example": "",
+    "fullName": "National Institute of Standards and Technology Cybersecurity Framework",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.nist.gov/cyberframework"
+      }
+    ]
+  },
+  {
+    "id": "term-111",
+    "title": "NIST SP 800-53",
+    "category": "Normativa y estándares",
+    "description": "Catálogo de controles de seguridad y privacidad para sistemas y organizaciones.",
+    "check": "Identifica revisión y baseline utilizados y vincula cada control a evidencias.",
+    "why": "Las recomendaciones requieren adaptación al alcance y normativa.",
+    "aliases": [
+      "NIST Special Publication 800-53"
+    ],
+    "example": "",
+    "fullName": "NIST Special Publication 800-53",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+      }
+    ]
+  },
+  {
+    "id": "term-112",
+    "title": "NIST SP 800-61",
+    "category": "Normativa y estándares",
+    "description": "Guía de respuesta a incidentes de ciberseguridad.",
+    "check": "Comprueba preparación, capacidad de respuesta y mejora continua.",
+    "why": "Una guía no sustituye un plan operativo ejercitado.",
+    "aliases": [
+      "NIST Special Publication 800-61"
+    ],
+    "example": "",
+    "fullName": "NIST Special Publication 800-61",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://csrc.nist.gov/pubs/sp/800/61/r3/final"
+      }
+    ]
+  },
+  {
+    "id": "term-113",
+    "title": "CIS Controls",
+    "category": "Normativa y estándares",
+    "description": "Controles de ciberseguridad priorizados del Center for Internet Security.",
+    "check": "Verifica grupo de implementación, salvaguardas elegidas y evidencia de ejecución.",
+    "why": "No equivale a los CIS Benchmarks de configuración de producto.",
+    "aliases": [
+      "Center for Internet Security Controls"
+    ],
+    "example": "",
+    "fullName": "Center for Internet Security Controls",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.cisecurity.org/controls"
+      }
+    ]
+  },
+  {
+    "id": "term-114",
+    "title": "OWASP Top 10",
+    "category": "Normativa y estándares",
+    "description": "Documento de concienciación sobre riesgos de seguridad en aplicaciones web.",
+    "check": "Relaciona categorías aplicables con pruebas autorizadas y evidencias técnicas.",
+    "why": "No constituye una lista exhaustiva de vulnerabilidades ni un test de penetración.",
+    "aliases": [
+      "Open Worldwide Application Security Project Top 10"
+    ],
+    "example": "",
+    "fullName": "Open Worldwide Application Security Project Top 10",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://owasp.org/www-project-top-ten/"
+      }
+    ]
+  },
+  {
+    "id": "term-115",
+    "title": "RFC",
+    "category": "Organismos y registros",
+    "description": "Publicación técnica de la serie Request for Comments que documenta protocolos y prácticas de Internet.",
+    "check": "Identifica RFC exacta, estado, actualizaciones y obsolescencias antes de citarla.",
+    "why": "No todas las RFC son normas de Internet ni tienen la misma vigencia.",
+    "aliases": [
+      "Request for Comments"
+    ],
+    "example": "",
+    "fullName": "Request for Comments",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.rfc-editor.org/"
+      }
+    ]
+  },
+  {
+    "id": "term-116",
+    "title": "IETF",
+    "category": "Organismos y registros",
+    "description": "Comunidad abierta responsable de numerosos estándares y protocolos de Internet.",
+    "check": "Consulta estándares y documentos vigentes y grupos de trabajo.",
+    "why": "Un borrador Internet-Draft puede cambiar o caducar.",
+    "aliases": [
+      "Internet Engineering Task Force"
+    ],
+    "example": "",
+    "fullName": "Internet Engineering Task Force",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.ietf.org/"
+      }
+    ]
+  },
+  {
+    "id": "term-117",
+    "title": "IANA",
+    "category": "Organismos y registros",
+    "description": "Autoridad coordinadora de registros globales de parámetros, números y nombres de Internet.",
+    "check": "Comprueba asignaciones oficiales de puertos, protocolos, dominios y espacios IP.",
+    "why": "La asignación de un puerto no demuestra que exista un servicio legítimo.",
+    "aliases": [
+      "Internet Assigned Numbers Authority"
+    ],
+    "example": "",
+    "fullName": "Internet Assigned Numbers Authority",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.iana.org/"
+      }
+    ]
+  },
+  {
+    "id": "term-118",
+    "title": "ICANN",
+    "category": "Organismos y registros",
+    "description": "Organización de coordinación de identificadores únicos de Internet y el sistema de nombres.",
+    "check": "Contrasta estructura de TLD y políticas de registro con fuentes oficiales.",
+    "why": "No sustituye a un registrador o al registro de un TLD concreto.",
+    "aliases": [
+      "Internet Corporation for Assigned Names and Numbers"
+    ],
+    "example": "",
+    "fullName": "Internet Corporation for Assigned Names and Numbers",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.icann.org/"
+      }
+    ]
+  },
+  {
+    "id": "term-119",
+    "title": "NVD",
+    "category": "Vulnerabilidades",
+    "description": "Base de datos estadounidense de información sobre vulnerabilidades que enriquece registros CVE.",
+    "check": "Comprueba identificador, historial, fuentes, métricas y asignación CPE.",
+    "why": "Las métricas NVD pueden diferir de las publicadas por el fabricante.",
+    "aliases": [
+      "National Vulnerability Database"
+    ],
+    "example": "",
+    "fullName": "National Vulnerability Database",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://nvd.nist.gov/vuln/search"
+      }
+    ]
+  },
+  {
+    "id": "term-120",
+    "title": "CNA",
+    "category": "Vulnerabilidades",
+    "description": "Organización autorizada para asignar identificadores CVE en su alcance.",
+    "check": "Identifica la entidad emisora, avisos y correcciones del proveedor.",
+    "why": "La emisión de una CVE no prueba afectación de un activo concreto.",
+    "aliases": [
+      "CVE Numbering Authority"
+    ],
+    "example": "",
+    "fullName": "CVE Numbering Authority",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.cve.org/ProgramOrganization/CNAs"
+      }
+    ]
+  },
+  {
+    "id": "term-121",
+    "title": "PKI",
+    "category": "Identidad",
+    "description": "Infraestructura de claves públicas que gestiona certificados, autoridades y revocación.",
+    "check": "Revisa raíces de confianza, cadena, ciclo de vida y revocación.",
+    "why": "Un certificado emitido no implica que los clientes lo validen correctamente.",
+    "aliases": [
+      "Public Key Infrastructure"
+    ],
+    "example": "",
+    "fullName": "Public Key Infrastructure",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://csrc.nist.gov/glossary/term/public_key_infrastructure"
+      }
+    ]
+  },
+  {
+    "id": "term-122",
+    "title": "RADIUS",
+    "category": "Identidad",
+    "description": "Protocolo de autenticación, autorización y contabilidad para acceso de red.",
+    "check": "Verifica integridad de clientes NAS, políticas y registro de autenticaciones.",
+    "why": "El uso de RADIUS no garantiza por sí mismo MFA ni segmentación.",
+    "aliases": [
+      "Remote Authentication Dial-In User Service"
+    ],
+    "example": "",
+    "fullName": "Remote Authentication Dial-In User Service",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.rfc-editor.org/rfc/rfc2865"
+      }
+    ]
+  },
+  {
+    "id": "term-123",
+    "title": "802.1X",
+    "category": "Redes",
+    "description": "Control de acceso a redes basado en puerto; involucra supplicant, authenticator y autenticador backend.",
+    "check": "Comprueba modo de autenticación, VLAN asignada y excepciones en los switches.",
+    "why": "Diferencia 802.1X del protocolo EAP y de un producto NAC.",
+    "aliases": [
+      "IEEE 802.1X Port-Based Network Access Control"
+    ],
+    "example": "",
+    "fullName": "IEEE 802.1X Port-Based Network Access Control",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://standards.ieee.org/"
+      }
+    ]
+  },
+  {
+    "id": "term-124",
+    "title": "BIA",
+    "category": "Continuidad",
+    "description": "Análisis de impacto en el negocio que identifica procesos críticos y dependencias.",
+    "check": "Verifica criterios, impactos temporales, propietarios y prioridades.",
+    "why": "No puede inferirse RTO/RPO sin necesidades reales del negocio.",
+    "aliases": [
+      "Business Impact Analysis"
+    ],
+    "example": "",
+    "fullName": "Business Impact Analysis",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://csrc.nist.gov/pubs/sp/800/34/r1/upd1/final"
+      }
+    ]
+  },
+  {
+    "id": "term-125",
+    "title": "SLA",
+    "category": "Continuidad",
+    "description": "Compromiso de niveles de servicio con indicadores y obligaciones acordadas.",
+    "check": "Contrasta umbrales, medición, exclusiones y penalizaciones aplicables.",
+    "why": "Una promesa de disponibilidad no sustituye pruebas de resiliencia.",
+    "aliases": [
+      "Service Level Agreement"
+    ],
+    "example": "",
+    "fullName": "Service Level Agreement",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://csrc.nist.gov/glossary/term/service_level_agreement"
+      }
+    ]
+  },
+  {
+    "id": "term-126",
+    "title": "CVE ID vs CWE",
+    "category": "Vulnerabilidades",
+    "description": "CVE identifica una vulnerabilidad concreta; CWE clasifica una clase de debilidad.",
+    "check": "Relaciona hallazgos verificados con la debilidad técnica correspondiente.",
+    "why": "No asignar CVE a errores genéricos sin identificador reconocido.",
+    "aliases": [
+      "CVE versus CWE"
+    ],
+    "example": "",
+    "fullName": "CVE versus CWE",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://cwe.mitre.org/"
+      }
+    ]
+  },
+  {
+    "id": "term-127",
+    "title": "SPF",
+    "category": "Redes",
+    "description": "Política DNS para identificar los servidores autorizados a enviar correo por un dominio.",
+    "check": "Comprueba TXT SPF y alineación con servicios emisores; revisa límite de búsquedas.",
+    "why": "SPF por sí solo no demuestra protección antisuplantación completa.",
+    "aliases": [
+      "Sender Policy Framework"
+    ],
+    "example": "",
+    "fullName": "Sender Policy Framework",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.rfc-editor.org/rfc/rfc7208"
+      }
+    ]
+  },
+  {
+    "id": "term-128",
+    "title": "DKIM",
+    "category": "Redes",
+    "description": "Firma criptográfica asociada al dominio que permite verificar integridad y autoría de correo.",
+    "check": "Comprueba selector DNS, algoritmo, firma y estado de rotación.",
+    "why": "DKIM válido no prueba que el mensaje sea seguro.",
+    "aliases": [
+      "DomainKeys Identified Mail"
+    ],
+    "example": "",
+    "fullName": "DomainKeys Identified Mail",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.rfc-editor.org/rfc/rfc6376"
+      }
+    ]
+  },
+  {
+    "id": "term-129",
+    "title": "DMARC",
+    "category": "Redes",
+    "description": "Política para tratar mensajes que fallan alineación SPF y DKIM.",
+    "check": "Verifica política DNS, alineación y tratamiento de informes.",
+    "why": "p=none solo monitoriza; no rechaza mensajes por política DMARC.",
+    "aliases": [
+      "Domain-based Message Authentication, Reporting and Conformance"
+    ],
+    "example": "",
+    "fullName": "Domain-based Message Authentication, Reporting and Conformance",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.rfc-editor.org/rfc/rfc7489"
+      }
+    ]
+  },
+  {
+    "id": "term-130",
+    "title": "DNSSEC",
+    "category": "Redes",
+    "description": "Extensiones de DNS que permiten validar autenticidad e integridad de datos de zona.",
+    "check": "Comprueba DS, DNSKEY, RRSIG y funcionamiento de validadores.",
+    "why": "DNSSEC no cifra consultas DNS ni sustituye privacidad.",
+    "aliases": [
+      "Domain Name System Security Extensions"
+    ],
+    "example": "",
+    "fullName": "Domain Name System Security Extensions",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.rfc-editor.org/rfc/rfc4035"
+      }
+    ]
+  },
+  {
+    "id": "term-131",
+    "title": "HTTP Security Headers",
+    "category": "Aplicaciones y servicios",
+    "description": "Cabeceras de respuesta HTTP que ayudan a reducir determinados riesgos web.",
+    "check": "Comprueba HSTS, CSP, X-Content-Type-Options y Referrer-Policy.",
+    "why": "Una cabecera aislada no acredita seguridad general de la aplicación.",
+    "aliases": [
+      "HTTP response security headers"
+    ],
+    "example": "",
+    "fullName": "HTTP response security headers",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://owasp.org/www-project-secure-headers/"
+      }
+    ]
+  },
+  {
+    "id": "term-132",
+    "title": "CSP",
+    "category": "Aplicaciones y servicios",
+    "description": "Política del navegador que limita fuentes de contenido y ciertos comportamientos.",
+    "check": "Revisa cabeceras efectivas y excepciones inseguras en directivas.",
+    "why": "CSP no sustituye saneamiento de entradas ni diseño seguro.",
+    "aliases": [
+      "Content Security Policy"
+    ],
+    "example": "",
+    "fullName": "Content Security Policy",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP"
+      }
+    ]
+  },
+  {
+    "id": "term-133",
+    "title": "HSTS",
+    "category": "Aplicaciones y servicios",
+    "description": "Política HTTP que indica a los navegadores usar HTTPS para un host.",
+    "check": "Comprueba max-age, includeSubDomains y cobertura real de TLS.",
+    "why": "No sustituye certificados válidos ni cubre clientes que no respeten HSTS.",
+    "aliases": [
+      "HTTP Strict Transport Security"
+    ],
+    "example": "",
+    "fullName": "HTTP Strict Transport Security",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://www.rfc-editor.org/rfc/rfc6797"
+      }
+    ]
+  },
+  {
+    "id": "term-134",
+    "title": "OWASP ASVS",
+    "category": "Aplicaciones y servicios",
+    "description": "Estándar de verificación de controles técnicos de seguridad de aplicaciones.",
+    "check": "Ajusta nivel de verificación a riesgo y alcance; conserva pruebas reproducibles.",
+    "why": "No asumas cumplimiento sin evidencia detallada.",
+    "aliases": [
+      "Application Security Verification Standard"
+    ],
+    "example": "",
+    "fullName": "Application Security Verification Standard",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://owasp.org/www-project-application-security-verification-standard/"
+      }
+    ]
+  },
+  {
+    "id": "term-135",
+    "title": "SAST / DAST",
+    "category": "Aplicaciones y servicios",
+    "description": "Análisis de seguridad estático del código y dinámico de aplicaciones en ejecución.",
+    "check": "Contrasta cobertura, reglas, autenticación de pruebas y falsos positivos.",
+    "why": "Ninguna modalidad sustituye una revisión manual contextualizada.",
+    "aliases": [
+      "Static Application Security Testing / Dynamic Application Security Testing"
+    ],
+    "example": "",
+    "fullName": "Static Application Security Testing / Dynamic Application Security Testing",
+    "references": [
+      {
+        "label": "Referencia oficial",
+        "url": "https://owasp.org/"
+      }
+    ]
   }
 ]);
  // Read-only diagnostic playbooks. Commands are examples, NEVER executed by this PWA.
@@ -2231,6 +3111,8 @@
     ]
   }
 ].map(({id,...guide})=>[id,Object.freeze(guide)])));
+ const MAC_COMMANDS=[{"id":"term-25","platform":"macOS","command":"scutil --dns","lookFor":"Resolutores DNS efectivos por interfaz y orden de búsqueda."},{"id":"term-28","platform":"macOS","command":"lsof -nP -iTCP -sTCP:LISTEN","lookFor":"Procesos y puertos TCP en escucha (privilegios según proceso)."},{"id":"term-29","platform":"macOS","command":"curl -Iv https://servidor.autorizado.invalid","lookFor":"Validación TLS y respuesta de cabeceras del host aprobado."},{"id":"term-30","platform":"macOS","command":"security find-certificate -a -p /Library/Keychains/System.keychain","lookFor":"Certificados públicos del llavero del sistema; no extrae claves privadas."},{"id":"term-40","platform":"macOS","command":"fdesetup status","lookFor":"Estado FileVault del volumen de arranque; puede requerir permisos."},{"id":"term-15","platform":"macOS","command":"shasum -a 256 '/ruta/evidencia.bin'","lookFor":"SHA-256 reproducible de evidencia."},{"id":"term-72","platform":"macOS","command":"shasum -a 256 '/ruta/evidencia.bin'","lookFor":"Comprueba integridad en una copia preservada."},{"id":"term-100","platform":"macOS","command":"systemsetup -getusingnetworktime; systemsetup -getnetworktimeserver","lookFor":"Estado/configuración NTP; ciertos datos requieren privilegios."},{"id":"term-36","platform":"macOS","command":"lsof -nP -iTCP -sTCP:LISTEN","lookFor":"Servicios en escucha."},{"id":"term-21","platform":"macOS","command":"ifconfig; netstat -rn -f inet","lookFor":"Direcciones/prefijos y rutas IPv4."},{"id":"term-19","platform":"macOS","command":"scutil --nwi; netstat -rn -f inet","lookFor":"Contexto de interfaces y rutas para VPN."},{"id":"term-34","platform":"macOS","command":"softwareupdate --list","lookFor":"Actualizaciones ofrecidas al host; no instala actualizaciones."},{"id":"term-99","platform":"macOS","command":"log show --last 1h --style compact --predicate 'messageType == error'","lookFor":"Errores recientes; filtra sin guardar datos personales innecesarios."},{"id":"term-101","platform":"macOS","command":"log show --last 1h --style compact --predicate 'process == \"sshd\"'","lookFor":"Eventos recientes del servicio SSH cuando existan."},{"id":"term-26","platform":"macOS","command":"ipconfig getpacket en0","lookFor":"Parámetros DHCP de en0; comprobar interfaz activa."},{"id":"term-31","platform":"macOS","command":"system_profiler SPAirPortDataType","lookFor":"Seguridad y configuración Wi-Fi visible desde el cliente."},{"id":"term-42","platform":"macOS","command":"systemextensionsctl list","lookFor":"Extensiones de sistema presentes; verificar estado EDR en consola del fabricante."},{"id":"term-39","platform":"macOS","command":"system_profiler SPiBridgeDataType","lookFor":"Componentes de seguridad disponibles según hardware Apple (no implica TPM)."}];
+ for(const entry of MAC_COMMANDS){const g=GUIDES[entry.id];if(g)g.commands.push({platform:entry.platform,command:entry.command,lookFor:entry.lookFor});}
  const CATEGORIES=Object.freeze([...new Set(TERMS.map(t=>t.category))]);
  const normalize = input=>String(input??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase('es').trim();
  const byId=id=>TERMS.find(t=>t.id===id)||null;
@@ -2240,7 +3122,7 @@
    if(category!=='Todas'&&t.category!==category)return false;
    if(!tokens.length)return true;
    const guide=GUIDES[t.id];
-   const haystack=normalize([t.title,t.category,t.description,t.check,t.why,t.example,...(t.aliases||[]),guide?.symptom,guide?.verify,guide?.interpret,...(guide?.commands||[]).flatMap(c=>[c.platform,c.command,c.lookFor])].join(' '));
+   const haystack=normalize([t.title,t.category,t.description,t.check,t.why,t.example,t.fullName,...(t.references||[]).map(x=>x.label),...(t.aliases||[]),guide?.symptom,guide?.verify,guide?.interpret,...(guide?.commands||[]).flatMap(c=>[c.platform,c.command,c.lookFor])].join(' '));
    return tokens.every(token=>haystack.includes(token));
   }).sort((a,b)=>{
    if(!tokens.length)return a.title.localeCompare(b.title,'es');
