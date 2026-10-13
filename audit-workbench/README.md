@@ -29,6 +29,14 @@ Abre `http://127.0.0.1:8765`. Para instalar la PWA en tablet o móvil, consulta 
 
 Los formularios muestran ejemplos contextuales para DNI, NIE, CIF/NIF entidad, identificación fiscal, IP, CIDR, VLAN, CVE, CVSS, SHA-256, referencias y otros campos de formato especializado. Los campos de teléfono de cliente, consultora y auditores admiten selección de país con bandera y prefijo, y presentan una máscara orientativa. Se conserva el teléfono en formato internacional dentro del campo existente (sin migración del JSON); la validación de identidad y teléfono sigue siendo local y no comprueba la titularidad o asignación real. Los números antiguos permanecen editables.
 
+## Distribución segura de expedientes y PDF
+
+En **Conexiones online → Nextcloud** es posible descargar o subir un backup JSON cifrado localmente (AES-256-GCM y PBKDF2). La frase no se envía al servidor. La recuperación descarga un JSON para revisar e importar manualmente. WebDAV requiere HTTPS, contraseña de aplicación, autorización explícita y CORS compatible.
+
+Para el PDF: genera el documento mediante **Generar PDF**, guárdalo desde impresión y selecciónalo en Conexiones. Se previsualiza mediante una URL local temporal, sin publicarse. Si lo autorizas, se sube por WebDAV y se puede crear un enlace de Nextcloud mediante OCS, con contraseña, permiso de lectura y caducidad de 1 a 7 días. Es Nextcloud quien aplica caducidad y permisos: no se crea un túnel hacia el equipo. Los enlaces de sesiones anteriores se gestionan desde Nextcloud. El PDF se almacena en claro en el servidor, sujeto a los controles y cifrado en reposo de éste.
+
+Google Drive, OneDrive, S3 y la generación binaria automática de PDF no están conectados. Las operaciones online dependen de CORS y la configuración del servidor.
+
 ## Flujo recomendado
 
 1. **Configuración:** registra tu consultora y su equipo de auditores; asigna profesionales al expediente.
