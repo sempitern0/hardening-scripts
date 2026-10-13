@@ -823,6 +823,13 @@
     byId('navigation').hidden=true;
     byId('audit-context').hidden=true;
     byId('workspace-label').textContent='MENÚ PRINCIPAL';
+    // Keep the global menu in sync with the current view, including the glossary.
+    for(const button of byId('global-navigation').querySelectorAll('[data-go]')){
+      const active=button.dataset.go===(page==='online'?'connections':page);
+      button.classList.toggle('active',active);
+      if(active)button.setAttribute('aria-current','page');
+      else button.removeAttribute('aria-current');
+    }
     byId('main-audit-context').hidden=inLibrary;
     byId('main-audit-context').textContent=(state.meta.reportId||'Sin referencia')+' · '+(state.meta.client||'Cliente pendiente')+' · '+(state.meta.project||'Sin título');
     byId('audit-context-title').textContent=state.meta.project||state.meta.client||'Auditoría sin título';
@@ -837,7 +844,7 @@
     byId('wizard-step-select')?.addEventListener('change',event=>move(event.target.value));
     for(const target of workspace.querySelectorAll('.field [data-field]:not([data-preset])'))updateValidation(target);
   }
-  function move(section){if(!['records','backups','online','settings','connections','glossary'].includes(section)&&!currentId){alert('Primero crea o abre una auditoría desde la biblioteca.');return}if(['records','backups','online','settings','connections'].includes(section)||nav.some(n=>n[0]===section)){page=section;render();scrollTo(0,0)}}
+  function move(section){if(!['records','backups','online','settings','connections','glossary'].includes(section)&&!currentId){alert('Primero crea o abre una auditoría desde la biblioteca.');return}if(['records','backups','online','settings','connections','glossary'].includes(section)||nav.some(n=>n[0]===section)){page=section;render();scrollTo(0,0)}}
   function fieldTarget(target){const {block,field,index}=target.dataset;if(!block||!field)return null;if(block==='meta'||block==='final'||block==='legal')return state[block];if(groups[block]&&index!==undefined)return state[block][Number(index)];return null}
   const workspace=byId('workspace');
   byId('global-navigation').addEventListener('click',e=>{const b=e.target.closest('[data-go]');if(b)move(b.dataset.go)});

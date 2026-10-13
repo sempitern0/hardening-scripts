@@ -2271,3 +2271,18 @@ button:focus-visible {
       "Atkinson Hyperlegible", Arial, sans-serif;
   }
 }
+
+/* Vector navigation icons: fixed geometry and sharp strokes across display densities. */
+#global-navigation button .nav-icon {
+  display: block;
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  flex: 0 0 20px;
+  color: #a7c8d5;
+  stroke: currentColor;
+  shape-rendering: geometricPrecision;
+}
+#global-navigation button:is(:hover,.active) .nav-icon { color: #69e1cb; }
+#global-navigation button[aria-current="page"] { background: #21364b; color: #fff; box-shadow: inset 3px 0 var(--sidebar-active,#34c4a7); }
+@media (prefers-reduced-motion: reduce) { #global-navigation button .nav-icon { transition: none; } }
