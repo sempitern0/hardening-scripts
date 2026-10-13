@@ -2317,3 +2317,25 @@ button:focus-visible {
 @media(max-width:450px){.phone-widget{flex-wrap:wrap}.phone-widget .phone-country{flex:1 1 100%;max-width:100%}.phone-widget input[type="tel"]{flex:1 1 100%}}
 
 .secure-transfer{margin-block:1.2rem}.secure-transfer hr{border:0;border-top:1px solid var(--line);margin:1.2rem 0}.secure-transfer input[type="file"]{display:block;max-width:100%;margin:.5rem 0 1rem}.secure-transfer .transfer-preview{border:1px solid var(--line);border-radius:11px;margin:.8rem 0;overflow:hidden;background:var(--canvas)}.secure-transfer .transfer-preview iframe{width:100%;height:min(68vh,780px);border:0;display:block}.secure-transfer #transfer-share-link{overflow-wrap:anywhere}
+
+/* Secure-transfer layout follows the standard cards, never bare label/input pairs. */
+.secure-transfer{display:grid;gap:1.25rem;min-width:0}
+.secure-transfer .transfer-heading h2{margin:0 0 .45rem}
+.secure-transfer .transfer-heading p{margin:0}
+.secure-transfer .transfer-section{min-width:0;display:grid;gap:1rem;padding:1.15rem;border:1px solid var(--line);border-radius:13px;background:var(--paper)}
+.secure-transfer .transfer-section-header{display:flex;align-items:flex-start;gap:.8rem}
+.secure-transfer .transfer-section-header h3{margin:0 0 .35rem}
+.secure-transfer .transfer-section-header p{margin:0}
+.secure-transfer .transfer-step{display:grid;place-items:center;flex:none;width:2.15rem;height:2.15rem;border-radius:9px;background:var(--canvas);border:1px solid var(--line);font-weight:800;color:var(--brand)}
+.secure-transfer .transfer-field{display:grid;gap:.35rem;min-width:0}
+.secure-transfer .transfer-field label{font-size:.88rem;font-weight:750;color:var(--ink)}
+.secure-transfer .transfer-field input,.secure-transfer .transfer-field select{width:100%;min-width:0;max-width:100%;padding:.75rem .85rem;border:1px solid var(--line);border-radius:9px;background:var(--paper);color:var(--ink)}
+.secure-transfer .transfer-field small{color:var(--muted);line-height:1.5}
+.secure-transfer .transfer-field input[type="file"]{padding:.7rem;margin:0}
+.secure-transfer .transfer-actions{display:flex;gap:.65rem;flex-wrap:wrap;align-items:center;margin:.15rem 0 .4rem}
+.secure-transfer .transfer-actions .button{min-height:39px}
+.secure-transfer .transfer-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}
+.secure-transfer .transfer-feedback:not(:empty){margin:0;padding:.8rem;border-radius:9px;background:var(--canvas);overflow-wrap:anywhere}
+.secure-transfer .transfer-preview[hidden]{display:none}
+.secure-transfer .transfer-share-link a{display:inline-block;padding:.6rem 0;color:var(--brand);font-weight:750}
+@media(max-width:620px){.secure-transfer .transfer-grid{grid-template-columns:1fr}.secure-transfer .transfer-section{padding:.9rem}.secure-transfer .transfer-actions .button{flex:1 1 100%}}
