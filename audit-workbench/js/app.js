@@ -736,13 +736,13 @@
     const term=id?glossary.byId(id):null;
     return term?`<p class="glossary-stage-hint">Referencia técnica: <button type="button" class="glossary-stage-link" data-glossary-term="${html(term.id)}" title="Consultar definición y comprobaciones de ${html(term.title)}">${html(term.title)} ↗</button></p>`:'';
   }
-  let intakePreview=null,intakeSelected=new Set(),intakeError='',intakeBlock='assets';
+  let intakePreview=null,intakeSelected=new Set(),intakeError='',intakeBlock='assets',intakeReturn='assets';
   const intake=globalThis.AuditInventoryImport;
   function renderIntake(){
     const block=intakePreview?.block||intakeBlock;
     return `<span class="eyebrow">INVENTARIO / CAPTURA OPCIONAL</span><h1 class="page-title">Captura asistida de activos</h1>
       <p class="lead">Importa información obtenida mediante herramientas autorizadas. La vista previa no escribe en el expediente.</p>
-      <section class="card"><h2>Seleccionar archivo</h2>
+      <div class="action-row"><button class="button quiet small" type="button" data-go="${html(intakeReturn)}">← Volver al inventario</button></div><section class="card"><h2>Seleccionar archivo</h2>
         <p class="subtle">Se admiten JSON de captura e inventarios CSV (UTF-8; comas o punto y coma). Máximo 2 MiB y 500 filas. Los datos se procesan localmente, sin conexiones a red.</p>
         <label for="intake-block">Destino en el inventario</label>
         <select id="intake-block"><option value="assets" ${block==='assets'?'selected':''}>Hardware</option><option value="networks" ${block==='networks'?'selected':''}>Redes</option><option value="software" ${block==='software'?'selected':''}>Software</option></select>
@@ -1196,7 +1196,7 @@
       if(key){const row=[...workspace.querySelectorAll('[data-entry-key]')].find(el=>el.dataset.entryKey===key);if(row){row.classList.add('quality-target');row.scrollIntoView({block:'center',behavior:'smooth'});row.focus({preventScroll:true})}}
       return;
     }
-    if(b.dataset.go){move(b.dataset.go);return}
+    if(b.dataset.go){if(b.dataset.go==='intake'&&['assets','networks','software'].includes(page)){intakeReturn=page;intakeBlock=page;intakePreview=null;intakeSelected.clear();intakeError='';}move(b.dataset.go);return}
     if(b.id==='install-pwa'){alert('Instala desde el menú del navegador: Instalar aplicación / Añadir a pantalla de inicio. Requiere HTTPS o localhost y compatibilidad PWA.');return;}
     if(b.id==='check-connectivity'){byId('online-status').textContent=navigator.onLine?'Conexión disponible según el navegador. La disponibilidad de servicios externos no se garantiza.':'Sin conexión según el navegador. No se ha contactado con ningún servidor.';return}
     if(b.id==='member-add'){
