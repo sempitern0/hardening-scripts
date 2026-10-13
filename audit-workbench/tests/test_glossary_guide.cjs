@@ -27,7 +27,7 @@ assert.equal(new Set(g.TERMS.map(x=>x.id)).size,g.TERMS.length,'Duplicate term I
 const app=fs.readFileSync(path.join(root,'js/app.js'),'utf8'),css=fs.readFileSync(path.join(root,'css/glossary.css'),'utf8'),sw=fs.readFileSync(path.join(root,'sw.js'),'utf8');
 for(const marker of ['glossary-index','glossary-detail','glossary-category','glossary-search','renderGlossaryDetail','data-glossary-select'])assert(app.includes(marker),marker);
 assert(css.includes('.glossary-layout')&&css.includes('@media(max-width:760px)'),'Adaptive layout missing');
-assert(sw.includes('v26-contextual-help'),'Service worker cache not invalidated');
+assert(sw.includes('v27-inventory-intake'),'Service worker cache not invalidated');
 const incident=g.TERMS.find(t=>t.title==='Respuesta a incidentes');
 assert(incident?.help?.phone==='017','INCIBE help must be limited to incident response');
 assert(incident.help.officialUrl.startsWith('https://www.incibe.es/'),'INCIBE official help URL');
