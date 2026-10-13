@@ -15,6 +15,10 @@ $networks=@(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
 $serviceRows=@(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Where-Object {$_.State -eq 'Running'} | Select-Object -First 35 | ForEach-Object {
  [ordered]@{name=[string]$_.Name;asset=[string]$env:COMPUTERNAME;notes='Servicio en ejecución detectado; versión y exposición por verificar.'}
 })
+$packages=@(Get-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+ Where-Object { $_.DisplayName } | Select-Object -First 30 | ForEach-Object {
+ [ordered]@{name=[string]$_.DisplayName;version=[string]$_.DisplayVersion;vendor=[string]$_.Publisher;asset=[string]$env:COMPUTERNAME;notes='Aplicación registrada; versión y soporte pendientes de verificar.'}
+})
 $diskRows=@(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' -ErrorAction SilentlyContinue | Select-Object -First 12 | ForEach-Object {
  [string]$_.DeviceID+' '+('{0:N1} GiB' -f ($_.Size/1GB))
 })
@@ -33,7 +37,7 @@ $data=[ordered]@{
     storage=($diskRows -join '; ')
     notes='Captura local declarativa; verificar datos antes de incorporar.'
   })
-  networks=$networks;software=$serviceRows
+  networks=$networks;software=@($serviceRows)+@($packages)
  }
 }
 $json=ConvertTo-Json -InputObject $data -Depth 8
