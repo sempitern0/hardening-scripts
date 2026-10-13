@@ -2286,3 +2286,26 @@ button:focus-visible {
 #global-navigation button:is(:hover,.active) .nav-icon { color: #69e1cb; }
 #global-navigation button[aria-current="page"] { background: #21364b; color: #fff; box-shadow: inset 3px 0 var(--sidebar-active,#34c4a7); }
 @media (prefers-reduced-motion: reduce) { #global-navigation button .nav-icon { transition: none; } }
+
+/* Sidebar connectivity: status is not equivalent to public Internet access. */
+.network-panel{padding:15px 8px 3px}
+.network-head{display:flex;align-items:flex-start;gap:10px}
+.network-symbol{display:grid;place-items:center;flex:none;width:31px;height:31px;border-radius:9px;background:#364b5c;color:#d0dbe2}
+.network-glyph{display:none;width:20px;height:20px}
+.network-copy{min-width:0;flex:1}
+.network-copy strong{display:block;font-size:12px;line-height:1.45;color:#e3ecf2}
+.network-copy small{display:block;margin-top:3px;font-size:10.5px;line-height:1.45;color:#a5bac9}
+.network-panel[data-state="unknown"] .network-glyph-warning,
+.network-panel[data-state="checking"] .network-glyph-warning,
+.network-panel[data-state="unverified"] .network-glyph-online,
+.network-panel[data-state="reachable"] .network-glyph-reachable,
+.network-panel[data-state="offline"] .network-glyph-offline{display:block}
+.network-panel[data-state="offline"] .network-symbol{background:#492935;color:#ff9ba7}
+.network-panel[data-state="unverified"] .network-symbol,
+.network-panel[data-state="checking"] .network-symbol{background:#584424;color:#ffdb8c}
+.network-panel[data-state="reachable"] .network-symbol{background:#194c42;color:#7de2bc}
+.network-check{display:inline-flex;align-items:center;gap:6px;border:1px solid #476071;border-radius:7px;background:transparent;color:#ccdce6;font-size:10.5px;font-weight:650;padding:6px 8px;margin-top:10px;max-width:100%;cursor:pointer}
+.network-check:hover{background:#294154;color:white}
+.network-check:focus-visible{outline:2px solid #d8eaf6;outline-offset:2px}
+.network-check:disabled{cursor:wait;opacity:.65}
+@media print{.network-panel{display:none}}
