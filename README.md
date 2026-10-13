@@ -813,7 +813,7 @@ policies-filesystem-acl.txt
 gpo-create-<name>.txt
 ```
 
-### Por qué una membresía correcta puede seguir fallando
+### Why valid group membership can still fail
 
 Ver:
 
@@ -822,62 +822,62 @@ Domain Admins       : member
 GPO Creator Owners  : member
 ```
 
-confirma el **estado del directorio**, pero no demuestra que un TGT Kerberos ya emitido contenga esas autorizaciones. Si un usuario se añadió recientemente a un grupo privilegiado, un ticket anterior puede seguir representando el token viejo.
+confirms **directory state**, but does not prove that an existing Kerberos TGT contains those authorizations. If a user was recently added to a privileged group, an older ticket may still represent the previous token.
 
-Por eso el preflight fuerza un nuevo `kinit` antes de la primera mutación GPO del run. Esto evita diagnosticar como "ACL roto" lo que en realidad era un PAC/ticket antiguo.
+The preflight therefore forces a new `kinit` before the first GPO change in the run. This avoids misdiagnosing an old PAC/ticket as a broken ACL.
 
-Además, históricamente han existido diferencias y problemas de Samba alrededor de la delegación mediante `Group Policy Creator Owners`. Para operaciones administrativas críticas, la membresía de `Domain Admins` con un ticket fresco es una referencia diagnóstica más fuerte; no conviene modificar ACLs de SYSVOL únicamente para compensar una delegación que todavía no se ha aislado correctamente.
+Historically, Samba has also had differences and issues surrounding delegation through `Group Policy Creator Owners`. For critical administrative operations, `Domain Admins` membership with a fresh ticket is stronger diagnostic evidence; do not modify SYSVOL ACLs merely to compensate for delegation that has not yet been properly isolated.
 
-### Interpretar un fallo de `samba-tool gpo create`
+### Interpreting a `samba-tool gpo create` failure
 
-El asistente conserva la salida completa y muestra una clasificación inicial:
+The assistant preserves the full output and provides an initial classification:
 
-| Evidencia | Frontera probable | Primer paso |
+| Evidence | Likely boundary | First step |
 |---|---|---|
-| `LDAP_INSUFFICIENT_ACCESS_RIGHTS`, `LDAP error 50` | ACL/autorización en `CN=Policies,CN=System` o token Kerberos antiguo | refrescar ticket y revisar `policies-container-dsacl.txt` |
-| `NT_STATUS_ACCESS_DENIED` | autorización SMB/NT ACL de SYSVOL | revisar `sysvol-smb-write.txt` y ACL de `Policies` |
-| `KDC_ERR*`, SPNEGO/GSSAPI, `LOGON_FAILURE` | Kerberos, DNS, SPN o tiempo | revisar `kvno-ldap.txt`, `kvno-cifs.txt`, DNS y reloj |
-| error creando directorio temporal | problema local `/tmp`, espacio o privilegio Unix | revisar root, permisos y almacenamiento |
-| `gpo aclcheck` falla pero `sysvolcheck` y write probe pasan | inconsistencia en alguna GPO existente | inspeccionar `gpo-aclcheck.txt`; no asumir que todo SYSVOL está roto |
+| `LDAP_INSUFFICIENT_ACCESS_RIGHTS`, `LDAP error 50` | ACL/authorization in `CN=Policies,CN=System` or an old Kerberos token | refresh the ticket and inspect `policies-container-dsacl.txt` |
+| `NT_STATUS_ACCESS_DENIED` | SYSVOL SMB/NT ACL authorization | inspect `sysvol-smb-write.txt` and the `Policies` ACL |
+| `KDC_ERR*`, SPNEGO/GSSAPI, `LOGON_FAILURE` | Kerberos, DNS, SPN, or time | inspect `kvno-ldap.txt`, `kvno-cifs.txt`, DNS, and clock |
+| error creating temporary directory | local `/tmp`, free space, or Unix privilege issue | inspect root, permissions, and storage |
+| `gpo aclcheck` fails but `sysvolcheck` and the write probe succeed | inconsistency in an existing GPO | inspect `gpo-aclcheck.txt`; do not assume all of SYSVOL is broken |
 
-### `sysvolcheck`, `gpo aclcheck` y `sysvolreset` no son equivalentes
+### `sysvolcheck`, `gpo aclcheck`, and `sysvolreset` are not equivalent
 
-`ntacl sysvolcheck` comprueba que los ACL de SYSVOL coincidan con lo esperado por Samba. `gpo aclcheck` compara aspectos de los ACL de las GPO entre LDAP y SYSVOL. Un fallo en uno no identifica automáticamente la reparación correcta.
+`ntacl sysvolcheck` checks whether SYSVOL ACLs match Samba's expectations. `gpo aclcheck` compares GPO ACL properties between LDAP and SYSVOL. A failure in either check does not automatically identify the correct repair.
 
-No ejecutes `samba-tool ntacl sysvolreset` únicamente porque falle la creación de una GPO o `gpo aclcheck`. Es una operación amplia sobre ACL de SYSVOL y debe tratarse como **último recurso**, después de:
+Do not run `samba-tool ntacl sysvolreset` merely because GPO creation or `gpo aclcheck` fails. This is a broad SYSVOL ACL operation and should be treated as a **last resort**, after:
 
-- backup de dominio;
-- identificar si el rechazo es LDAP o SMB;
-- comprobar el ticket Kerberos efectivo;
-- revisar los ACL concretos afectados;
-- confirmar la versión de Samba y el comportamiento esperado de herencia.
+- backing up the domain;
+- determining whether access is denied by LDAP or SMB;
+- verifying the active Kerberos ticket;
+- inspecting the specific affected ACLs;
+- confirming the Samba version and expected inheritance behavior.
 
-El asistente mantiene `sysvolreset` en el flujo avanzado y nunca lo ejecuta automáticamente tras un fallo GPO.
+The assistant keeps `sysvolreset` in the advanced workflow and never runs it automatically after a GPO failure.
 
-### Flujo recomendado para una GPO que no se crea
+### Recommended workflow for a GPO that cannot be created
 
 ```text
 [11] GPO mutation preflight
           │
-          ├─ LDAP ticket FAIL ──> DNS / hora / SPN / Kerberos
+          ├─ LDAP ticket FAIL ──> DNS / time / SPN / Kerberos
           │
           ├─ CIFS ticket FAIL ──> SPN CIFS / DNS / Kerberos
           │
-          ├─ SYSVOL read FAIL ──> autenticación SMB / share
+          ├─ SYSVOL read FAIL ──> SMB authentication / share
           │
-          ├─ SYSVOL create FAIL -> NT ACL / autorización efectiva
+          ├─ SYSVOL create FAIL -> NT ACL / effective authorization
           │
-          ├─ sysvolcheck FAIL ──> investigar ACL local/NT ACL antes de reparar
+          ├─ sysvolcheck FAIL ──> investigate local ACL/NT ACL before repair
           │
           └─ todo PASS
                  │
                  └─ retry Create GPO
                         │
-                        └─ si falla: revisar gpo-create-*.txt
-                           para distinguir LDAP add de SMB/set_acl
+                        └─ if it fails: inspect gpo-create-*.txt
+                           to distinguish LDAP add from SMB/set_acl
 ```
 
-Para un administrador delegado recién añadido a grupos privilegiados, salir/entrar de una sesión de escritorio **no es el mecanismo relevante para el asistente**: utiliza un ccache privado por ejecución y el preflight solicita un ticket fresco explícitamente.
+For a delegated administrator recently added to privileged groups, signing out of and back into a desktop session **is not the relevant mechanism for this assistant**: it uses a private credential cache for each run, and the preflight explicitly requests a fresh ticket.
 
 ---
 
