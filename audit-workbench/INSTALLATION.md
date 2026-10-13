@@ -1,106 +1,106 @@
-# Instalación y actualización de Audit Workbench
+# Installing and updating Audit Workbench
 
-Esta guía está dirigida a auditores y administradores que necesitan usar la aplicación en escritorio, tablet o móvil, con conectividad limitada.
+This guide is for auditors and administrators who need to use the application on desktops, tablets, or phones, including in environments with limited connectivity.
 
-## Antes de empezar
+## Before you start
 
-- Elige **una URL estable** para tus expedientes; el navegador asocia IndexedDB al origen. `http://localhost:8765` y `http://127.0.0.1:8765` tienen almacenes distintos.
-- Exporta un **backup JSON completo** antes de actualizar, reinstalar o modificar el perfil del navegador.
-- Un PDF no permite restaurar una auditoría. CSV y XLSX tampoco.
-- El proyecto se distribuye sin cuentas, telemetría ni servicios online obligatorios.
+- Choose **one stable URL** for your audit records; the browser associates IndexedDB with the origin. `http://localhost:8765` and `http://127.0.0.1:8765` use separate stores.
+- Export a **full JSON backup** before updating, reinstalling, or changing browser profiles.
+- A PDF cannot restore an audit. Neither can CSV or XLSX files.
+- The project is distributed without accounts, telemetry, or mandatory online services.
 
 ## Windows
 
-Desde una copia del repositorio:
+From a copy of the repository:
 
 ```powershell
 cd audit-workbench
 .\audit-workbench.ps1
 ```
 
-Para actualizar los archivos instalados:
+To update the installed files:
 
 ```powershell
 .\audit-workbench.ps1 -Update
 ```
 
-También puedes servir los archivos con Python desde la carpeta `audit-workbench/`:
+You can also serve the files with Python from the `audit-workbench/` directory:
 
 ```powershell
 py -m http.server 8765 --bind 127.0.0.1
 ```
 
-Abre `http://127.0.0.1:8765` en tu navegador. Si trabajaste antes con otra dirección, importa el backup JSON desde ese perfil.
+Open `http://127.0.0.1:8765` in your browser. If you previously used a different address, import the JSON backup from the earlier browser profile.
 
-## Linux y macOS
+## Linux and macOS
 
-Desde el repositorio:
+From the repository:
 
 ```bash
 cd audit-workbench
 bash ./audit-workbench.sh
 ```
 
-Para actualizar:
+To update:
 
 ```bash
 bash ./audit-workbench.sh --update
 ```
 
-Servidor local opcional:
+Optional local server:
 
 ```bash
 python3 -m http.server 8765 --bind 127.0.0.1
 ```
 
-Para instalar sin abrir navegador, añade `--no-open`. Para elegir carpeta de destino usa `--dir RUTA`. Ambas instalaciones incluyen los módulos `js/`, `css/`, `fonts/` y `icons/`.
+Add `--no-open` to install without opening a browser. Use `--dir PATH` to choose a destination directory. Both installers include the `js/`, `css/`, `fonts/`, and `icons/` modules.
 
-## Tablet y móvil: instalación PWA
+## Tablet and mobile: PWA installation
 
-La instalación desde navegador requiere, en general, **una primera carga HTTPS** desde un servidor fiable y accesible al dispositivo. Un ZIP por sí mismo **no es un APK o IPA instalable**.
+Browser installation generally requires an **initial HTTPS load** from a trusted server accessible to the device. A ZIP file by itself **is not an installable APK or IPA**.
 
-1. Publica **solo los archivos estáticos** de `audit-workbench/` en una intranet o alojamiento HTTPS con certificado válido. Nunca publiques JSON, PDFs o evidencias confidenciales.
-2. Accede desde Chrome/Edge (Android) o Safari (iPhone/iPad) y espera a que cargue la aplicación.
-3. En Android usa la opción **Instalar aplicación** o **Añadir a pantalla de inicio**, si se ofrece. En iOS/iPadOS utiliza **Compartir → Añadir a pantalla de inicio**.
-4. Abre la aplicación desde su icono y comprueba que funciona sin conexión antes de llevarla a una red aislada.
-5. Exporta backups JSON regularmente a una ubicación protegida. En tablets, las APIs para elegir carpetas pueden no estar disponibles.
+1. Publish **only the static files** in `audit-workbench/` on an intranet or HTTPS host with a valid certificate. Never publish confidential JSON files, PDFs, or evidence.
+2. Open the site using Chrome/Edge (Android) or Safari (iPhone/iPad) and wait for the application to load.
+3. On Android, use **Install app** or **Add to Home Screen**, if offered. On iOS/iPadOS, use **Share → Add to Home Screen**.
+4. Launch the application from its icon and confirm that it runs offline before taking it into an isolated network.
+5. Export JSON backups regularly to protected storage. Folder-selection APIs may not be available on tablets.
 
-Las opciones exactas dependen de navegador y versión del sistema; la PWA y sus datos siguen sujetos a las políticas de almacenamiento del dispositivo.
+The exact options depend on the browser and operating system version; the PWA and its data remain subject to the device's storage policies.
 
-## Uso sin servidor
+## Use without a server
 
-Puedes abrir `index.html` como archivo local para un uso básico, pero `file://` no ofrece las mismas garantías de almacenamiento y **no permite instalar la PWA mediante service worker**. Para trabajo continuado utiliza un origen estable.
+You can open `index.html` as a local file for basic use, but `file://` does not provide the same storage guarantees and **cannot install the PWA using a service worker**. Use a stable origin for ongoing work.
 
-## Migrar o recuperar expedientes
+## Migrating or recovering audit records
 
-1. En el equipo anterior entra en **Copias y exportaciones → Descargar backup completo (.json)**.
-2. Copia el JSON utilizando un canal aprobado y protegido por cifrado.
-3. Abre Audit Workbench en el nuevo dispositivo, pulsa **Importar** y elige el archivo.
-4. Comprueba cliente, inventarios, hallazgos, evidencias e informe generado. No elimines el original hasta verificar la restauración.
+1. On the previous device, go to **Backups and exports → Download full backup (.json)**.
+2. Copy the JSON using an approved, encrypted channel.
+3. Open Audit Workbench on the new device, select **Import**, and choose the file.
+4. Check the client, inventories, findings, evidence, and generated report. Do not delete the original until recovery has been verified.
 
-Las copias automáticas a carpeta solo funcionan en navegadores compatibles, con permiso activo y la aplicación abierta. No constituyen sincronización entre dispositivos.
+Automatic folder backups work only in compatible browsers, while permission remains active and the application is open. They do not synchronize data across devices.
 
-## Actualizaciones de la PWA
+## PWA updates
 
-La caché de la aplicación se actualiza por versiones y **no almacena los expedientes**. Después de actualizar el código, cierra y vuelve a abrir la aplicación y recarga la página. Si continúas viendo recursos anteriores, revisa **Herramientas de desarrollo → Application → Service Workers**.
+The application's cache is versioned and **does not store audit records**. After updating the code, close and reopen the application and reload the page. If older resources continue to appear, check **Developer Tools → Application → Service Workers**.
 
-**No utilices «Clear site data» sin disponer de un backup comprobado:** podrías borrar los expedientes locales.
+**Do not use "Clear site data" without a verified backup:** you could delete locally stored audit records.
 
-## Resolución de problemas
+## Troubleshooting
 
-| Problema | Diagnóstico y solución |
+| Problem | Diagnosis and resolution |
 | --- | --- |
-| El buscador aparece oscuro en tema claro | Actualiza la versión, comprueba `css/contrast.css` y que el service worker haya renovado los estilos |
-| Las fuentes Atkinson no se muestran | Comprueba `css/atkinson.css`, los cuatro WOFF2 en `fonts/` y que no haya errores CSP |
-| Los expedientes han desaparecido | Verifica origen, puerto, perfil, modo privado y restauración JSON |
-| La PWA no se ofrece como instalable | Comprueba HTTPS, manifiesto, service worker y compatibilidad |
-| PDF con saltos o sin colores | Selecciona A4; revisa vista previa y opciones de imprimir fondos |
-| Falla una conexión WebDAV | Confirma HTTPS, permisos mínimos, contraseña de aplicación y configuración del servidor |
-| Un sistema operativo/modelo no aparece | Escribe el valor personalizado; los catálogos no son listas exhaustivas |
+| Search box is dark in the light theme | Update the application; check `css/contrast.css` and whether the service worker has refreshed styles |
+| Atkinson fonts do not appear | Check `css/atkinson.css`, the four WOFF2 files in `fonts/`, and any CSP errors |
+| Audit records have disappeared | Check origin, port, profile, private mode, and JSON recovery |
+| PWA is not offered for installation | Check HTTPS, manifest, service worker, and browser compatibility |
+| PDF has unwanted page breaks or no colors | Select A4; inspect print preview and enable background printing |
+| WebDAV connection fails | Verify HTTPS, least-privilege permissions, app password, and server configuration |
+| Operating system/model is not listed | Enter a custom value; the catalogs are not exhaustive |
 
-## Descarga puntual de instaladores
+## Downloading installers individually
 
-Para comprobarlos antes de ejecutarlos:
+To inspect them before execution:
 
 ```bash
 curl -fL -o audit-workbench.sh 'https://raw.githubusercontent.com/sempitern0/sysadmin/main/audit-workbench/audit-workbench.sh'
@@ -114,6 +114,6 @@ Get-Content .\audit-workbench.ps1
 .\audit-workbench.ps1
 ```
 
-Evita ejecutar directamente scripts de Internet mediante tuberías sin inspeccionarlos. Los instaladores realizan la descarga inicial; el trabajo ordinario en la aplicación sigue siendo offline.
+Avoid piping scripts directly from the Internet into an interpreter without inspecting them. The installers perform the initial download; ordinary work in the application remains offline.
 
-Para manejo de información sensible consulta [SECURITY.md](SECURITY.md). Para funciones del asistente consulta [README.md](README.md).
+For handling sensitive information, see [SECURITY.md](SECURITY.md). For assistant features, see [README.md](README.md).
