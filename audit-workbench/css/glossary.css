@@ -61,3 +61,16 @@
 .glossary-references a{color:var(--brand);text-decoration:underline;text-underline-offset:.17em}
 .glossary-external-note{font-size:.84rem;color:var(--muted)}
 @media(max-width:500px){.glossary-os-badges{gap:.35rem}}
+
+/* Optional Spanish incident-assistance resource, visible only in its glossary entry. */
+.glossary-help-resource{margin:1.1rem 0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--canvas)}
+.glossary-help-resource summary{display:flex;align-items:center;gap:.65rem;padding:.85rem 1rem;cursor:pointer;font-weight:750;color:var(--ink)}
+.glossary-help-resource summary:hover{background:var(--brand-tint)}
+.glossary-help-resource summary:focus-visible{outline:3px solid var(--brand);outline-offset:-3px}
+.glossary-resource-mark{font-size:1rem;color:var(--brand)}
+.glossary-help-content{border-top:1px solid var(--line);padding:1rem;background:var(--paper)}
+.glossary-help-content p{line-height:1.6;margin:0 0 .75rem}
+.glossary-help-content a{color:var(--brand);text-decoration:underline;text-underline-offset:.18em;overflow-wrap:anywhere}
+.glossary-help-phone{display:flex;align-items:center;flex-wrap:wrap;gap:.8rem}
+.glossary-help-phone a{font-size:1.35rem;font-weight:800}
+.glossary-help-phone span,.glossary-help-privacy{font-size:.88rem;color:var(--muted)}
