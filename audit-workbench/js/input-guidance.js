@@ -96,6 +96,68 @@
     if(block==='settings'&&field==='taxId')return documentPlaceholder(obj?.taxType);
     return EXAMPLES[block]?.[field]||'';
   }
+
+  // Enhance fields after each SPA render, without changing the audit data schema.
+  const flags={ES:'🇪🇸',PT:'🇵🇹',FR:'🇫🇷',DE:'🇩🇪',IT:'🇮🇹',GB:'🇬🇧',US:'🇺🇸',MX:'🇲🇽',AR:'🇦🇷',CO:'🇨🇴',BR:'🇧🇷',CL:'🇨🇱',PE:'🇵🇪'};
+  function enhance(root){
+    if(!root)return;
+  }
+  function apply(root){
+    if(!root)return;
+    for(const input of root.querySelectorAll('input[data-field],input[data-member-field]')){
+      if(input.dataset.guidanceReady)continue;
+      const field=input.dataset.field||input.dataset.memberField;
+      const block=input.dataset.block||'member';
+      if(field==='phone'||field==='clientPhone'){
+        const saved=input.value,country=detect(saved);
+        const wrap=document.createElement('div');wrap.className='phone-widget';
+        const select=document.createElement('select');select.className='phone-country';select.setAttribute('aria-label','País y prefijo telefónico');
+        for(const c of [...COUNTRIES,OTHER]){
+          const option=document.createElement('option');option.value=c.id;option.textContent=(flags[c.id]||'🌐')+' '+c.name+(c.dial?' (+'+c.dial+')':'');
+          if(c.id===country.id)option.selected=true;
+          select.appendChild(option);
+        }
+        input.parentNode.insertBefore(wrap,input);wrap.appendChild(select);wrap.appendChild(input);
+        input.type='tel';input.setAttribute('inputmode','tel');input.setAttribute('autocomplete','tel');
+        input.dataset.guidanceReady='phone';
+        input.placeholder=country.example;
+        input.value=country.id==='OTHER'?saved:format(national(saved,country.id),country.id);
+        select.addEventListener('change',()=>{
+          const old=input.value,next=byId(select.value);
+          input.value=old&&country.id!==next.id?'':format(old,next.id);
+          input.placeholder=next.example;
+          country.id=next.id;
+          input.dispatchEvent(new Event('input',{bubbles:true}));
+          input.focus();
+        });
+        input.addEventListener('input',()=>{
+          const c=byId(select.value);
+          const display=c.id==='OTHER'?input.value:format(input.value,c.id);
+          const stored=international(display,c.id);
+          input.value=stored;
+          queueMicrotask(()=>{if(input.isConnected){input.value=display;}});
+        },true);
+      }else{
+        const type=field==='clientTaxId'?'clientIdType':field==='contactId'?'contactIdType':field==='taxId'?'taxType':field==='documentId'?'idType':null;
+        const owner=input.closest('.member-card');
+        const select=type?(owner?owner.querySelector('[data-member-field="idType"]'):root.querySelector('[data-block="'+block+'"][data-field="'+type+'"]')):null;
+        const update=()=>{input.placeholder=type?documentPlaceholder(select?.value):placeholder(block,field,{});};
+        update();
+        if(select)select.addEventListener('change',update);
+        input.dataset.guidanceReady='hint';
+      }
+    }
+  }
+  function start(){
+    const root=document.getElementById('workspace');if(!root)return;
+    apply(root);
+    new MutationObserver(()=>apply(root)).observe(root,{childList:true,subtree:true});
+  }
+  if(typeof document!=='undefined'){
+    if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});
+    else start();
+  }
+
   globalThis.AuditInputGuidance=Object.freeze({
     COUNTRIES,OTHER,byId,detect,national,format,international,validate,placeholder,documentPlaceholder,onlyDigits
   });
