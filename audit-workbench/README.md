@@ -1,5 +1,7 @@
 # Audit Workbench · sysadmin
 
+**English** · [Español](README_ES.md)
+
 [← Back to the sysadmin repository](../README.md) · [Installation](INSTALLATION.md) · [Security](SECURITY.md) · [Legal notes](LEGAL.md)
 
 **Offline-first technical auditing, inventory, and documentation tool** for recording assets, evaluating controls, documenting findings and evidence, planning remediation, and preparing client reports.
