@@ -540,13 +540,61 @@
   }
   function pill(v){return `<span class="pill ${level(v)}">${html(v||'Sin clasificar')}</span>`}
   function metric(title,note,count){return `<div class="stat"><span class="metric">${count}</span><span class="metric-caption">${title}</span><span class="metric-foot">${note}</span></div>`}
-  function renderGlossary(){
-    const results=glossary?.TERMS||[];
-    return `<span class="eyebrow">AYUDA / CONSULTA OFFLINE</span><h1 class="page-title">Diccionario técnico</h1><p class="lead">Explicaciones sencillas para comprender los controles, sin sustituir la comprobación técnica.</p><section class="card"><label for="glossary-search">Buscar concepto</label><input id="glossary-search" type="search" placeholder="Ej.: red segmentada, CVE, RPO…" autocomplete="off" aria-controls="glossary-results"><p class="subtle">Términos y ejemplos de verificación. Funcionan sin conexión.</p><div id="glossary-results" class="glossary-grid">${results.map(renderTerm).join('')}</div></section>`;
+  let glossaryQuery='', glossaryCategory='Todas', glossarySelected='';
+  function glossaryResults(){return glossary?.search(glossaryQuery,glossaryCategory)||[]}
+  function glossaryEmphasis(value){
+    const safe=html(value);
+    const words=glossaryQuery.trim().split(/\s+/).filter(x=>x.length>1).slice(0,5);
+    if(!words.length)return safe;
+    const escaped=words.map(x=>x.replace(/[^\p{L}\p{N}]/gu, ch=>'\\'+ch));
+    // Highlight only within plain escaped text; never interpret user input as HTML.
+    const regex=new RegExp('('+escaped.join('|')+')','gi');
+    return safe.split(/(&[^;]+;)/g).map(chunk=>chunk.startsWith('&')?chunk:chunk.replace(regex,'<mark>$1</mark>')).join('');
   }
-  function renderTerm(term){return `<article class="glossary-term" id="glossary-${html(term.id)}"><span class="glossary-tag">${html(term.category)}</span><h2>${html(term.title)}</h2><p>${html(term.description)}</p><p><strong>Cómo comprobarlo:</strong> ${html(term.check)}</p></article>`}
-  function openGlossary(term){page='glossary';render();if(term){const input=byId('glossary-search');input.value=term;filterGlossary(term)}scrollTo(0,0)}
-  function filterGlossary(q){const el=byId('glossary-results');if(!el)return;const items=glossary?.search(q)||[];el.innerHTML=items.length?items.map(renderTerm).join(''):'<p class="subtle">No se encontraron conceptos. Prueba otra palabra.</p>'}
+  function renderGlossary(){
+    const terms=glossaryResults();
+    if(!terms.some(t=>t.id===glossarySelected))glossarySelected=terms[0]?.id||'';
+    const selected=glossary?.byId(glossarySelected);
+    const cats=['Todas',...(glossary?.CATEGORIES||[])];
+    return `<span class="eyebrow">CONSULTA TÉCNICA · OFFLINE</span><h1 class="page-title">Diccionario técnico</h1>
+      <p class="lead">Busca un concepto, selecciona una categoría y consulta una explicación práctica sin salir del asistente.</p>
+      <section class="glossary-shell" aria-label="Diccionario técnico">
+        <div class="glossary-toolbar"><label for="glossary-search">Buscar términos o sinónimos</label>
+          <input id="glossary-search" type="search" autocomplete="off" placeholder="Ej.: red segmentada, 2FA, DNS…" value="${html(glossaryQuery)}" aria-controls="glossary-index">
+          <span class="glossary-counter" id="glossary-count" aria-live="polite">${terms.length} de ${glossary.TERMS.length} conceptos</span>
+        </div>
+        <div class="glossary-categories" role="group" aria-label="Filtrar por temática">${cats.map(cat=>`<button type="button" class="glossary-category ${cat===glossaryCategory?'is-active':''}" data-glossary-category="${html(cat)}" aria-pressed="${cat===glossaryCategory}">${html(cat)}</button>`).join('')}</div>
+        <div class="glossary-layout">
+          <div class="glossary-index-panel"><h2>Índice de conceptos</h2><div id="glossary-index" class="glossary-index" role="group" aria-label="Conceptos disponibles">${renderGlossaryIndex(terms)}</div></div>
+          <div id="glossary-detail" class="glossary-detail" aria-live="polite">${renderGlossaryDetail(selected)}</div>
+        </div>
+      </section>`;
+  }
+  function renderGlossaryIndex(terms){
+    return terms.length?terms.map(t=>`<button type="button" class="glossary-entry ${t.id===glossarySelected?'is-active':''}" data-glossary-select="${html(t.id)}" aria-pressed="${t.id===glossarySelected}"><span class="glossary-entry-title">${glossaryEmphasis(t.title)}</span><span class="glossary-entry-category">${html(t.category)}</span></button>`).join(''):'<p class="glossary-empty">No hay coincidencias. Prueba otra palabra o categoría.</p>';
+  }
+  function renderGlossaryDetail(t){
+    if(!t)return '<div class="glossary-empty">Selecciona un concepto del índice.</div>';
+    return `<article class="glossary-article"><span class="glossary-kicker">${html(t.category)}</span><h2>${html(t.title)}</h2><div class="glossary-definition">${glossaryEmphasis(t.description)}</div>
+      ${t.why?`<section class="glossary-section glossary-why"><h3>Por qué importa</h3><p>${glossaryEmphasis(t.why)}</p></section>`:''}
+      <section class="glossary-section glossary-check"><h3>Qué comprobar en la auditoría</h3><p>${glossaryEmphasis(t.check)}</p></section>
+      ${t.example?`<section class="glossary-section glossary-example"><h3>Ejemplo</h3><p>${html(t.example)}</p></section>`:''}
+      ${t.aliases?.length?`<p class="glossary-aliases"><strong>También se busca como:</strong> ${html(t.aliases.join(', '))}</p>`:''}
+      <p class="glossary-disclaimer">Referencia orientativa. Documenta la prueba realizada y contrasta los criterios con el contexto del cliente.</p></article>`;
+  }
+  function openGlossary(term){
+    glossaryQuery=term||'';glossaryCategory='Todas';glossarySelected='';
+    page='glossary';render();scrollTo(0,0);
+  }
+  function filterGlossary(q){
+    glossaryQuery=q;
+    const terms=glossaryResults();
+    if(!terms.some(t=>t.id===glossarySelected))glossarySelected=terms[0]?.id||'';
+    const index=byId('glossary-index'),detail=byId('glossary-detail'),counter=byId('glossary-count');
+    if(index)index.innerHTML=renderGlossaryIndex(terms);
+    if(detail)detail.innerHTML=renderGlossaryDetail(glossary?.byId(glossarySelected));
+    if(counter)counter.textContent=terms.length+' de '+glossary.TERMS.length+' conceptos';
+  }
   function renderOverview(){
     const counts=Object.fromEntries(severity.map(s=>[s,state.findings.filter(x=>x.severity===s).length]));
     return `<section class="hero"><span class="eyebrow">AUDIT / WORKSPACE</span><h2>${html(state.meta.project||'Tu próxima auditoría, bien documentada.')}</h2><p>Inventario técnico, evaluación de controles, gestión de hallazgos y un informe final coherente. Toda la información permanece en este navegador hasta que tú la exportes.</p><button class="button" data-go="engagement">Comenzar auditoría &rarr;</button></section>
@@ -976,6 +1024,8 @@
   workspace.addEventListener('click',async e=>{
     const b=e.target.closest('button');if(!b)return;
     if(b.dataset.glossaryTerm){openGlossary(b.dataset.glossaryTerm);return;}
+    if(b.dataset.glossarySelect){glossarySelected=b.dataset.glossarySelect;filterGlossary(glossaryQuery);return;}
+    if(b.dataset.glossaryCategory){glossaryCategory=b.dataset.glossaryCategory;glossarySelected='';render();return;}
     if(b.id==='comparison-capture'){
       if(state.followupBaseline)return;
       if(!state.findings.length){alert('Registra primero los hallazgos de la auditoría.');return;}
