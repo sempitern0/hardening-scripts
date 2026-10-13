@@ -27,8 +27,26 @@
       return Number(aClosed)-Number(bClosed) || (RANK[a.severity]??5)-(RANK[b.severity]??5) || a.id.localeCompare(b.id,'es',{numeric:true});
     });
   }
-  function review(audit, relations){
+
+  // Dates and times remain independent for backwards compatibility with older JSON audits.
+  function periodProblems(meta){
     const issues=[];
+    const start=clean(meta?.start),end=clean(meta?.end);
+    const startTime=clean(meta?.startTime),endTime=clean(meta?.endTime);
+    const validTime=/^(?:[01]\\d|2[0-3]):[0-5]\\d$/;
+    if(startTime&&!validTime.test(startTime))issues.push({code:'HORA_INICIO',message:'La hora de inicio debe usar HH:mm (24 horas).'});
+    if(endTime&&!validTime.test(endTime))issues.push({code:'HORA_FIN',message:'La hora de fin debe usar HH:mm (24 horas).'});
+    if(startTime&&!start)issues.push({code:'FECHA_INICIO_REQUERIDA',message:'Se ha indicado hora de inicio pero falta su fecha.'});
+    if(endTime&&!end)issues.push({code:'FECHA_FIN_REQUERIDA',message:'Se ha indicado hora de fin pero falta su fecha.'});
+    if(start&&end){
+      if(end<start || (end===start&&startTime&&endTime&&endTime<startTime))
+        issues.push({code:'PERIODO_INVERTIDO',message:'El fin de la auditoría es anterior al inicio.'});
+    }
+    return issues;
+  }
+  function review(audit, relations, options={}){
+    const issues=[];
+    const finalMode=options?.mode==='final';
     const add=(severity,code,section,message,key='')=>issues.push(makeIssue(severity,code,section,message,key));
     const meta=audit?.meta||{}, findings=audit?.findings||[],controls=audit?.controls||[],evidence=audit?.evidence||[];
     if(!notEmpty(meta.client)) add('blocker','CLIENTE','engagement','Indica la empresa u organización auditada.');
@@ -37,13 +55,27 @@
     if(!Array.isArray(meta.auditTeam)||!meta.auditTeam.some(x=>notEmpty(x?.name)))add('warning','AUDITORES','engagement','Asigna el profesional o equipo responsable del informe.');
     if(!notEmpty(meta.limitations))add('warning','LIMITACIONES','engagement','Documenta las limitaciones reales de la evaluación, aunque sean «Ninguna».');
     if(!notEmpty(meta.rules))add('warning','AUTORIZACION','engagement','Documenta la autorización y reglas de compromiso acordadas.');
-    if(meta.start&&meta.end&&meta.start>meta.end)add('blocker','FECHAS','engagement','La fecha de finalización es anterior a la de inicio.');
+    for(const error of periodProblems(meta))add('blocker',error.code,'engagement',error.message);
+    if((meta.start||meta.end)&&(!meta.startTime||!meta.endTime))
+      add('warning','HORAS_NO_DOCUMENTADAS','engagement','Completa las horas de inicio y fin si se conocen; los expedientes antiguos pueden conservar solo la fecha.');
+    if(finalMode&&meta.end&&meta.end>new Date().toISOString().slice(0,10))
+      add('blocker','AUDITORIA_SIN_FINALIZAR','engagement','La fecha de fin es posterior a hoy. El informe definitivo requiere una auditoría finalizada.');
     if(!controls.length)add('warning','SIN_CONTROLES','controls','No hay controles registrados; explica la metodología y el alcance si es intencional.');
     const pending=controls.filter(c=>['Pendiente','No verificado',''].includes(clean(c.status)));
-    if(pending.length)add('warning','CONTROLES_PENDIENTES','controls',`${pending.length} controles están pendientes o sin verificar. No deben figurar como conformes.`);
+    if(pending.length)add(finalMode?'blocker':'warning','CONTROLES_PENDIENTES','controls',`${pending.length} controles están pendientes o sin verificar. Valida los controles, justifica su exclusión o genera un borrador.`);
     for (const c of controls){
       if(c.status==='No conforme'&&!findings.some(f=>f.originControlKey&&f.originControlKey===c._key)){
         add('blocker','CONTROL_NO_CONFORME','controls',`${clean(c.id)||clean(c.name)||'Control'} no es conforme y no tiene hallazgo de seguimiento.`,clean(c._key));
+      }
+    }
+    const evidenceIds=new Set(evidence.map(e=>clean(e.id).toUpperCase()).filter(Boolean));
+    const evidenceKeys=new Set(evidence.map(e=>clean(e._key)).filter(Boolean));
+    for(const finding of findings){
+      for(const ref of [...new Set(clean(finding.evidenceIds).split(/[\\s,;]+/).filter(Boolean))]){
+        if(!evidenceIds.has(ref.toUpperCase())&&!evidenceKeys.has(ref)){
+          add(finalMode?'blocker':'warning','EVIDENCIA_REFERENCIADA_INEXISTENTE','evidence',
+            `${clean(finding.id)||clean(finding.title)||'Hallazgo'}: referencia ${ref} sin registro de evidencia.`,clean(finding._key));
+        }
       }
     }
     for(const f of findings){
@@ -66,9 +98,9 @@
       if(f.status==='Riesgo aceptado'&&!notEmpty(f.residual))add('warning','ACEPTACION_SIN_JUSTIFICAR','findings',`${name}: documenta justificación, responsable y condiciones de aceptación del riesgo.`,key);
     }
     if(!notEmpty(audit?.final?.executive))add('warning','SIN_RESUMEN','delivery','Completa el resumen ejecutivo para dirección.');
-    if(!notEmpty(audit?.final?.signoff))add('warning','SIN_VALIDACION','delivery','Identifica quién revisa o autoriza la entrega.');
-    for(const msg of relations?.referenceProblems?.(audit)||[])add('warning','REFERENCIA_INCORRECTA','evidence',String(msg).slice(0,300));
+    if(!notEmpty(audit?.final?.signoff))add(finalMode?'blocker':'warning','SIN_VALIDACION','delivery','Identifica quién revisa o autoriza la entrega.');
+    for(const msg of relations?.referenceProblems?.(audit)||[])add(finalMode?'blocker':'warning','REFERENCIA_INCORRECTA','evidence',String(msg).slice(0,300));
     return {issues, blockers:issues.filter(i=>i.severity==='blocker'),warnings:issues.filter(i=>i.severity==='warning'), ready:!issues.some(i=>i.severity==='blocker'), plan:plan(audit)};
   }
-  globalThis.AuditQuality=Object.freeze({review,plan});
+  globalThis.AuditQuality=Object.freeze({review,plan,periodProblems});
 })();
