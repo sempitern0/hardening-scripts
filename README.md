@@ -329,9 +329,9 @@ samba-tool dbcheck --cross-ncs
 ---
 
 <a id="control-plane-enterprise-linux"></a>
-## Control Plane Samba AD · Rocky / AlmaLinux
+## Samba AD Control Plane · Rocky / AlmaLinux
 
-`rhel-ad-assistant.sh` proporciona un asistente de Samba AD DC para **Rocky Linux 9/10 y AlmaLinux 9/10**, condicionado a que el Samba instalado exponga realmente las capacidades de controlador de dominio.
+`rhel-ad-assistant.sh` provides a Samba AD DC assistant for **Rocky Linux 9/10 and AlmaLinux 9/10**, provided the installed Samba build actually supports domain controller capabilities.
 
 ```bash
 sudo bash ./rhel-ad-assistant.sh --audit
@@ -340,22 +340,22 @@ sudo bash ./rhel-ad-assistant.sh --status
 sudo bash ./rhel-ad-assistant.sh --manage
 ```
 
-Para un dominio **nuevo** y solo después de validar soporte y prerrequisitos:
+For a **new** domain, and only after checking support and prerequisites:
 
 ```bash
 sudo bash ./rhel-ad-assistant.sh --bootstrap
 ```
 
-También dispone de espacios de trabajo de DNS, GPO/SYSVOL, seguridad, Kerberos, IDS, copias y operaciones remotas. Consulta `--help` para los modos vigentes; no confundas validación de AD con soporte oficial del producto.
+It also provides DNS, GPO/SYSVOL, security, Kerberos, IDS, backup, and remote operations workspaces. See `--help` for current modes; do not confuse AD validation with official product support.
 
-**Limitación crítica:** en RHEL, el rol Samba AD DC no está soportado por Red Hat. El asistente exige `--allow-unsupported-rhel-dc` y confirmación expresa para permitir ese escenario excepcional; esta guía no lo recomienda como instalación estándar. No desactives SELinux ni sustituyas las validaciones de capacidad para forzar la operación.
+**Critical limitation:** Red Hat does not support the Samba AD DC role on RHEL. The assistant requires `--allow-unsupported-rhel-dc` and express confirmation for this exceptional unsupported scenario; this guide does not recommend it as a standard installation. Do not disable SELinux or bypass capability checks to force the operation.
 
 ---
 
 <a id="control-plane-windows-server"></a>
-## Control Plane Windows Server
+## Windows Server Control Plane
 
-`windows-ad-assistant.ps1` administra Windows Server y Active Directory Domain Services mediante tooling nativo de Microsoft.
+`windows-ad-assistant.ps1` manages Windows Server and Active Directory Domain Services using native Microsoft tooling.
 
 ### Targets principales
 
@@ -364,7 +364,7 @@ También dispone de espacios de trabajo de DNS, GPO/SYSVOL, seguridad, Kerberos,
 - Windows Server 2025;
 - Windows PowerShell 5.1+.
 
-### Modos principales
+### Main modes
 
 ```powershell
 .\windows-ad-assistant.ps1 -Mode Audit
@@ -380,7 +380,7 @@ También dispone de espacios de trabajo de DNS, GPO/SYSVOL, seguridad, Kerberos,
 .\windows-ad-assistant.ps1 -Mode RemoteOps
 ```
 
-Sin `-Mode` abre el control plane interactivo.
+Without `-Mode`, the interactive control plane opens.
 
 #### Workspaces
 
@@ -391,20 +391,20 @@ Sin `-Mode` abre el control plane interactivo.
 [M] Maintenance            [A] All modules
 ```
 
-Funciones relevantes:
+Relevant capabilities:
 
-- provisioning de un bosque nuevo;
-- inventario y auditoría del host;
-- usuarios, grupos, equipos y OUs;
-- GPO y DNS integrado;
-- DCDiag, replicación, SYSVOL y FSMO;
-- hardening de Windows y protocolos de directorio;
-- backup de configuración y system state;
-- dependencias/features de Windows;
-- migración de dominio;
+- provisioning a new forest;
+- host inventory and auditing;
+- users, groups, computers, and OUs;
+- GPO and integrated DNS;
+- DCDiag, replication, SYSVOL, and FSMO;
+- hardening Windows and directory protocols;
+- configuration and system-state backups;
+- Windows dependencies and features;
+- domain migration;
 - Suricata/EVE;
-- operaciones remotas WinRM/SSH;
-- demotion/decommission controlado.
+- WinRM/SSH remote operations;
+- controlled demotion/decommission.
 
 #### Provisioning
 
@@ -412,44 +412,44 @@ Funciones relevantes:
 .\windows-ad-assistant.ps1 -Mode Provision
 ```
 
-Utiliza las herramientas soportadas de AD DS y realiza prerequisite checks antes de la promoción.
+It uses supported AD DS tools and performs prerequisite checks before promotion.
 
-Para el primer DC de un bosque, prepara previamente:
+Before establishing the first DC in a forest, prepare:
 
-- hostname definitivo;
-- IPv4 estática;
-- dominio DNS y NetBIOS;
-- acceso administrativo local;
-- hora correcta;
-- acceso alternativo si trabajas remotamente.
+- permanent hostname;
+- static IPv4 address;
+- DNS domain and NetBIOS name;
+- local administrative access;
+- correct time;
+- an alternative access path when working remotely.
 
-#### Backup de Domain Controller
+#### Domain Controller backup
 
-Un export de configuración no sustituye un backup de recuperación de AD DS. En Windows Server, para recuperación real de un DC, utiliza **System State Backup** y una política de backup externa acorde a tu entorno.
+A configuration export is not a substitute for an AD DS recovery backup. On Windows Server, use **System State Backup** and an external backup policy suited to your environment for actual DC recovery.
 
 ---
 
 <a id="asistentes-de-clientes-ad"></a>
-## Asistentes de clientes AD
+## AD client assistants
 
-Los asistentes de cliente están diseñados para que el join sea **observable y recuperable**, especialmente alrededor de DNS y reboot.
+Client assistants are designed to make domain joins **observable and recoverable**, particularly around DNS and reboots.
 
 ### Linux AD Client Assistant
 
-Archivo:
+File:
 
 ```text
 linux-ad-client-assistant.sh
 ```
 
-Targets principales:
+Primary targets:
 
-- Debian / Ubuntu y derivados APT;
-- RHEL / Fedora / Rocky / Alma y derivados DNF/YUM;
+- Debian / Ubuntu and APT derivatives;
+- RHEL / Fedora / Rocky / Alma and DNF/YUM derivatives;
 - systemd;
 - realmd + SSSD + adcli.
 
-Uso:
+Usage:
 
 ```bash
 sudo bash ./linux-ad-client-assistant.sh --audit
@@ -460,25 +460,25 @@ sudo bash ./linux-ad-client-assistant.sh --restore
 sudo bash ./linux-ad-client-assistant.sh --snapshots
 ```
 
-Sin argumentos abre el control plane interactivo.
+Without arguments, the interactive control plane opens.
 
-El flujo de join incluye:
+The join workflow includes:
 
-- selección de interfaz consciente de la ruta;
-- snapshot de resolver, hostname e identidad;
-- instalación controlada de dependencias cuando corresponde;
-- comprobación directa de DNS AD;
-- comprobación de forwarding DNS externo;
-- discovery de Active Directory;
-- autenticación Kerberos mediante ccache privado;
-- join realmd/SSSD;
-- validación post-join;
-- rollback local cuando la membresía todavía no ha sido comprometida;
-- recuperación de intentos interrumpidos.
+- route-aware interface selection;
+- snapshot of resolver, hostname, and identity;
+- controlled installation of dependencies when needed;
+- direct AD DNS verification;
+- verification of external DNS forwarding;
+- Active Directory discovery;
+- Kerberos authentication using a private credential cache;
+- realmd/SSSD join;
+- post-join validation;
+- local rollback while domain membership has not yet been committed;
+- recovery of interrupted attempts.
 
 ### RHEL AD Client Assistant
 
-`rhel-ad-client-assistant.sh` es otra variante de asistente de **cliente Linux de Active Directory** (no un DC). Su código contempla familias APT y DNF/YUM, con systemd como base del ciclo de vida automatizado.
+`rhel-ad-client-assistant.sh` is another **Linux Active Directory client** assistant variant (not a DC). Its code supports APT and DNF/YUM families, with systemd as the basis for automated lifecycle management.
 
 ```bash
 sudo bash ./rhel-ad-client-assistant.sh --audit
@@ -487,7 +487,7 @@ sudo bash ./rhel-ad-client-assistant.sh --diagnostics
 sudo bash ./rhel-ad-client-assistant.sh --status
 ```
 
-Para cambios de membresía dispone de `--join`, `--leave`, `--switch`, `--restore` y `--snapshots`. Los flujos requieren permisos y validación de DNS/Kerberos; ejecuta `--help` en la versión que vayas a usar. `linux-ad-client-assistant.sh` y esta variante **no necesitan desplegarse juntas**: selecciona una implementación tras comprobar sus diferencias y compatibilidad.
+Membership changes use `--join`, `--leave`, `--switch`, `--restore`, and `--snapshots`. These workflows require permissions and DNS/Kerberos validation; run `--help` in the version you intend to use. `linux-ad-client-assistant.sh` and this variant **do not need to be deployed together**: choose one after checking their differences and compatibility.
 
 ### Windows AD Client Assistant
 
@@ -497,9 +497,9 @@ Archivo:
 windows-ad-client-assistant.ps1
 ```
 
-Ejecuta desde Windows PowerShell 5.1+ como administrador.
+Run from Windows PowerShell 5.1+ as Administrator.
 
-#### Modos
+#### Modes
 
 ```powershell
 .\windows-ad-client-assistant.ps1 -Mode Audit
@@ -511,7 +511,7 @@ Ejecuta desde Windows PowerShell 5.1+ como administrador.
 .\windows-ad-client-assistant.ps1 -Mode Recover
 ```
 
-Sin `-Mode` abre el menú interactivo.
+Without `-Mode`, the interactive menu opens.
 
 #### Flujo de join
 
