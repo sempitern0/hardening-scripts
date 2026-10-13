@@ -1,5 +1,7 @@
 # Modelo de seguridad de Audit Workbench
 
+[English](SECURITY.md) · **Español**
+
 ## Superficie
 
 - Aplicación web sin backend, cuentas, servidores propios, cookies de seguimiento, analítica ni librerías externas.
