@@ -1,0 +1,10 @@
+/* Offline glossary and accessible field hints. */
+.glossary-help{display:inline-flex;align-items:center;justify-content:center;min-width:1.75rem;min-height:1.75rem;margin-left:.45rem;padding:.15rem;border:1px solid var(--border,#8296aa);border-radius:50%;background:transparent;color:inherit;font:inherit;font-size:.88rem;vertical-align:middle;cursor:pointer}
+.glossary-help:hover,.glossary-help:focus-visible{outline:2px solid var(--accent,#008f9d);outline-offset:2px}
+.glossary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,20rem),1fr));gap:1rem;margin-top:1.25rem}
+.glossary-term{padding:1.1rem 1.2rem;border:1px solid var(--border,#9caab5);border-radius:12px;background:var(--aw-field-bg,#fff);color:var(--text,#20303d)}
+.glossary-term h2{font-size:1.12rem;line-height:1.4;margin:.5rem 0}
+.glossary-term p{line-height:1.55;margin:.5rem 0}
+.glossary-tag{font-size:.85rem;font-weight:700;letter-spacing:.03em}
+#glossary-search{display:block;width:100%;min-height:3rem;padding:.7rem .9rem;border-radius:.65rem;border:1px solid var(--border,#8296aa);background:var(--aw-field-bg,#fff);color:inherit;font:inherit}
+@media print {.glossary-help,.glossary-grid{display:none!important}}

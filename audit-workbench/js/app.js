@@ -28,6 +28,8 @@
   // The curated catalogue is offline and has no automatic compatibility claims.
   // Existing custom models remain editable even when absent from the catalogue.
   const vendorModels = window.AuditHardwareCatalog || Object.freeze({});
+  const osCatalog = globalThis.AuditOSCatalog;
+  const glossary = globalThis.AuditGlossary;
   const hardwareVendors = Object.keys(vendorModels);
   const hardwareModels = Object.values(vendorModels).flat();
   const presets = {
@@ -523,16 +525,28 @@
     let control;
     if(type==='textarea')control=`<textarea id="${id}" ${attrs} maxlength="20000">${html(value)}</textarea>`;
     else if(type==='select')control=`<select id="${id}" ${attrs}>${choices.map(x=>`<option value="${html(x)}"${x===value?' selected':''}>${html(x)}</option>`).join('')}</select>`;
+    else if(type==='picker' && ['os','cpu','ram','storage','site','name'].includes(name) && (name!=='name'||block==='software')){
+      const options=name==='os'?(osCatalog?.ALL||choices):choices;
+      const listId='suggest-'+block+'-'+(index===undefined?'main':index)+'-'+name;
+      control=`<input id="${id}" ${attrs} list="${listId}" autocomplete="off" value="${html(value)}" maxlength="20000" placeholder="Escribe para buscar o introduce otro valor"><datalist id="${listId}">${options.map(x=>`<option value="${html(x)}"></option>`).join('')}</datalist>`;
+    }
     else if(type==='picker'){
       // A native select is easier on touchscreens; unlisted values remain editable.
       const options=name==='asset'?[...new Set(['Todo el alcance',...state.assets.map(a=>str(a.name)).filter(Boolean)])]:block==='assets'&&name==='model'?(vendorModels[obj.vendor]||[]):choices;
       const custom=Boolean(value)&&!options.includes(value);
       control=`<select id="${id}" ${attrs} data-preset="true" aria-label="${html(label)}"><option value="">${block==='assets'&&name==='model'&&!obj.vendor?'Selecciona primero un fabricante…':'Seleccionar…'}</option>${options.map(x=>`<option value="${html(x)}"${x===value?' selected':''}>${html(x)}</option>`).join('')}<option value="__custom__"${custom?' selected':''}>Otro / escribir…</option></select><input ${attrs} data-custom="true" aria-label="${html(label)} personalizado" placeholder="Especifica el valor" value="${custom?html(value):''}" maxlength="20000" ${custom?'':'hidden'}>`;
     }else control=`<input id="${id}" type="${type==='date'?'date':'text'}" ${attrs} value="${html(value)}" maxlength="20000"${key==='decimal'?' inputmode="decimal"':''}>`;
-    return `<div class="field${type==='textarea'?' full':''}"><label for="${id}">${html(label)}</label>${control}</div>`;
+    return `<div class="field${type==='textarea'?' full':''}"><label for="${id}">${html(label)}${({os:'EOL / Fin de vida',exposure:'Segmentación de red',cidr:'CIDR',vlan:'VLAN',cvss:'CVSS',sha256:'Evidencia SHA-256',risk:'Riesgo residual'}[name])?` <button type="button" class="glossary-help" data-glossary-term="${html(({os:'EOL / Fin de vida',exposure:'Segmentación de red',cidr:'CIDR',vlan:'VLAN',cvss:'CVSS',sha256:'Evidencia SHA-256',risk:'Riesgo residual'}[name]))}" aria-label="Explicar ${html(label)}">ⓘ</button>`:''}</label>${control}</div>`;
   }
   function pill(v){return `<span class="pill ${level(v)}">${html(v||'Sin clasificar')}</span>`}
   function metric(title,note,count){return `<div class="stat"><span class="metric">${count}</span><span class="metric-caption">${title}</span><span class="metric-foot">${note}</span></div>`}
+  function renderGlossary(){
+    const results=glossary?.TERMS||[];
+    return `<span class="eyebrow">AYUDA / CONSULTA OFFLINE</span><h1 class="page-title">Diccionario técnico</h1><p class="lead">Explicaciones sencillas para comprender los controles, sin sustituir la comprobación técnica.</p><section class="card"><label for="glossary-search">Buscar concepto</label><input id="glossary-search" type="search" placeholder="Ej.: red segmentada, CVE, RPO…" autocomplete="off" aria-controls="glossary-results"><p class="subtle">Términos y ejemplos de verificación. Funcionan sin conexión.</p><div id="glossary-results" class="glossary-grid">${results.map(renderTerm).join('')}</div></section>`;
+  }
+  function renderTerm(term){return `<article class="glossary-term" id="glossary-${html(term.id)}"><span class="glossary-tag">${html(term.category)}</span><h2>${html(term.title)}</h2><p>${html(term.description)}</p><p><strong>Cómo comprobarlo:</strong> ${html(term.check)}</p></article>`}
+  function openGlossary(term){page='glossary';render();if(term){const input=byId('glossary-search');input.value=term;filterGlossary(term)}scrollTo(0,0)}
+  function filterGlossary(q){const el=byId('glossary-results');if(!el)return;const items=glossary?.search(q)||[];el.innerHTML=items.length?items.map(renderTerm).join(''):'<p class="subtle">No se encontraron conceptos. Prueba otra palabra.</p>'}
   function renderOverview(){
     const counts=Object.fromEntries(severity.map(s=>[s,state.findings.filter(x=>x.severity===s).length]));
     return `<section class="hero"><span class="eyebrow">AUDIT / WORKSPACE</span><h2>${html(state.meta.project||'Tu próxima auditoría, bien documentada.')}</h2><p>Inventario técnico, evaluación de controles, gestión de hallazgos y un informe final coherente. Toda la información permanece en este navegador hasta que tú la exportes.</p><button class="button" data-go="engagement">Comenzar auditoría &rarr;</button></section>
@@ -805,7 +819,7 @@
   }
 
   function render(){
-    const inLibrary=['records','backups','online','settings','connections'].includes(page)||!currentId;
+    const inLibrary=['records','backups','online','settings','connections','glossary'].includes(page)||!currentId;
     byId('navigation').hidden=true;
     byId('audit-context').hidden=true;
     byId('workspace-label').textContent='MENÚ PRINCIPAL';
@@ -814,16 +828,16 @@
     byId('audit-context-title').textContent=state.meta.project||state.meta.client||'Auditoría sin título';
     byId('audit-context-ref').textContent=[state.meta.reportId||'SIN REFERENCIA',state.meta.client||'Cliente pendiente'].join(' · ');
     byId('navigation').innerHTML=nav.map(([id,symbol,name])=>`<button type="button" data-go="${id}" class="${page===id?'active':''}" ${page===id?'aria-current="page"':''}><span class="nav-mark">${symbol}</span>${name}</button>`).join('');
-    byId('current-section').textContent=page==='records'?'Biblioteca de auditorías':page==='backups'?'Copias de seguridad':page==='settings'?'Configuración de consultora':page==='connections'||page==='online'?'Conexiones online':nav.find(n=>n[0]===page)?.[2]||'Expediente';
+    byId('current-section').textContent=page==='records'?'Biblioteca de auditorías':page==='backups'?'Copias de seguridad':page==='settings'?'Configuración de consultora':page==='connections'||page==='online'?'Conexiones online':page==='glossary'?'Diccionario técnico':nav.find(n=>n[0]===page)?.[2]||'Expediente';
     byId('active-audit-label').textContent=inLibrary?'Selecciona una auditoría':(state.meta.reportId||'Sin referencia')+' · '+(state.meta.project||state.meta.client||'Sin título');
     byId('btn-export').disabled=inLibrary;
     byId('btn-pdf').disabled=inLibrary;
 
-    byId('workspace').innerHTML=(inLibrary?'':renderWizardTop())+(page==='dashboard'?renderOverview():page==='records'?renderRecords():page==='backups'?renderBackups():page==='settings'?renderSettings():page==='connections'||page==='online'?renderConnections():page==='engagement'?renderEngagement():page==='legal'?renderForm('legal',legalFields,'Cláusulas y privacidad','Modelos editables para auditorías en España. Revisa el contrato y solicita asesoramiento jurídico cuando corresponda.'):page==='quality'?renderQuality():page==='followup'?renderFollowup():page==='delivery'?renderDelivery():renderGroup(page))+(inLibrary?'':renderWizard());
+    byId('workspace').innerHTML=(inLibrary?'':renderWizardTop())+(page==='dashboard'?renderOverview():page==='records'?renderRecords():page==='backups'?renderBackups():page==='settings'?renderSettings():page==='connections'||page==='online'?renderConnections():page==='glossary'?renderGlossary():page==='engagement'?renderEngagement():page==='legal'?renderForm('legal',legalFields,'Cláusulas y privacidad','Modelos editables para auditorías en España. Revisa el contrato y solicita asesoramiento jurídico cuando corresponda.'):page==='quality'?renderQuality():page==='followup'?renderFollowup():page==='delivery'?renderDelivery():renderGroup(page))+(inLibrary?'':renderWizard());
     byId('wizard-step-select')?.addEventListener('change',event=>move(event.target.value));
     for(const target of workspace.querySelectorAll('.field [data-field]:not([data-preset])'))updateValidation(target);
   }
-  function move(section){if(!['records','backups','online','settings','connections'].includes(section)&&!currentId){alert('Primero crea o abre una auditoría desde la biblioteca.');return}if(['records','backups','online','settings','connections'].includes(section)||nav.some(n=>n[0]===section)){page=section;render();scrollTo(0,0)}}
+  function move(section){if(!['records','backups','online','settings','connections','glossary'].includes(section)&&!currentId){alert('Primero crea o abre una auditoría desde la biblioteca.');return}if(['records','backups','online','settings','connections'].includes(section)||nav.some(n=>n[0]===section)){page=section;render();scrollTo(0,0)}}
   function fieldTarget(target){const {block,field,index}=target.dataset;if(!block||!field)return null;if(block==='meta'||block==='final'||block==='legal')return state[block];if(groups[block]&&index!==undefined)return state[block][Number(index)];return null}
   const workspace=byId('workspace');
   byId('global-navigation').addEventListener('click',e=>{const b=e.target.closest('[data-go]');if(b)move(b.dataset.go)});
@@ -831,6 +845,7 @@
   workspace.addEventListener('focusin',event=>{if(event.target.dataset.block==='meta'&&event.target.dataset.field==='client')event.target.dataset.originalClient=event.target.value});
   workspace.addEventListener('input',e=>{
     const t=e.target;
+    if(t.id==='glossary-search'){filterGlossary(t.value);return;}
     if(t.dataset.memberField){
       const member=settings.members.find(m=>m.id===t.dataset.memberId);if(!member)return;
       const field=t.dataset.memberField,limit=field==='name'?160:field==='email'?254:field==='role'?120:field==='documentId'?32:40;
@@ -953,6 +968,7 @@
   });
   workspace.addEventListener('click',async e=>{
     const b=e.target.closest('button');if(!b)return;
+    if(b.dataset.glossaryTerm){openGlossary(b.dataset.glossaryTerm);return;}
     if(b.id==='comparison-capture'){
       if(state.followupBaseline)return;
       if(!state.findings.length){alert('Registra primero los hallazgos de la auditoría.');return;}

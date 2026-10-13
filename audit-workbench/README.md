@@ -255,3 +255,9 @@ La extracción del módulo `audit-storage.js` **no cambia los expedientes existe
 `index.html`, `sw.js` y `manifest.webmanifest` permanecen en la raíz de la aplicación para mantener el alcance offline de la PWA. La lógica JavaScript está en `js/`, las hojas de estilo en `css/`, las cuatro fuentes WOFF2 en `fonts/`, los iconos en `icons/` y las pruebas en `tests/`. Los instaladores Bash y PowerShell siguen en `audit-workbench/`.
 
 Al actualizar, utiliza el instalador con `--update` (Bash) o `-Update` (PowerShell), exporta previamente un backup JSON y vuelve a cargar la aplicación para renovar la caché. La organización de los archivos no modifica la base IndexedDB ni las claves de almacenamiento.
+
+## Búsqueda de sistemas y diccionario técnico
+
+En **Hardware → Sistema operativo / firmware**, escribe parte del nombre (por ejemplo `win`, `debian` o `forti`) para filtrar las sugerencias del navegador. Se puede introducir un valor personalizado no incluido en el catálogo; el listado es orientativo y **no indica soporte, EOL ni compatibilidad**. Los campos de software, CPU, memoria y ubicación también permiten sugerencias sin impedir entradas libres.
+
+Abre **Diccionario técnico** desde el menú principal para consultar definiciones y verificaciones recomendadas de redes, riesgos, seguridad y continuidad. Los iconos `ⓘ` en algunos campos abren una consulta contextual. La información es offline y no sustituye la validación profesional de cada control.
