@@ -1339,119 +1339,119 @@ Do not assume enabling Suricata turns the DC into an inline IPS or firewall.
 ---
 
 <a id="backups-snapshots-y-recuperacion"></a>
-## Backups, snapshots y recuperación
+## Backups, snapshots, and recovery
 
-No todos los backups sirven para el mismo problema.
+Not every backup solves the same problem.
 
-### Snapshot de cliente
+### Client snapshot
 
-Sirve para restaurar configuración local relacionada con un join:
+Used to restore local configuration related to a domain join:
 
 - DNS;
 - hostname;
-- identidad/configuración local según plataforma;
-- estado de lifecycle.
+- local identity/configuration depending on the platform;
+- lifecycle state.
 
-No es un backup de Active Directory.
+This is not an Active Directory backup.
 
-### Backup de configuración del DC
+### DC configuration backup
 
-Sirve para conservar evidencia y configuración antes de cambios.
+Used to preserve evidence and configuration before making changes.
 
-No siempre es suficiente para reconstruir un dominio.
+This may not be sufficient to rebuild a domain.
 
-### Backup recuperable del dominio
+### Recoverable domain backup
 
 Samba AD:
 
-- utiliza las funciones de backup de dominio soportadas por Samba;
-- conserva copias fuera del propio DC.
+- use Samba-supported domain backup functions;
+- keep copies outside the DC itself.
 
 Windows AD DS:
 
-- utiliza System State Backup;
-- integra la estrategia con backup externo y pruebas de restauración.
+- use System State Backup;
+- integrate the strategy with external backups and restoration tests.
 
-### Operaciones de alto impacto
+### High-impact operations
 
-Antes de cambios como:
+Before changes such as:
 
-- decommission de un DC;
-- cambios fuertes de Kerberos/LDAP;
-- eliminación de objetos críticos;
-- GPO de seguridad global;
-- reparación de SYSVOL;
-- migración de dominio;
+- decommissioning a DC;
+- major Kerberos/LDAP changes;
+- deletion of critical objects;
+- global security GPO;
+- SYSVOL repair;
+- domain migration;
 
-crea un backup apropiado para la operación y verifica que sea restaurable.
+create a backup appropriate for the operation and verify that it can be restored.
 
 ---
 
 <a id="hardening-y-compatibilidad"></a>
-## Hardening y compatibilidad
+## Hardening and compatibility
 
-El proyecto favorece un baseline compatible antes que una política extrema aplicada a ciegas.
+The project favors a compatible baseline over an extreme policy applied blindly.
 
-Ejemplos de controles habituales:
+Examples of common controls:
 
-- firewall activo y con política coherente;
-- Defender donde corresponda;
-- RDP con NLA;
-- SMB signing y restricciones de protocolos heredados;
-- reducción de LLMNR;
-- logging de PowerShell;
-- LDAP signing/channel binding según readiness;
+- active firewall with a consistent policy;
+- Defender where appropriate;
+- RDP with NLA;
+- SMB signing and legacy protocol restrictions;
+- reducing LLMNR;
+- PowerShell logging;
+- LDAP signing/channel binding according to readiness;
 - Kerberos AES/RC4 readiness;
-- SMB y NTLM legacy awareness;
-- hardening Samba equivalente donde la plataforma lo soporte.
+- awareness of legacy SMB and NTLM;
+- equivalent Samba hardening where supported by the platform.
 
-Cambios con riesgo de compatibilidad no deberían aplicarse únicamente porque aparezcan en una guía de hardening. Valida primero clientes, appliances, service accounts y software heredado.
+Changes that risk compatibility should not be applied solely because they appear in a hardening guide. Validate clients, appliances, service accounts, and legacy software first.
 
-### CIS y otros benchmarks
+### CIS and other benchmarks
 
-Los asistentes pueden implementar controles alineados con buenas prácticas o benchmarks, pero **no certifican cumplimiento completo** de CIS, DISA STIG u otro estándar por sí solos.
+The assistants may implement controls aligned with good practices or benchmarks, but they **do not certify full compliance** with CIS, DISA STIG, or other standards by themselves.
 
-Para una afirmación formal de compliance utiliza el benchmark, perfil y herramienta de evaluación correspondientes y conserva evidencia independiente.
+For a formal compliance claim, use the appropriate benchmark, profile, and assessment tool and preserve independent evidence.
 
 ---
 
 <a id="virtualizacion-y-hosts-multi-nic"></a>
-## Virtualización y hosts multi-NIC
+## Virtualization and multi-NIC hosts
 
-Los laboratorios con varias interfaces son una fuente frecuente de problemas AD.
+Labs with multiple network interfaces are a frequent source of AD problems.
 
-Ejemplo típico:
+Typical example:
 
 ```text
 NIC 1 → NAT / Internet
-NIC 2 → red interna AD
+NIC 2 → internal AD network
 NIC 3 → management
 ```
 
-Recomendaciones:
+Recommendations:
 
-- conoce qué interfaz transporta tráfico hacia el DNS/DC;
-- evita que DHCP de una red secundaria inyecte un resolver público por encima del DNS AD;
-- revisa métricas y rutas;
-- en producción, separa claramente red de administración y red de servicio cuando la arquitectura lo requiera;
-- no cambies routing de un host remoto sin una vía de recuperación.
+- know which interface carries traffic to the DNS/DC;
+- prevent DHCP on a secondary network from inserting a public resolver ahead of AD DNS;
+- check metrics and routes;
+- in production, clearly separate management and service networks when the architecture requires it;
+- do not change routing on a remote host without a recovery path.
 
-Los asistentes de cliente utilizan selección de interfaz consciente de ruta y avisan cuando la NIC elegida no coincide con el camino esperado hacia Active Directory.
+Client assistants use route-aware interface selection and warn when the chosen NIC does not match the expected path to Active Directory.
 
 ### VirtualBox / VMware / Hyper-V
 
-En laboratorio, el DNS proporcionado por NAT puede resolver Internet pero no la zona AD. Esto no lo convierte en un DNS válido para un miembro del dominio.
+In a lab, NAT-provided DNS may resolve Internet names but not the AD zone. That does not make it a valid DNS server for a domain member.
 
-Una configuración frecuente es:
+A common configuration is:
 
 ```text
-Cliente → DNS del DC → forwarder externo
+Client → DC DNS → external forwarder
 ```
 
 No:
 
 ```text
-Cliente → DC + DNS NAT + 8.8.8.8
+Client → DC + NAT DNS + 8.8.8.8
 ```
 
 ---
