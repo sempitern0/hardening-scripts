@@ -592,12 +592,28 @@
         ${guide.commands.map((item,i)=>`<div class="glossary-command"><div class="glossary-command-head"><span class="glossary-command-platform">${glossaryPlatformIcon(item.platform)}${html(item.platform)}</span><button type="button" class="glossary-copy" data-glossary-copy="${i}" data-glossary-id="${html(t.id)}" aria-label="Copiar comando ${html(item.platform)}">Copiar</button></div><pre><code>${html(item.command)}</code></pre><p><strong>Qué observar:</strong> ${html(item.lookFor)}</p></div>`).join('')}
       </section>`;
   }
+  function renderGlossaryHelp(t){
+    const help=t?.help;
+    if(!help)return '';
+    return `<details class="glossary-help-resource">
+      <summary><span class="glossary-resource-mark" aria-hidden="true">☎</span><span>Ayuda ante ciberincidentes · ${html(help.region)}</span></summary>
+      <div class="glossary-help-content">
+        <p><strong>${html(help.organization)} · ${html(help.title)}</strong></p>
+        <p>${html(help.guidance)}</p>
+        <p class="glossary-help-phone"><a href="tel:017" aria-label="Llamar al 017, línea de ayuda en ciberseguridad de INCIBE">${html(help.phone)}</a><span>Orientación telefónica</span></p>
+        <p><a href="${html(help.officialUrl)}" target="_blank" rel="noopener noreferrer external">Información oficial del servicio ↗</a></p>
+        <p>${html(help.reporting)} <a href="${html(help.reportUrl)}" target="_blank" rel="noopener noreferrer external">Notificar un incidente empresarial ↗</a></p>
+        <p class="glossary-help-privacy">${html(help.privacy)}</p>
+      </div>
+    </details>`;
+  }
   function renderGlossaryDetail(t){
     if(!t)return '<div class="glossary-empty">Selecciona un concepto del índice.</div>';
     return `<article class="glossary-article"><span class="glossary-kicker">${html(t.category)}</span><h2>${html(t.title)}</h2>${glossaryTermPlatforms(t)}${t.fullName?`<p class="glossary-fullname"><strong>Denominación completa:</strong> ${html(t.fullName)}</p>`:''}<div class="glossary-definition">${glossaryEmphasis(t.description)}</div>
       ${t.why?`<section class="glossary-section glossary-why"><h3>Por qué importa</h3><p>${glossaryEmphasis(t.why)}</p></section>`:''}
       <section class="glossary-section glossary-check"><h3>Qué comprobar en la auditoría</h3><p>${glossaryEmphasis(t.check)}</p></section>
       ${renderGlossaryGuide(t)}
+      ${renderGlossaryHelp(t)}
       ${t.example?`<section class="glossary-section glossary-example"><h3>Ejemplo</h3><p>${html(t.example)}</p></section>`:''}
       ${t.references?.length?`<section class="glossary-section glossary-references"><h3>Referencias y recursos oficiales</h3><ul>${t.references.map(ref=>`<li><a href="${html(ref.url)}" target="_blank" rel="noopener noreferrer external">${html(ref.label)} <span aria-hidden="true">↗</span></a></li>`).join('')}</ul><p class="glossary-external-note">Estos recursos requieren conexión y se abren fuera de la aplicación.</p></section>` : ''}
       ${t.aliases?.length?`<p class="glossary-aliases"><strong>También se busca como:</strong> ${html(t.aliases.join(', '))}</p>`:''}
