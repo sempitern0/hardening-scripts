@@ -1217,124 +1217,124 @@ Each rule must use a globally unique `sid`. Consult SID documentation and `sidal
 
 Local rules are stored outside `/var/lib/suricata/rules`, since that directory belongs to `suricata-update`. The assistant also migrates its older context rules out of the distribution's rules directory to avoid accidentally loading the same signature twice.
 
-#### Actualizaciones automáticas
+#### Automatic updates
 
-Para un sensor operativo no es razonable depender de que el administrador recuerde ejecutar el updater. `Automatic updates` instala:
+For an operational sensor, relying on the administrator to remember to run updates is not reasonable. `Automatic updates` installs:
 
 ```text
 debian-ad-suricata-rules.service
 debian-ad-suricata-rules.timer
 ```
 
-Cadencias disponibles:
+Available schedules:
 
 ```text
-cada 6 horas     recomendado
-cada 12 horas
-diario
+every 6 hours    recommended
+every 12 hours
+daily
 ```
 
-La programación añade `RandomizedDelaySec=15m` para que muchos servidores no consulten las fuentes exactamente a la vez.
+The schedule adds `RandomizedDelaySec=15m` so multiple servers do not query their sources at exactly the same time.
 
-El timer ejecuta el asistente instalado mediante un modo no interactivo:
+The timer runs the installed assistant in non-interactive mode:
 
 ```text
 --ids-rules-update
 ```
 
-El pipeline es:
+The pipeline is:
 
 ```text
-ruleset anterior
+previous ruleset
       ↓ backup
 suricata-update
       ↓
-¿suricata.rules existe y no está vacío?
+does suricata.rules exist and contain data?
       ↓
-suricata -T con HOME_NET + overlay + reglas locales
+suricata -T with HOME_NET + overlay + local rules
       ↓
- PASS ───────────────→ reload del sensor
- FAIL ───────────────→ restaurar ruleset anterior
+ PASS ───────────────→ sensor reload
+ FAIL ───────────────→ restore previous ruleset
 ```
 
-Si el live reload falla, el asistente intenta un restart controlado. El timer **no cambia qué fuentes están habilitadas**; únicamente actualiza las fuentes que el administrador ya seleccionó.
+If live reload fails, the assistant attempts a controlled restart. The timer **does not change which sources are enabled**; it only updates sources already selected by the administrator.
 
-#### Tuning y supresiones
+#### Tuning and suppression
 
-`suricata-update` soporta política declarativa mediante `enable.conf`, `disable.conf`, `modify.conf` y `drop.conf`. No edites el fichero consolidado para silenciar una firma. Si una regla resulta ruidosa, primero investiga por qué dispara y después utiliza un filtro declarativo o threshold/suppression adecuado.
+`suricata-update` supports declarative policy through `enable.conf`, `disable.conf`, `modify.conf`, and `drop.conf`. Do not edit the consolidated rules file to silence a signature. If a rule is noisy, first investigate why it triggers, then use an appropriate declarative filter or threshold/suppression.
 
-El asistente todavía mantiene el tuning avanzado separado de la selección de feeds para evitar que un perfil “recomendado” desactive silenciosamente detecciones que pueden ser necesarias en otro entorno. La fuente de verdad debe seguir siendo explícita y auditable.
+The assistant still keeps advanced tuning separate from feed selection so that a "recommended" profile cannot silently disable detections that may be needed in another environment. The source of truth must remain explicit and auditable.
 
-Referencias oficiales:
+Official references:
 
 - Suricata rule management: `https://docs.suricata.io/en/latest/rule-management/suricata-update.html`
 - suricata-update: `https://suricata-update.readthedocs.io/en/latest/`
 - Source index OISF: `https://github.com/OISF/suricata-intel-index`
 - Rule/SID documentation: `https://docs.suricata.io/en/latest/rules/meta.html`
 
-El sensor continúa siendo **alert-only** en este workflow; gestionar más fuentes no lo convierte en IPS inline.
+The sensor remains **alert-only** in this workflow; managing more sources does not make it an inline IPS.
 
-### Informes y evidencia
+### Reports and evidence
 
-La consola prioriza una representación legible. Los informes persistentes mantienen más detalle técnico para poder conservarlos como evidencia:
+The console prioritizes readability. Persistent reports retain more technical detail so they can serve as evidence:
 
 ```text
 /var/lib/debian-ad-assistant/ids/reports/ids-report-*.txt
 ```
 
-La opción `Daily local reports → View generated reports` valida que el fichero siga existiendo y sea legible antes de abrirlo; un fallo del pager o del fichero debe volver al menú como `WARN`, no finalizar el asistente.
+The `Daily local reports → View generated reports` option confirms the file still exists and is readable before opening it; a pager or file error must return to the menu as `WARN`, not terminate the assistant.
 
-`Export evidence` conserva las vistas técnicas y metadatos relevantes. La intención es separar:
+`Export evidence` preserves technical views and relevant metadata. The intent is to separate:
 
 ```text
-CONSOLE / OPERADOR
-explicación, contexto, quién, qué servicio, siguiente paso
+CONSOLE / OPERATOR
+explanation, context, who, which service, next step
 
-EVIDENCIA TXT / JSONL
-campos técnicos, timestamps, firmas, timeline y datos para auditoría
+TXT / JSONL EVIDENCE
+technical fields, timestamps, signatures, timeline, and audit data
 ```
 
-### Event Center: vista humana frente a evidencia
+### Event Center: human-readable view versus evidence
 
-El **AD Event Center** aplica la misma filosofía. Las opciones interactivas traducen la timeline a bloques del tipo:
+The **AD Event Center** follows the same approach. Interactive options present the timeline as blocks such as:
 
 ```text
 [WARN] 2026-10-01 13:02:10  Suricata IDS — Network IDS
        Subject : 10.20.30.40 -> 192.168.1.90
        Detail  : ET ...
-       Meaning : una firma de Suricata coincidió; correlacionar antes de escalar
+       Meaning : a Suricata signature matched; correlate before escalation
 ```
 
-mientras que la exportación sigue guardando `timeline.txt` y `timeline.jsonl` técnicos para análisis posterior.
+while exports continue to save technical `timeline.txt` and `timeline.jsonl` files for later analysis.
 
-Esto no intenta ocultar datos: ofrece una capa de **triage humano** delante de la evidencia cruda.
+This does not hide data: it adds a **human triage layer** ahead of raw evidence.
 
 ### Windows
 
-El control plane de Windows puede analizar `eve.json`, generar informes y mostrar un dashboard nativo cuando el entorno lo permite:
+The Windows control plane can analyze `eve.json`, produce reports, and display a native dashboard when the environment supports it:
 
 ```powershell
 .\windows-ad-assistant.ps1 -Mode IDS
 ```
 
-La instalación de Suricata/Npcap en Windows se mantiene como una acción administrativa explícita; el script no instala silenciosamente un driver de captura de terceros en un Domain Controller.
+Installing Suricata/Npcap on Windows remains an explicit administrative action; the script does not silently install third-party packet capture drivers on a Domain Controller.
 
-La paridad funcional buscada entre Debian/Samba, RHEL y Windows incluye el mismo modelo conceptual: redes confiables, diferencia entre actividad y alerta, vista de operador, timeline humana, evidencia técnica y recuperación segura. La implementación concreta puede variar según las capacidades nativas de cada plataforma.
+Functional parity across Debian/Samba, RHEL, and Windows follows the same conceptual model: trusted networks, activity versus alerts, operator overview, human-readable timeline, technical evidence, and safe recovery. Specific implementations can vary according to native platform capabilities.
 
-### Qué significa IDS aquí
+### What IDS means here
 
-La integración es principalmente **pasiva**:
+The integration is mainly **passive**:
 
-- flujos y conexiones;
-- telemetría;
-- alertas;
+- flows and connections;
+- telemetry;
+- alerts;
 - DNS;
 - Kerberos;
 - LDAP;
 - SMB;
-- TLS/SSH según plataforma/configuración.
+- TLS/SSH depending on platform/configuration.
 
-No asumas que habilitar Suricata convierte el DC en un IPS o firewall inline.
+Do not assume enabling Suricata turns the DC into an inline IPS or firewall.
 
 ---
 
