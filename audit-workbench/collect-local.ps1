@@ -37,7 +37,7 @@ $data=[ordered]@{
     storage=($diskRows -join '; ')
     notes='Captura local declarativa; verificar datos antes de incorporar.'
   })
-  networks=$networks;software=@($serviceRows)+@($packages)
+  networks=$networks;software=(@($serviceRows)+@($packages))
  }
 }
 $json=ConvertTo-Json -InputObject $data -Depth 8
