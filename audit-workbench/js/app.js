@@ -1128,7 +1128,7 @@
         const row={_key:uid()};for(const [field] of groups[block].fields)row[field]=record[field]||'';
         if(block==='assets'){row.criticality='Sin valorar';row.state='Por revisar';}
         if(block==='software'){row.license='Pendiente de revisar';row.support='Pendiente de verificar';row.exposure=row.exposure||'Pendiente de revisar';}
-        row.notes=[row.notes,'Captura importada ('+intakePreview.source+'); pendiente de verificación por el auditor.'].filter(Boolean).join(' · ').slice(0,20000);
+        row.notes=[row.notes,'Captura importada ('+intakePreview.source+(intakePreview.platform?' · '+intakePreview.platform:'')+(intakePreview.capturedAt?' · '+intakePreview.capturedAt:'')+'); pendiente de verificación por el auditor.'].filter(Boolean).join(' · ').slice(0,20000);
         state[block].push(row);
       }
       intakePreview=null;intakeSelected.clear();intakeError='';
