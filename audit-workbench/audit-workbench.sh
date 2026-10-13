@@ -39,7 +39,7 @@ FILES=(
   js/app.js js/audit-storage.js js/audit-relations.js js/control-templates.js js/audit-quality.js js/audit-retest.js js/audit-comparison.js js/hardware-catalog.js js/os-catalog.js js/glossary.js js/exporters.js sw.js manifest.webmanifest
   fonts/AtkinsonHyperlegible-Regular.woff2 fonts/AtkinsonHyperlegible-Bold.woff2
   fonts/AtkinsonHyperlegible-Italic.woff2 fonts/AtkinsonHyperlegible-BoldItalic.woff2
-  icons/dragon.svg icons/icon-192.png icons/icon-512.png
+  icons/os-windows.svg icons/os-linux.svg icons/os-macos.svg icons/dragon.svg icons/icon-192.png icons/icon-512.png
 )
 needs_install=$UPDATE
 for file in "${FILES[@]}"; do [[ -s "${DEST}/${file}" ]] || needs_install=1; done
