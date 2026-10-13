@@ -1,5 +1,7 @@
 # Installing and updating Audit Workbench
 
+**English** · [Español](INSTALLATION_ES.md)
+
 This guide is for auditors and administrators who need to use the application on desktops, tablets, or phones, including in environments with limited connectivity.
 
 ## Before you start
