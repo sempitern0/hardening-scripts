@@ -1,5 +1,11 @@
 /* Diccionario técnico · consulta guiada con índice compacto y panel de lectura. */
-.glossary-help{display:inline-flex;align-items:center;justify-content:center;min-width:1.8rem;min-height:1.8rem;margin-left:.45rem;padding:.2rem;border:1px solid var(--line);border-radius:50%;background:var(--paper);color:var(--brand);font:inherit;font-size:.85rem;vertical-align:middle;cursor:pointer}
+.field-heading{display:flex;align-items:center;gap:.45rem;margin-bottom:.35rem;min-width:0}
+.field-heading label{margin:0;flex:0 1 auto}
+.glossary-help{display:inline-grid;place-items:center;flex:none;width:30px;height:30px;padding:0;border:1px solid var(--line);border-radius:9px;background:var(--paper);color:var(--brand);vertical-align:middle;cursor:pointer}
+.glossary-help svg{width:19px;height:19px;display:block;shape-rendering:geometricPrecision}
+.glossary-inline-back{display:inline-flex;align-items:center;margin:0 0 1.1rem;padding:.5rem .7rem;border:1px solid var(--line);border-radius:8px;color:var(--brand);background:var(--canvas);font:inherit;font-weight:700;cursor:pointer}
+.glossary-return{display:flex;align-items:center;gap:.75rem;margin:.35rem 0 1rem}
+
 .glossary-help:hover,.glossary-help:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
 .glossary-shell{margin-top:1.5rem;background:var(--paper);border:1px solid var(--line);border-radius:16px;padding:clamp(1rem,2vw,1.5rem);color:var(--ink)}
 .glossary-toolbar{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:1rem;align-items:end}
