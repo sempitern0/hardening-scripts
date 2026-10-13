@@ -6,18 +6,47 @@
   const msg=(id,value)=>{const node=el(id);if(node)node.textContent=value;};
   const safeName=()=>sec.safeFilename('backup');
   function view(available,unlocked){
-    return '<section class="card secure-transfer"><h2>Distribución segura · copias y PDF</h2>'+
-      '<p class="subtle">Los documentos se procesan localmente. Nada se sube sin confirmación. El almacenamiento remoto usa Nextcloud WebDAV HTTPS; para compartir se requiere su API OCS con CORS habilitado.</p>'+
-      '<h3>Copia del expediente cifrada</h3><label for="transfer-key">Frase de cifrado (mínimo 16 caracteres)</label><input id="transfer-key" type="password" autocomplete="new-password" placeholder="Contraseña independiente de la cuenta Nextcloud">'+
-      '<div class="action-row"><button type="button" class="button quiet" data-transfer="download" '+(!available?'disabled':'')+'>Descargar copia cifrada</button><button type="button" class="button accent" data-transfer="backup" '+(!available||!unlocked?'disabled':'')+'>Subir copia cifrada</button></div>'+
-      '<label for="transfer-recover">Recuperar JSON de copia cifrada</label><input id="transfer-recover" type="file" accept=".awenc,.json"><p class="subtle">Se descarga el JSON descifrado; impórtalo por el procedimiento normal. No sobrescribe el expediente actual.</p><p id="transfer-backup-status" role="status"></p>'+
-      '<hr><h3>Informe PDF · vista local y enlace temporal</h3><p class="subtle">Genera y guarda primero el PDF con la función de impresión de la aplicación. Selecciona el archivo revisado para verlo localmente o subirlo. No se abren túneles ni puertos del ordenador.</p>'+
-      '<label for="transfer-pdf">PDF revisado (máximo 40 MiB)</label><input id="transfer-pdf" type="file" accept=".pdf,application/pdf"><div id="transfer-preview" class="transfer-preview" hidden></div>'+
-      '<div class="action-row"><button type="button" class="button quiet" data-transfer="close">Cerrar vista previa</button><button type="button" class="button accent" data-transfer="pdf" '+(!unlocked?'disabled':'')+'>Subir PDF</button></div>'+
-      '<h3>Compartir archivo subido</h3><p class="subtle">Enlace Nextcloud con contraseña, lectura y caducidad confirmada por el servidor. La contraseña debe compartirse por otro canal.</p>'+
-      '<div class="fields"><div class="field"><label for="transfer-expiry">Caducidad</label><select id="transfer-expiry"><option value="1">1 día</option><option value="2">2 días</option><option value="3">3 días</option><option value="7">7 días</option></select></div><div class="field"><label for="transfer-share-key">Contraseña del enlace (mín. 16 caracteres)</label><input id="transfer-share-key" type="password" autocomplete="new-password"></div></div>'+
-      '<div class="action-row"><button type="button" class="button accent" data-transfer="share" '+(!unlocked?'disabled':'')+'>Crear enlace temporal</button><button type="button" class="button danger" data-transfer="revoke" '+(!unlocked?'disabled':'')+'>Revocar último enlace</button></div>'+
-      '<p id="transfer-pdf-status" role="status"></p><div id="transfer-share-link"></div><p class="subtle">Enlaces de sesiones anteriores: revócalos desde Nextcloud. La aplicación no guarda tokens públicos ni contraseñas de enlace.</p></section>';
+    const noAudit=available?'':' disabled',noRemote=available&&unlocked?'':' disabled';
+    return [
+      '<section class="card secure-transfer" aria-labelledby="transfer-title">',
+      '<div class="transfer-heading"><h2 id="transfer-title">Distribución segura · copias y PDF</h2>',
+      '<p class="subtle">Cada transferencia requiere una acción del auditor. El expediente se procesa localmente y solo se envía cuando autorizas expresamente una subida.</p></div>',
+      !available?'<div class="notice warn" role="status">No hay expediente abierto. Crea o selecciona una auditoría para exportar, compartir o subir información. <button class="button quiet small" type="button" data-go="records">Ir a mis auditorías</button></div>':'',
+      '<div class="transfer-section" aria-labelledby="transfer-backup-title">',
+      '<div class="transfer-section-header"><span class="transfer-step" aria-hidden="true">01</span><div><h3 id="transfer-backup-title">Copia de seguridad cifrada</h3><p class="subtle">AES-256-GCM antes de salir del dispositivo. La frase de cifrado no se envía al servidor.</p></div></div>',
+      '<div class="transfer-field"><label for="transfer-key">Frase para cifrar y recuperar el backup</label>',
+      '<input id="transfer-key" type="password" autocomplete="new-password" minlength="16" maxlength="512" placeholder="Mínimo 16 caracteres" aria-describedby="transfer-key-hint">',
+      '<small id="transfer-key-hint">Utiliza una frase distinta de la contraseña de Nextcloud. Consérvala por separado.</small></div>',
+      '<div class="action-row transfer-actions"><button type="button" class="button quiet" data-transfer="download"'+noAudit+'>Descargar copia cifrada</button>',
+      '<button type="button" class="button accent" data-transfer="backup"'+noRemote+'>Subir copia cifrada</button></div>',
+      '<div class="transfer-field"><label for="transfer-recover">Recuperar una copia cifrada</label>',
+      '<input id="transfer-recover" type="file" accept=".awenc,.json">',
+      '<small>Descifra y descarga un JSON para importarlo manualmente. Nunca sobrescribe el expediente actual.</small></div>',
+      '<p id="transfer-backup-status" class="transfer-feedback" role="status" aria-live="polite"></p>',
+      '</div>',
+      '<div class="transfer-section" aria-labelledby="transfer-pdf-title">',
+      '<div class="transfer-section-header"><span class="transfer-step" aria-hidden="true">02</span><div><h3 id="transfer-pdf-title">Previsualizar y subir un informe PDF</h3><p class="subtle">Genera el PDF con «Generar PDF», guárdalo y revísalo antes de seleccionarlo. La vista previa no envía archivos.</p></div></div>',
+      '<div class="transfer-field"><label for="transfer-pdf">Seleccionar PDF revisado</label>',
+      '<input id="transfer-pdf" type="file" accept=".pdf,application/pdf">',
+      '<small>PDF hasta 40 MiB. Previsualización local, sin túneles ni servicios externos.</small></div>',
+      '<div id="transfer-preview" class="transfer-preview" hidden></div>',
+      '<div class="action-row transfer-actions"><button type="button" class="button quiet" data-transfer="close">Cerrar vista previa</button>',
+      '<button type="button" class="button accent" data-transfer="pdf"'+noRemote+'>Subir PDF a Nextcloud</button></div>',
+      '</div>',
+      '<div class="transfer-section" aria-labelledby="transfer-share-title">',
+      '<div class="transfer-section-header"><span class="transfer-step" aria-hidden="true">03</span><div><h3 id="transfer-share-title">Crear un enlace temporal protegido</h3><p class="subtle">Solo para un PDF ya subido. Nextcloud gestiona el acceso de lectura, la contraseña y la caducidad.</p></div></div>',
+      '<div class="transfer-grid"><div class="transfer-field"><label for="transfer-expiry">Caducidad del enlace</label>',
+      '<select id="transfer-expiry"><option value="1">1 día</option><option value="2">2 días</option><option value="3">3 días</option><option value="7">7 días</option></select></div>',
+      '<div class="transfer-field"><label for="transfer-share-key">Contraseña para el destinatario</label>',
+      '<input id="transfer-share-key" type="password" autocomplete="new-password" minlength="16" placeholder="Mínimo 16 caracteres">',
+      '<small>Entrega la contraseña por un canal diferente al del enlace.</small></div></div>',
+      '<div class="action-row transfer-actions"><button type="button" class="button accent" data-transfer="share"'+noRemote+'>Crear enlace protegido</button>',
+      '<button type="button" class="button danger" data-transfer="revoke"'+(unlocked?'':' disabled')+'>Revocar último enlace</button></div>',
+      '<p id="transfer-pdf-status" class="transfer-feedback" role="status" aria-live="polite"></p>',
+      '<div id="transfer-share-link" class="transfer-share-link"></div>',
+      '<p class="subtle">Gestiona los enlaces de sesiones anteriores desde Nextcloud. La aplicación no guarda contraseñas ni tokens de compartición.</p>',
+      '</div></section>'
+    ].join('');
   }
   function clearPreview(){
     if(state.previewUrl){URL.revokeObjectURL(state.previewUrl);state.previewUrl=null;}
