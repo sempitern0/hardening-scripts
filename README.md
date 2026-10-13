@@ -1459,7 +1459,7 @@ Client → DC + NAT DNS + 8.8.8.8
 <a id="troubleshooting"></a>
 ## Troubleshooting
 
-Empieza por identificar la capa que falla.
+Start by identifying the failing layer.
 
 ### 1. DNS
 
@@ -1477,7 +1477,7 @@ Resolve-DnsName _ldap._tcp.dc._msdcs.corp.example.com -Type SRV
 nltest /dsgetdc:corp.example.com
 ```
 
-### 2. Hora / Kerberos
+### 2. Time / Kerberos
 
 Linux:
 
@@ -1508,28 +1508,28 @@ Test-ComputerSecureChannel
 nltest /sc_verify:corp.example.com
 ```
 
-### 4. Join de Windows
+### 4. Windows join
 
-Windows registra información detallada de unión al dominio en:
+Windows records detailed domain join information at:
 
 ```text
 %SystemRoot%\debug\NetSetup.log
 ```
 
-El Windows AD Client Assistant guarda evidencia asociada al snapshot e identifica errores comunes como:
+The Windows AD Client Assistant saves evidence associated with the snapshot and identifies common errors such as:
 
 - domain/DC discovery;
-- credenciales rechazadas;
+- rejected credentials;
 - access denied;
-- protección moderna contra reutilización insegura de computer accounts.
+- modern protection against insecure computer account reuse.
 
-Si el asistente muestra `JOIN_AMBIGUOUS`, utiliza:
+If the assistant reports `JOIN_AMBIGUOUS`, use:
 
 ```powershell
 .\windows-ad-client-assistant.ps1 -Mode Recover
 ```
 
-No borres el estado ni cambies DNS manualmente hasta determinar si Windows llegó a aceptar el join.
+Do not delete the state or manually change DNS until you have determined whether Windows accepted the join.
 
 ### 5. Samba AD DC
 
@@ -1550,7 +1550,7 @@ Get-ADReplicationFailure -Target * -Scope Forest
 ---
 
 <a id="rutas-de-estado-y-logs"></a>
-## Rutas de estado y logs
+## State and log paths
 
 ### Samba AD Control Plane
 
@@ -1559,7 +1559,7 @@ State : /var/lib/debian-ad-assistant
 Logs  : /var/log/debian-ad-assistant
 ```
 
-La ruta concreta de backups/reportes se muestra en el resumen de cada ejecución.
+The exact backup/report path is shown in each run's summary.
 
 ### Linux AD Client Assistant
 
@@ -1571,13 +1571,13 @@ Logs      : /var/log/ad-client-assistant
 
 ### Windows Server AD Control Plane
 
-Por defecto:
+By default:
 
 ```text
 %ProgramData%\WindowsADControlPlane
 ```
 
-Puede cambiarse mediante el parámetro `-ExportPath`.
+It can be changed using the `-ExportPath` parameter.
 
 ### Windows AD Client Assistant
 
@@ -1587,73 +1587,73 @@ Por defecto:
 %ProgramData%\ADClientAssistant
 ```
 
-Estructura principal:
+Main structure:
 
 ```text
-current.json     lifecycle activo
-snapshots\       snapshots pre-join
-logs\            log por ejecución
-reports\         resumen JSON por ejecución
+current.json     active lifecycle
+snapshots\       pre-join snapshots
+logs\            per-run log
+reports\         per-run JSON summary
 ```
 
-`current.json` representa una operación activa o una membresía gestionada. No lo elimines como método de recuperación; utiliza `Status`, `Restore` o `Recover`.
+`current.json` represents an active operation or managed membership. Do not delete it as a recovery method; use `Status`, `Restore`, or `Recover`.
 
 ---
 
 <a id="checklist-antes-de-produccion"></a>
-## Checklist antes de producción
+## Pre-production checklist
 
-Antes de desplegar o modificar un entorno AD:
+Before deploying or changing an AD environment:
 
-- [ ] backups externos disponibles y probados;
-- [ ] consola/ILO/iDRAC/hipervisor disponible si vas a tocar red o firewall;
-- [ ] hostname y dominio definitivos;
-- [ ] IP estable en los Domain Controllers;
-- [ ] DNS AD funcional;
-- [ ] forwarding DNS validado si los clientes necesitan resolución externa;
-- [ ] hora sincronizada;
-- [ ] puertos AD alcanzables desde las redes de clientes;
-- [ ] cuentas de administración y delegación revisadas;
-- [ ] GPO probadas primero en una OU piloto;
-- [ ] compatibilidad revisada antes de retirar RC4, SMB heredado o endurecer LDAP;
-- [ ] join/leave de clientes validado incluyendo reboot;
-- [ ] logs y reportes revisados después de la ejecución;
-- [ ] segundo DC / estrategia de redundancia considerada para producción.
+- [ ] external backups available and tested;
+- [ ] console/iLO/iDRAC/hypervisor access available when changing networking or firewall;
+- [ ] final hostname and domain defined;
+- [ ] stable IP address on Domain Controllers;
+- [ ] functional AD DNS;
+- [ ] DNS forwarding validated if clients need external name resolution;
+- [ ] synchronized time;
+- [ ] AD ports reachable from client networks;
+- [ ] administrative and delegated accounts reviewed;
+- [ ] GPOs tested in a pilot OU first;
+- [ ] compatibility reviewed before disabling RC4 or legacy SMB, or hardening LDAP;
+- [ ] client join/leave validated, including reboot;
+- [ ] logs and reports reviewed after execution;
+- [ ] second DC / redundancy strategy considered for production.
 
-### Prueba mínima recomendada para un cliente
+### Recommended minimum client test
 
-1. ejecutar `Audit`;
-2. ejecutar join guiado;
-3. reiniciar;
-4. ejecutar `Status`;
-5. validar inicio de sesión con un usuario de prueba;
-6. comprobar DNS y secure channel;
-7. ejecutar leave en un equipo de laboratorio;
-8. reiniciar;
-9. restaurar estado pre-join;
-10. verificar que DNS/hostname local quedaron como antes.
+1. run `Audit`;
+2. perform a guided join;
+3. reboot;
+4. run `Status`;
+5. validate sign-in with a test user;
+6. verify DNS and secure channel;
+7. perform a leave on a lab machine;
+8. reboot;
+9. restore the pre-join state;
+10. verify that local DNS/hostname were restored to their original values.
 
-No declares un flujo de lifecycle listo para producción hasta haber probado también el camino de recuperación.
+Do not declare a lifecycle workflow production-ready until the recovery path has also been tested.
 
 ---
 
 <a id="estado-del-proyecto"></a>
-## Estado del proyecto
+## Project status
 
-El repositorio está en desarrollo activo.
+The repository is under active development.
 
-Las herramientas están diseñadas con un enfoque conservador y orientado a recuperación, pero siguen administrando sistemas sensibles. La cobertura real depende de plataforma, versión, topología, GPO existentes y componentes externos.
+The tools use a conservative, recovery-oriented approach, but still administer sensitive systems. Actual coverage depends on the platform, version, topology, existing GPOs, and external components.
 
-Antes de actualizar una versión ya desplegada:
+Before updating an already deployed version:
 
-1. revisa el diff;
-2. ejecuta auditoría;
-3. prueba en laboratorio o piloto;
-4. conserva la versión anterior durante la validación;
-5. vuelve a ejecutar los instaladores de shortcuts/CLI cuando corresponda.
+1. review the diff;
+2. run an audit;
+3. test in a lab or pilot environment;
+4. retain the previous version during validation;
+5. rerun the shortcut/CLI installers where applicable.
 
 ---
 
-## Licencia
+## License
 
-MIT. Consulta [LICENSE](./LICENSE).
+MIT. See [LICENSE](./LICENSE).
