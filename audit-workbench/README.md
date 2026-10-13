@@ -39,6 +39,12 @@ Google Drive, OneDrive, S3 y la generación binaria automática de PDF no están
 
 La ayuda contextual del diccionario usa botones SVG independientes de las etiquetas de los campos para no interferir con selectores nativos. El diccionario ofrece retorno inmediato al paso o campo desde el que se abrió. El catálogo offline incluye familias adicionales de portátiles y sobremesa, con entrada personalizada si no aparece un modelo.
 
+## Informes y revisión previa
+
+El asistente admite **hora de inicio** y **hora de fin** en formato local de 24 horas, junto a las fechas existentes. Los JSON antiguos que solo contienen fechas siguen siendo válidos y no reciben horarios supuestos. Se valida el orden cronológico, incluidas auditorías realizadas en un mismo día.
+
+La entrega ofrece dos modos: **Generar borrador PDF**, siempre marcado como trabajo no validado, e **Informe definitivo PDF**, que bloquea errores críticos de calidad y exige revisar las advertencias restantes. En el modo definitivo se comprueban referencias a evidencias, controles pendientes, firma y coherencia temporal; los campos vacíos de hora generan avisos de precisión, no errores para los expedientes antiguos. Los informes incluyen índice interno, resumen de cobertura y paginación A4 mejorada. La exportación sigue utilizando el navegador, sin subir documentos a servicios externos.
+
 ## Flujo recomendado
 
 1. **Configuración:** registra tu consultora y su equipo de auditores; asigna profesionales al expediente.
