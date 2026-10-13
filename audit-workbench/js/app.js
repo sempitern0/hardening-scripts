@@ -573,6 +573,15 @@
   function renderGlossaryIndex(terms){
     return terms.length?terms.map(t=>`<button type="button" class="glossary-entry ${t.id===glossarySelected?'is-active':''}" data-glossary-select="${html(t.id)}" aria-pressed="${t.id===glossarySelected}"><span class="glossary-entry-title">${glossaryEmphasis(t.title)}</span><span class="glossary-entry-category">${html(t.category)}</span></button>`).join(''):'<p class="glossary-empty">No hay coincidencias. Prueba otra palabra o categoría.</p>';
   }
+  function glossaryPlatformIcon(platform){
+    const p=String(platform||'').toLocaleLowerCase('es');
+    const os=/macos|mac os|apple/.test(p)?'macos':/linux|debian|ubuntu|bash|chrony/.test(p)?'linux':/windows|powershell|cmd|defender|rsat|bitlocker|entra/.test(p)?'windows':'';
+    return os?'<img class="glossary-os-icon" src="icons/os-'+os+'.svg" alt="" aria-hidden="true" loading="lazy">':'';
+  }
+  function glossaryTermPlatforms(t){
+    const platforms=[...new Set((glossary?.GUIDES?.[t.id]?.commands||[]).map(c=>String(c.platform).toLowerCase()).flatMap(p=>/macos|mac os/.test(p)?['macos']:/linux|debian|ubuntu|bash|chrony/.test(p)?['linux']:/windows|powershell|cmd|defender|rsat|bitlocker|entra/.test(p)?['windows']:[]))];
+    return platforms.length?'<div class="glossary-os-badges" aria-label="Plataformas con comandos disponibles">'+platforms.map(p=>'<span class="glossary-os-badge"><img class="glossary-os-icon" src="icons/os-'+p+'.svg" alt="" aria-hidden="true">'+(p==='macos'?'macOS':p==='linux'?'Linux':'Windows')+'</span>').join('')+'</div>':'';
+  }
   function renderGlossaryGuide(t){
     const guide=glossary?.GUIDES?.[t.id];
     if(!guide)return '';
@@ -580,16 +589,17 @@
       <dl class="glossary-diagnostic"><dt>Patrón o síntoma</dt><dd>${html(guide.symptom)}</dd><dt>Cómo investigarlo</dt><dd>${html(guide.verify)}</dd><dt>Interpretación</dt><dd>${html(guide.interpret)}</dd></dl></section>
       <section class="glossary-section glossary-console"><h3>Alternativas por consola</h3>
         <p class="glossary-console-intro">Comandos de referencia; solo lectura salvo conexiones explícitamente indicadas. Sustituye rutas y destinos, verifica permisos y alcance. La aplicación no ejecuta nada.</p>
-        ${guide.commands.map((item,i)=>`<div class="glossary-command"><div class="glossary-command-head"><span class="glossary-command-platform">${html(item.platform)}</span><button type="button" class="glossary-copy" data-glossary-copy="${i}" data-glossary-id="${html(t.id)}" aria-label="Copiar comando ${html(item.platform)}">Copiar</button></div><pre><code>${html(item.command)}</code></pre><p><strong>Qué observar:</strong> ${html(item.lookFor)}</p></div>`).join('')}
+        ${guide.commands.map((item,i)=>`<div class="glossary-command"><div class="glossary-command-head"><span class="glossary-command-platform">${glossaryPlatformIcon(item.platform)}${html(item.platform)}</span><button type="button" class="glossary-copy" data-glossary-copy="${i}" data-glossary-id="${html(t.id)}" aria-label="Copiar comando ${html(item.platform)}">Copiar</button></div><pre><code>${html(item.command)}</code></pre><p><strong>Qué observar:</strong> ${html(item.lookFor)}</p></div>`).join('')}
       </section>`;
   }
   function renderGlossaryDetail(t){
     if(!t)return '<div class="glossary-empty">Selecciona un concepto del índice.</div>';
-    return `<article class="glossary-article"><span class="glossary-kicker">${html(t.category)}</span><h2>${html(t.title)}</h2><div class="glossary-definition">${glossaryEmphasis(t.description)}</div>
+    return `<article class="glossary-article"><span class="glossary-kicker">${html(t.category)}</span><h2>${html(t.title)}</h2>${glossaryTermPlatforms(t)}${t.fullName?`<p class="glossary-fullname"><strong>Denominación completa:</strong> ${html(t.fullName)}</p>`:''}<div class="glossary-definition">${glossaryEmphasis(t.description)}</div>
       ${t.why?`<section class="glossary-section glossary-why"><h3>Por qué importa</h3><p>${glossaryEmphasis(t.why)}</p></section>`:''}
       <section class="glossary-section glossary-check"><h3>Qué comprobar en la auditoría</h3><p>${glossaryEmphasis(t.check)}</p></section>
       ${renderGlossaryGuide(t)}
       ${t.example?`<section class="glossary-section glossary-example"><h3>Ejemplo</h3><p>${html(t.example)}</p></section>`:''}
+      ${t.references?.length?`<section class="glossary-section glossary-references"><h3>Referencias y recursos oficiales</h3><ul>${t.references.map(ref=>`<li><a href="${html(ref.url)}" target="_blank" rel="noopener noreferrer external">${html(ref.label)} <span aria-hidden="true">↗</span></a></li>`).join('')}</ul><p class="glossary-external-note">Estos recursos requieren conexión y se abren fuera de la aplicación.</p></section>` : ''}
       ${t.aliases?.length?`<p class="glossary-aliases"><strong>También se busca como:</strong> ${html(t.aliases.join(', '))}</p>`:''}
       <p class="glossary-disclaimer">Referencia orientativa. Documenta la prueba realizada y contrasta los criterios con el contexto del cliente.</p></article>`;
   }
