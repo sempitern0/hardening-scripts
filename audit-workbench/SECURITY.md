@@ -1,5 +1,7 @@
 # Audit Workbench security model
 
+**English** · [Español](SECURITY_ES.md)
+
 ## Attack surface
 
 - Web application without a backend, accounts, proprietary servers, tracking cookies, analytics, or external libraries.
