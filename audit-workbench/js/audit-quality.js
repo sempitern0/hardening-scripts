@@ -33,7 +33,7 @@
     const issues=[];
     const start=clean(meta?.start),end=clean(meta?.end);
     const startTime=clean(meta?.startTime),endTime=clean(meta?.endTime);
-    const validTime=/^(?:[01]\\d|2[0-3]):[0-5]\\d$/;
+    const validTime=/^(?:[01]\d|2[0-3]):[0-5]\d$/;
     if(startTime&&!validTime.test(startTime))issues.push({code:'HORA_INICIO',message:'La hora de inicio debe usar HH:mm (24 horas).'});
     if(endTime&&!validTime.test(endTime))issues.push({code:'HORA_FIN',message:'La hora de fin debe usar HH:mm (24 horas).'});
     if(startTime&&!start)issues.push({code:'FECHA_INICIO_REQUERIDA',message:'Se ha indicado hora de inicio pero falta su fecha.'});
