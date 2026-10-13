@@ -39,6 +39,12 @@ const hours={meta:{client:'Ejemplo',project:'Prueba',scope:'LAN',start:'2026-10-
 assert(review(hours,relations).blockers.some(x=>x.code==='PERIODO_INVERTIDO'));
 hours.meta.endTime='19:00';
 assert(!review(hours,relations).blockers.some(x=>x.code==='PERIODO_INVERTIDO'));
+hours.meta.startTime='13:30';
+hours.meta.endTime='13:31';
+assert(!review(hours,relations).blockers.some(x=>['HORA_INICIO','HORA_FIN','PERIODO_INVERTIDO'].includes(x.code)),'Native time inputs must be accepted');
+hours.meta.endTime='25:61';
+assert(review(hours,relations).blockers.some(x=>x.code==='HORA_FIN'),'Invalid end time must identify the correct field');
+hours.meta.endTime='19:00';
 hours.meta.startTime='25:20';
 assert(review(hours,relations).blockers.some(x=>x.code==='HORA_INICIO'));
 hours.meta.startTime='17:30';
