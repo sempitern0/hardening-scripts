@@ -26,4 +26,6 @@ for(const marker of ['renderIntakePreview','data-intake-apply','data-intake-row'
 assert(html.indexOf('js/inventory-import.js')<html.indexOf('js/app.js'));
 assert(fs.existsSync(path.join(root,'collect-local.sh')));
 assert(fs.existsSync(path.join(root,'collect-local.ps1')));
+assert(bash.includes('collect-local.sh')&&bash.includes('collect-local.ps1'));
+assert(ps.includes("'collect-local.sh'")&&ps.includes("'collect-local.ps1'"));
 console.log('PASS inventory intake parsing, duplicate detection, safety, and offline wiring');
