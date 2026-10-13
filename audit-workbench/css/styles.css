@@ -2309,3 +2309,9 @@ button:focus-visible {
 .network-check:focus-visible{outline:2px solid #d8eaf6;outline-offset:2px}
 .network-check:disabled{cursor:wait;opacity:.65}
 @media print{.network-panel{display:none}}
+
+/* Progressive country-aware telephone input, no external icon assets. */
+.phone-widget{display:flex;align-items:stretch;gap:7px;min-width:0;width:100%}
+.phone-widget .phone-country{flex:0 1 165px;min-width:105px;max-width:48%;font-size:.88rem;padding-inline:6px}
+.phone-widget input[type="tel"]{flex:1 1 0;min-width:0;width:100%}
+@media(max-width:450px){.phone-widget{flex-wrap:wrap}.phone-widget .phone-country{flex:1 1 100%;max-width:100%}.phone-widget input[type="tel"]{flex:1 1 100%}}
