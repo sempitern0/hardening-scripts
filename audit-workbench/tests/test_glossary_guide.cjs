@@ -7,6 +7,15 @@ const root=path.resolve(__dirname,'..');
 const ctx={};ctx.globalThis=ctx;
 vm.runInNewContext(fs.readFileSync(path.join(root,'js/glossary.js'),'utf8'),ctx);
 const g=ctx.AuditGlossary;
+assert(g.CONTEXT_HELP.fields.networks.cidr==='term-3','CIDR context missing');
+assert(g.CONTEXT_HELP.fields.findings.likelihood==='term-81','Risk context mismatch');
+assert(g.CONTEXT_HELP.fields.findings.residual==='term-16','Residual risk context mismatch');
+assert(g.CONTEXT_HELP.fields.legal.retention==='term-95','Privacy context missing');
+assert(!g.CONTEXT_HELP.fields.findings.risk,'Ambiguous risk field should not be linked');
+for(const mapping of [...Object.values(g.CONTEXT_HELP.fields),g.CONTEXT_HELP.stages])
+ for(const id of Object.values(mapping))assert(g.byId(id),'Contextual link points to unknown term: '+id);
+assert(app.includes('data-glossary-back')&&app.includes('glossaryReturn'),'Return navigation missing');
+assert(app.includes('glossaryStageHint'),'Step contextual help missing');
 assert(g.TERMS.length>=100,'Expected expanded glossary');
 assert(g.CATEGORIES.length>=9,'Expected thematic categories');
 assert(g.search('red segmentada').some(x=>x.title==='Segmentación de red'),'Synonyms must be searchable');
@@ -18,7 +27,7 @@ assert.equal(new Set(g.TERMS.map(x=>x.id)).size,g.TERMS.length,'Duplicate term I
 const app=fs.readFileSync(path.join(root,'js/app.js'),'utf8'),css=fs.readFileSync(path.join(root,'css/glossary.css'),'utf8'),sw=fs.readFileSync(path.join(root,'sw.js'),'utf8');
 for(const marker of ['glossary-index','glossary-detail','glossary-category','glossary-search','renderGlossaryDetail','data-glossary-select'])assert(app.includes(marker),marker);
 assert(css.includes('.glossary-layout')&&css.includes('@media(max-width:760px)'),'Adaptive layout missing');
-assert(sw.includes('v25-incident-help'),'Service worker cache not invalidated');
+assert(sw.includes('v26-contextual-help'),'Service worker cache not invalidated');
 const incident=g.TERMS.find(t=>t.title==='Respuesta a incidentes');
 assert(incident?.help?.phone==='017','INCIBE help must be limited to incident response');
 assert(incident.help.officialUrl.startsWith('https://www.incibe.es/'),'INCIBE official help URL');
