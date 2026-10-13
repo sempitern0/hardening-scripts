@@ -846,9 +846,9 @@
       <div class="action-row"><button class="button accent" id="dav-save">Guardar conexión cifrada</button><button class="button quiet" id="dav-unlock" ${exists?'':'disabled'}>Desbloquear conexión</button><button class="button danger" id="dav-forget" ${exists?'':'disabled'}>Borrar conexión</button></div>
       <p class="subtle" id="dav-status" role="status">${unlockedConnection?'Conexión desbloqueada en esta sesión.':exists?'Hay un perfil cifrado. Introduce la frase de paso para desbloquearlo.':'Todavía no hay una conexión guardada.'}</p></section>
       <section class="card" id="connection-upload" ${connectionChannel==='nextcloud'?'':'hidden'}><h2>3 · Entrega bajo consentimiento</h2><p class="subtle">Subida JSON original SIN CIFRAR, solo mediante HTTPS. Para backups remotos, prefiere la nueva opción «Subir copia cifrada» de abajo. Puede contener información confidencial y evidencias incrustadas. No se sincroniza automáticamente.</p>
-      <div class="action-row"><button class="button accent" id="dav-upload" ${unlockedConnection&&currentId?'':'disabled'}>Subir expediente JSON</button><button class="button quiet" id="open-email">Preparar correo</button><button class="button quiet" id="native-share-json">Compartir JSON</button></div><p class="subtle" id="dav-upload-status" role="status"></p></section>
-      <section class="card" id="connection-email" ${connectionChannel==='email'?'':'hidden'}><h2>2 · Envío por correo</h2><p class="subtle">Abre un correo con asunto y texto preparados. Los navegadores no pueden adjuntar automáticamente un PDF a un enlace mailto. Genera y revisa el PDF, adjúntalo en tu cliente y verifica destinatarios antes de enviar.</p><button type="button" class="button accent" id="open-email">Redactar correo</button></section>
-      <section class="card" id="connection-share" ${connectionChannel==='share'?'':'hidden'}><h2>2 · Compartir mediante el dispositivo</h2><p class="subtle">Utiliza Web Share API si el dispositivo la ofrece; elige manualmente la aplicación de destino. También puedes exportar JSON y compartir el PDF ya generado desde el gestor de archivos.</p><button type="button" class="button accent" id="native-share-json">Compartir expediente JSON</button></section>
+      <div class="action-row"><button class="button accent" id="dav-upload" ${unlockedConnection&&currentId?'':'disabled'}>Subir expediente JSON</button><button class="button quiet" id="open-email" ${currentId?'':'disabled'}>Preparar correo</button><button class="button quiet" id="native-share-json" ${currentId?'':'disabled'}>Compartir JSON</button></div><p class="subtle" id="dav-upload-status" role="status"></p></section>
+      <section class="card" id="connection-email" ${connectionChannel==='email'?'':'hidden'}><h2>2 · Envío por correo</h2><p class="subtle">Abre un correo con asunto y texto preparados. Los navegadores no pueden adjuntar automáticamente un PDF a un enlace mailto. Genera y revisa el PDF, adjúntalo en tu cliente y verifica destinatarios antes de enviar.</p><button type="button" class="button accent" id="open-email" ${currentId?'':'disabled'}>Redactar correo</button></section>
+      <section class="card" id="connection-share" ${connectionChannel==='share'?'':'hidden'}><h2>2 · Compartir mediante el dispositivo</h2><p class="subtle">Utiliza Web Share API si el dispositivo la ofrece; elige manualmente la aplicación de destino. También puedes exportar JSON y compartir el PDF ya generado desde el gestor de archivos.</p><button type="button" class="button accent" id="native-share-json" ${currentId?'':'disabled'}>Compartir expediente JSON</button></section>
       ${globalThis.AuditSecureTransferUI.view(Boolean(currentId),Boolean(unlockedConnection))}<section class="card"><h2>Otros proveedores</h2><p class="subtle">Drive, OneDrive y Microsoft 365 requieren OAuth mediante PKCE, registro de aplicación y políticas CORS. No guardes <em>client secrets</em> de OAuth en una aplicación JavaScript distribuida: no pueden mantenerse secretos en un cliente público. Se añadirán integraciones específicas cuando tengan un flujo seguro verificado.</p></section>`;
   }
   function renderConnections(){return connectionSettingsMarkup()}
@@ -1396,13 +1396,28 @@
     finally{clearTimeout(timeout);button.disabled=false;button.textContent='Consultar CVE online (opcional)'}
   }
   async function shareAudit(){
-    if(!navigator.share||!navigator.canShare){alert('Tu navegador no permite compartir archivos de forma nativa. Exporta el JSON y envíalo con el canal autorizado por el cliente.');return}
-    if(!confirm('Vas a abrir el panel nativo para compartir una copia del expediente completo. Podría enviarse fuera del dispositivo. Revisa el destinatario, la clasificación y la autorización del cliente. ¿Continuar?'))return;
-    const file=new File([JSON.stringify(state,null,2)],'auditoria-'+slug(state.meta.client)+'.json',{type:'application/json'});
-    if(!navigator.canShare({files:[file]})){alert('Este sistema no admite compartir archivos JSON. Exporta el expediente manualmente.');return}
-    try{await navigator.share({files:[file],title:'Expediente de auditoría'})}catch(error){if(error.name!=='AbortError')alert('No se pudo abrir el panel: '+error.message)}
+    if(!currentId){alert('Primero crea o selecciona una auditoría.');return;}
+    const filename='auditoria-'+slug(state.meta.client)+'.json';
+    const body=JSON.stringify(state,null,2);
+    if(!navigator.share||!navigator.canShare){
+      if(confirm('Compartir archivos no está disponible en este navegador. ¿Descargar el expediente JSON para enviarlo mediante un canal autorizado?'))download(filename,body,'application/json;charset=utf-8');
+      return;
+    }
+    if(!confirm('Compartirás el expediente completo, con posibles datos personales. Comprueba autorización y destinatario. ¿Continuar?'))return;
+    const file=new File([body],filename,{type:'application/json'});
+    if(!navigator.canShare({files:[file]})){
+      if(confirm('El sistema no admite compartir este archivo directamente. ¿Descargarlo en su lugar?'))download(filename,body,'application/json;charset=utf-8');
+      return;
+    }
+    try{await navigator.share({files:[file],title:'Expediente de auditoría'});}
+    catch(error){
+      if(error.name==='AbortError')return;
+      const detail=['NotAllowedError','SecurityError'].includes(error.name)?'El navegador o sistema ha denegado el permiso de compartir. Esta función requiere activación del usuario y una aplicación de destino compatible.':error.message;
+      if(confirm(detail+' ¿Descargar el JSON para compartirlo manualmente?'))download(filename,body,'application/json;charset=utf-8');
+    }
   }
   function draftEmail(){
+    if(!currentId){alert('Primero crea o selecciona una auditoría.');return;}
     if(!confirm('Se abrirá tu cliente de correo con un asunto y mensaje de entrega, SIN adjuntos. Exporta el PDF y adjúntalo manualmente tras comprobar destinatario, confidencialidad y autorización. ¿Continuar?'))return;
     const subject='Entrega de auditoría '+(state.meta.reportId||state.meta.project||'');
     const body='Se adjunta el informe de auditoría revisado correspondiente a '+(state.meta.client||'la organización')+'.\n\nPor favor confirma su recepción por un canal autorizado.\n\n[Adjuntar manualmente el PDF final]';
