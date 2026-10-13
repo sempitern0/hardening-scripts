@@ -1,6 +1,8 @@
-# Audit Workbench
+# Audit Workbench · sysadmin
 
-**Asistente de auditorías informáticas offline** para inventariar activos, evaluar controles, documentar hallazgos y evidencias, planificar correcciones y preparar informes para clientes.
+[← Volver al repositorio sysadmin](../README.md) · [Instalación](INSTALLATION.md) · [Seguridad](SECURITY.md) · [Notas legales](LEGAL.md)
+
+**Herramienta de auditoría, inventario y documentación técnica offline-first** para inventariar activos, evaluar controles, documentar hallazgos y evidencias, planificar correcciones y preparar informes para clientes.
 
 Funciona en el navegador, sin servicios externos obligatorios. No escanea redes ni modifica equipos.
 
@@ -133,4 +135,4 @@ audit-workbench/
 └── tests/
 ```
 
-Audit Workbench es independiente de los scripts de hardening situados en la raíz de `sysadmin`.
+Audit Workbench forma parte de **sysadmin**, un conjunto de herramientas de administración de sistemas. Funciona de manera independiente de los asistentes de Active Directory de la raíz: su papel es registrar y analizar auditorías, no ejecutar tareas de administración o hardening sobre equipos remotos.
