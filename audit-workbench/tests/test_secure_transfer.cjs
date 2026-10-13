@@ -1,0 +1,31 @@
+'use strict';
+const assert=require('node:assert/strict');
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+const root=path.resolve(__dirname,'..');
+const ctx={URL,URLSearchParams,TextEncoder,TextDecoder,Uint8Array,Blob,crypto:require('node:crypto').webcrypto,btoa,atob};
+ctx.globalThis=ctx;
+vm.runInNewContext(fs.readFileSync(path.join(root,'js/secure-transfer.js'),'utf8'),ctx);
+const sec=ctx.AuditSecureTransfer;
+(async()=>{
+ const audit={schemaVersion:3,meta:{client:'Ejemplo'},assets:[{name:'SRV-01'}]};
+ const encrypted=await sec.encryptBackup(audit,'Una frase larga y privada de ejemplo');
+ assert(!encrypted.includes('SRV-01'),'Plaintext leakage');
+ assert.deepEqual(JSON.parse(await sec.decryptBackup(encrypted,'Una frase larga y privada de ejemplo')),audit);
+ await assert.rejects(sec.decryptBackup(encrypted,'Una frase equivocada con longitud segura'),/incorrecta|alterado/);
+ assert.throws(()=>sec.validateDavUrl('http://example.com/remote.php/webdav/'),/HTTPS/);
+ assert.throws(()=>sec.target({url:'https://example.com/remote.php/webdav/',user:'demo',secret:'x'},'../escape.json'),/Nombre/);
+ assert(sec.target({url:'https://example.com/remote.php/dav/files/demo/',user:'demo',secret:'x'},'report.pdf').endsWith('/remote.php/dav/files/demo/report.pdf'));
+ assert.equal(sec.shareApiInfo({url:'https://example.com/remote.php/dav/files/demo/Audits/',user:'demo',secret:'x'},'report.pdf').path,'/Audits/report.pdf');
+ assert.throws(()=>sec.expiryDate(8),/1 a 7/);
+ const html=fs.readFileSync(path.join(root,'index.html'),'utf8');
+ const sw=fs.readFileSync(path.join(root,'sw.js'),'utf8');
+ const bash=fs.readFileSync(path.join(root,'audit-workbench.sh'),'utf8');
+ const powershell=fs.readFileSync(path.join(root,'audit-workbench.ps1'),'utf8');
+ for(const file of ['secure-transfer.js','secure-transfer-ui.js'])
+   for(const src of [html,sw,bash,powershell])assert(src.includes(file),'Missing offline resource '+file);
+ assert(html.includes('frame-src blob:;')&&!html.includes("frame-src 'none'"),'Local PDF preview CSP missing');
+ assert(sw.includes('v30-secure-distribution'));
+ const app=fs.readFileSync(path.join(root,'js/app.js'),'utf8');
+ assert(app.includes('AuditSecureTransferUI.view')&&app.includes('AuditSecureTransferUI.bind'));
+ console.log('PASS secure backup, tampering, URL isolation, expiry, offline distribution');
+})().catch(e=>{console.error(e);process.exitCode=1});
