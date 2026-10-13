@@ -23,6 +23,11 @@ self.addEventListener('fetch', event => {
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin || !url.pathname.startsWith(new URL(self.registration.scope).pathname)) return;
+  // Explicit connectivity probes must reach the origin, never the offline shell cache.
+  if (request.cache === 'no-store') {
+    event.respondWith(fetch(request));
+    return;
+  }
   event.respondWith(caches.match(request).then(async cached => {
     if (cached) return cached;
     const response = await fetch(request);
