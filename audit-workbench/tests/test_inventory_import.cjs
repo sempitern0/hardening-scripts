@@ -30,4 +30,11 @@ assert(fs.readFileSync(path.join(root,'collect-local.sh'),'utf8').includes("'net
 assert(fs.readFileSync(path.join(root,'collect-local.ps1'),'utf8').includes('networks=$networks;software=$serviceRows'));
 assert(bash.includes('collect-local.sh')&&bash.includes('collect-local.ps1'));
 assert(ps.includes("'collect-local.sh'")&&ps.includes("'collect-local.ps1'"));
+
+const styles=fs.readFileSync(path.join(root,'css/styles.css'),'utf8');
+assert(html.includes('id="network-panel"')&&html.includes('id="network-check"'),'Sidebar must expose reactive connectivity UI');
+for(const status of ['offline','unverified','reachable','checking'])assert(styles.includes('data-state="'+status+'"'),'Missing connectivity status style '+status);
+assert(app.includes("window.addEventListener('online'")&&app.includes("window.addEventListener('offline'"),'Connectivity updates must react to browser events');
+assert(app.includes("cache:'no-store'")&&app.includes("credentials:'omit'"),'Connectivity check must not send credentials and must bypass cache');
+assert(sw.includes("request.cache === 'no-store'"),'Service worker must not serve cached response for connectivity checks');
 console.log('PASS inventory intake parsing, duplicate detection, safety, and offline wiring');
