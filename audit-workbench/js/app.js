@@ -60,7 +60,7 @@
     ['reportId','Identificador del informe'],['revision','Versión del informe'],
     ['contact','Contacto del cliente'],
     ['contactIdType','Documento identificativo del contacto','select',['No indicado','DNI / NIF persona física','NIE','Otro documento']],['contactId','DNI / NIE del contacto (opcional)'],
-    ['start','Inicio de la auditoría','date'],['end','Fin de la auditoría','date'],
+    ['start','Inicio de la auditoría','date'],['startTime','Hora de inicio (local)','time'],['end','Fin de la auditoría','date'],['endTime','Hora de fin (local)','time'],
     ['classification','Clasificación','select',['Confidencial','Uso interno','Público']],
     ['type','Modalidad','select',['Auditoría de sistemas','Auditoría de infraestructura','Revisión de ciberseguridad','Pentesting autorizado','Mixta']],
     ['objectives','Objetivos y contexto','textarea'],['scope','Alcance autorizado (activos, redes y sedes)','textarea'],
@@ -306,7 +306,7 @@
     if(field==='cvss'&& !(/^(?:10(?:\.0)?|[0-9](?:\.[0-9])?)$/.test(v)))return 'La puntuación CVSS debe estar entre 0.0 y 10.0.';
     if(field==='vlan'&&(!/^\d+$/.test(v)||Number(v)<1||Number(v)>4094))return 'VLAN válida: de 1 a 4094.';
     if(field==='cidr'&& !/^(?:\d{1,3}\.){3}\d{1,3}\/(?:[0-9]|[12][0-9]|3[0-2])$/.test(v))return 'Subred IPv4 CIDR no válida (ej. 192.168.1.0/24).';
-    if(field==='end'&&obj.start&&v<obj.start)return 'La fecha de fin no puede ser anterior al inicio.';
+    if(block==='meta'&&['start','startTime','end','endTime'].includes(field))return quality.periodProblems(obj)[0]?.message||'';
     return '';
   }
   function updateValidation(target){
@@ -535,7 +535,7 @@
       const options=name==='asset'?[...new Set(['Todo el alcance',...state.assets.map(a=>str(a.name)).filter(Boolean)])]:block==='assets'&&name==='model'?(vendorModels[obj.vendor]||[]):choices;
       const custom=Boolean(value)&&!options.includes(value);
       control=`<select id="${id}" ${attrs} data-preset="true" aria-label="${html(label)}"><option value="">${block==='assets'&&name==='model'&&!obj.vendor?'Selecciona primero un fabricante…':'Seleccionar…'}</option>${options.map(x=>`<option value="${html(x)}"${x===value?' selected':''}>${html(x)}</option>`).join('')}<option value="__custom__"${custom?' selected':''}>Otro / escribir…</option></select><input ${attrs} data-custom="true" aria-label="${html(label)} personalizado" placeholder="Especifica el valor" value="${custom?html(value):''}" maxlength="20000" ${custom?'':'hidden'}>`;
-    }else control=`<input id="${id}" type="${type==='date'?'date':'text'}" ${attrs} value="${html(value)}" maxlength="20000"${key==='decimal'?' inputmode="decimal"':''}>`;
+    }else control=`<input id="${id}" type="${type==='date'?'date':type==='time'?'time':'text'}" ${attrs} value="${html(value)}" maxlength="20000"${key==='decimal'?' inputmode="decimal"':''}>`;
     const termId=glossary?.CONTEXT_HELP?.fields?.[block]?.[name];
     const term=termId?glossary.byId(termId):null;
     const help=term?`<button type="button" class="glossary-help" data-glossary-term="${html(term.id)}" data-glossary-field="${html(id)}" aria-label="Consultar ${html(term.title)} y volver a este campo"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5"></path><circle cx="12" cy="7.5" r=".85" fill="currentColor" stroke="none"></circle></svg></button>`:'';
@@ -904,7 +904,7 @@
       <section class="card"><h2>Entrega bajo control del auditor</h2><p class="subtle">No se realiza ningún envío automático. El PDF se adjunta manualmente después de revisarlo.</p><div class="action-row"><button class="button accent" id="open-email">Preparar correo</button><button class="button quiet" id="native-share-json">Compartir JSON con el sistema</button><button class="button quiet" id="delivery-pdf">Generar PDF</button></div></section>
       <section class="card"><h2>Sincronización con nube</h2><p class="subtle">Google Drive, OneDrive, S3, Nextcloud y correo API requieren autorización, cifrado, autenticación y mecanismos de revocación. Todavía no están conectados. Exporta JSON y utiliza un cliente autorizado.</p></section>`;
   }
-  const reviewState = () => quality.review(state,relations);
+  const reviewState = (mode='draft') => quality.review(state,relations,{mode});
   function renderPlanSummary(rows,limit=6){
     if(!rows.length)return '<p class="subtle">No hay hallazgos documentados. Si no se han encontrado debilidades, explica la cobertura y las limitaciones.</p>';
     const selected=rows.slice(0,limit);
@@ -965,12 +965,12 @@
         </article>`;}).join(''):'<section class="card"><p class="subtle">No existen hallazgos. Registra primero las desviaciones detectadas durante la auditoría.</p></section>'}`;
   }
   function renderDelivery(){
-    const audit=reviewState();
+    const audit=reviewState('final');
     return `<span class="eyebrow">ENTREGA / REPORTING</span><h1 class="page-title">Informe final</h1><p class="lead">Resumen para dirección, plan de remediación y anexo técnico verificable.</p>
       <div class="notice ${audit.ready?'':'warn'}">${audit.ready?'Revisión básica superada.':'Pendientes '+audit.blockers.length+' datos imprescindibles: el documento se emitirá como BORRADOR si decides continuar.'} ${audit.warnings.length} avisos adicionales. <button class="button quiet small" data-go="quality">Revisar calidad →</button></div>
       <section class="card"><div class="card-head"><div><h2>Conclusiones y cierre</h2><p class="subtle">Explica los riesgos en lenguaje comprensible y las decisiones necesarias.</p></div></div><div class="fields">${finalFields.map(f=>renderField(state.final,'final',f)).join('')}</div></section>
       <section class="card"><h2>Plan de remediación generado</h2><p class="subtle">Se utilizarán los hallazgos ya documentados. Para completar una acción, edita su ficha.</p>${renderPlanSummary(audit.plan)}<button type="button" class="button quiet" data-go="findings">Revisar responsables, fechas y verificación</button></section>
-      <section class="card"><h2>Preparar entrega</h2><p class="subtle">El PDF contiene el informe y el plan de remediación; el JSON permite continuar la auditoría.</p><div class="action-row"><button class="button accent" id="delivery-pdf">Generar informe PDF ↗</button><button class="button quiet" id="retest-pdf">Informe de reevaluación PDF ↗</button><button class="button quiet" id="delivery-json">Guardar expediente JSON</button><button class="button quiet" data-go="backups">Copias / Excel / CSV</button><button class="button danger" id="delivery-reset">Nuevo expediente</button><button class="button quiet" id="native-share-json">Compartir JSON (opcional)</button><button class="button quiet" id="open-email">Preparar correo (sin adjuntos)</button></div></section>`;
+      <section class="card"><h2>Preparar entrega</h2><p class="subtle">El PDF contiene el informe y el plan de remediación; el JSON permite continuar la auditoría.</p><div class="action-row"><button class="button accent" id="delivery-pdf">Generar borrador PDF ↗</button><button class="button accent" id="delivery-pdf-final">Informe definitivo PDF ↗</button><button class="button quiet" id="retest-pdf">Informe de reevaluación PDF ↗</button><button class="button quiet" id="delivery-json">Guardar expediente JSON</button><button class="button quiet" data-go="backups">Copias / Excel / CSV</button><button class="button danger" id="delivery-reset">Nuevo expediente</button><button class="button quiet" id="native-share-json">Compartir JSON (opcional)</button><button class="button quiet" id="open-email">Preparar correo (sin adjuntos)</button></div></section>`;
   }
 
   function render(){
@@ -1332,7 +1332,8 @@
     if(b.dataset.add){if(state[b.dataset.add].length>=LIMIT_ROWS)return alert('Límite de registros alcanzado.');const type=b.dataset.add;let row={_key:uid()};if(['assets','controls','findings','evidence'].includes(type))row.id=relations.nextCode(state[type],type);if(type==='findings')row={...row,severity:'Media',status:'Abierto'};if(type==='cves')row={...row,id:'',severity:'Sin evaluar',status:'Sin verificar'};if(type==='controls')row.status='Pendiente';if(type==='evidence')row.links=relations.normalizeLinks(null);state[type].push(row);persist();render();return}
     if(b.dataset.remove){const k=b.dataset.remove,i=Number(b.dataset.index);if(confirm('¿Eliminar este registro y su contenido?')){state[k].splice(i,1);persist();render()}return}
     if(b.dataset.clearImage!==undefined){if(confirm('¿Eliminar la imagen incrustada?')){state.evidence[Number(b.dataset.clearImage)].image='';persist();render()}return}
-    if(b.id==='delivery-pdf'){printReport();return}
+    if(b.id==='delivery-pdf'){printReport('draft');return}
+    if(b.id==='delivery-pdf-final'){printReport('final');return}
     if(b.id==='delivery-json'){exportJson();return}
     if(b.id==='delivery-reset'){await createAudit();return}
   });
@@ -1458,7 +1459,7 @@
   const table = (fields,row) => `<table class="report-table"><tbody>${fields.map(([name,label])=>`<tr><th class="report-field-label">${html(label)}</th><td>${para(row[name])}</td></tr>`).join('')}</tbody></table>`;
   const section = (num,title,content) => `<section class="report-section"><h2>${num}. ${html(title)}</h2>${content}</section>`;
   function reportRows(k){const rows=state[k];return rows.length?rows.map((row,i)=>`<h3>${i+1}. ${html(row.title||row.name||row.id||'Registro')}</h3>${table(groups[k].fields,row)}${k==='evidence'?`<p class="report-note"><strong>Integridad y vínculos:</strong> ${html(row.fileSha256?'SHA-256 original: '+row.fileSha256:'Archivo original sin huella calculada')} ${html(row.fileName?' · Archivo: '+row.fileName:'')} · ${html(relations.CATEGORIES.map(kind=>{const names=relations.normalizeLinks(row.links)[kind].map(key=>state[kind].find(x=>x._key===key)).filter(Boolean).map(x=>relations.itemLabel(x,kind));return names.length?relationLabels[kind]+': '+names.join(', '):''}).filter(Boolean).join(' · ')||'Sin relaciones explícitas')}</p>`:''}${k==='evidence'&&row.image?`<figure><img class="report-evidence" alt="Evidencia ${html(row.id)}" src="${row.image}"><figcaption class="report-note">${html(row.id||'Evidencia')}: ${html(row.title||'Captura adjunta')}</figcaption></figure>`:''}`).join(''):'<p class="report-empty">Sin registros incluidos en esta categoría.</p>'}
-  let printMode='audit';
+  let printMode='audit',reportDeliveryMode='draft';
   function buildReport(){
     byId('report').dataset.palette=selectedPalette;
     const today=new Date().toLocaleDateString('es-ES');
@@ -1471,9 +1472,9 @@
     const executive=section(3,'Resumen ejecutivo',`<p>${para(ending.executive)}</p><h3>Valoración del riesgo</h3><p>${para(ending.assessment)}</p><div class="report-stat-grid">${severity.map(s=>`<div><strong>${count[s]}</strong><small>${s}</small></div>`).join('')}</div><h3>Puntos fuertes</h3><p>${para(ending.strengths)}</p><h3>Debilidades principales</h3><p>${para(ending.weaknesses)}</p>`);
     const controls=section(8,'Controles y verificaciones',reportRows('controls'));
     const findings=section(9,'Resumen de hallazgos y ficha técnica',`${state.findings.length?`<table class="report-table"><thead><tr><th>ID</th><th>Hallazgo</th><th>Severidad</th><th>Remediación</th></tr></thead><tbody>${state.findings.map(f=>`<tr><td>${html(f.id)}</td><td>${html(f.title)}</td><td>${html(f.severity)}</td><td>${para(f.recommendation)}</td></tr>`).join('')}</tbody></table>`:'<p class="report-empty">No hay hallazgos registrados.</p>'}${state.findings.map(f=>`<div class="report-finding"><h3>${html(f.id||'Hallazgo')} — ${html(f.title||'Sin título')} <span class="report-badge ${level(f.severity)}">${html(f.severity)}</span></h3>${table(groups.findings.fields,f)}${f.originControlKey?`<p class="report-note"><strong>Control de origen:</strong> ${html(relations.itemLabel(state.controls.find(c=>c._key===f.originControlKey),'controls'))}</p>`:''}${state.evidence.filter(e=>e.image&&((f.evidenceIds||'').split(/[,;\s]+/).includes(e.id)||relations.normalizeLinks(e.links).findings.includes(f._key))).map(e=>`<figure><img class="report-evidence" src="${e.image}" alt="Evidencia ${html(e.id)}"><figcaption class="report-note">${html(e.id)} — ${html(e.title)}</figcaption></figure>`).join('')}</div>`).join('')}`);
-    const reviewed=reviewState();
+    const reviewed=reviewState(reportDeliveryMode);
     const actionPlan=section(11,'Plan de remediación y comprobación',reviewed.plan.length?reviewed.plan.map(item=>`<div class="report-action"><h3>${html(item.id)} · ${html(item.title)} <span class="report-badge ${level(item.severity)}">${html(item.severity)}</span></h3><p><strong>Estado:</strong> ${html(item.status)} · <strong>Responsable:</strong> ${html(item.owner||'Pendiente de asignar')} · <strong>Fecha objetivo:</strong> ${html(item.deadline||'Por acordar')}</p><p><strong>Acción correctiva:</strong> ${para(item.recommendation||'Sin definir')}</p><p><strong>Criterio de verificación:</strong> ${para(item.verification||'Sin definir')}</p></div>`).join(''):'<p class="report-empty">No se registraron hallazgos que requieran remediación. Esta observación no implica ausencia de riesgos fuera del alcance revisado.</p>');
-    const draftMarker=reviewed.ready?'':`<aside class="report-draft"><strong>BORRADOR · REVISIÓN PENDIENTE</strong><p>Existen ${reviewed.blockers.length} comprobaciones imprescindibles incompletas. No constituye un informe final validado.</p></aside>`;
+    const draftMarker=reportDeliveryMode==='final'&&reviewed.ready?'':`<aside class="report-draft"><strong>BORRADOR · REVISIÓN PENDIENTE</strong><p>Existen ${reviewed.blockers.length} comprobaciones imprescindibles incompletas. No constituye un informe final validado.</p></aside>`;
     const closing=section(12,'Conclusiones y plan de acción',table(finalFields.filter(f=>f[0]!=='executive'&&f[0]!=='strengths'&&f[0]!=='weaknesses'&&f[0]!=='assessment'),ending)+`<div class="report-signature">Generado localmente con Audit Workbench. Validación y autorización de entrega: ${html(ending.signoff||'Pendiente de firma')}.</div>`);
     byId('report').innerHTML=cover.replace('<div class="report-cover">','<div class="report-cover">'+draftMarker)+legal+identity+executive+section(4,'Inventario de hardware',reportRows('assets'))+section(5,'Infraestructura de redes',reportRows('networks'))+section(6,'Software y servicios',reportRows('software'))+section(7,'Vulnerabilidades CVE registradas',reportRows('cves'))+controls+findings+section(10,'Registro de evidencias',reportRows('evidence'))+actionPlan+closing;
   }
@@ -1509,14 +1510,15 @@
     if(!state.findings.some(f=>retest.normalize(f.retests).length)&&!confirm('No hay verificaciones posteriores registradas. El informe mostrará todos los hallazgos como sin reevaluar. ¿Continuar?'))return;
     printMode='retest';buildRetestReport();window.print();
   }
-  function printReport(){
+  function printReport(mode='draft'){
     printMode='audit';
-    const audit=reviewState(), invalid=invalidFields();
-    const warningCount=audit.warnings.length+invalid.length;
-    if(audit.blockers.length){
-      const message=`Faltan ${audit.blockers.length} comprobaciones imprescindibles.\n\n${audit.blockers.slice(0,4).map(i=>'• '+i.message).join('\n')}\n\nSi continúas, se imprimirá BORRADOR · REVISIÓN PENDIENTE. ¿Continuar?`;
-      if(!confirm(message))return;
-    }else if(warningCount&&!confirm(`La revisión indica ${warningCount} advertencias. Consulta «Revisión de calidad» antes de entregar.\n\n¿Generar el informe igualmente?`))return;
+    reportDeliveryMode=mode==='final'?'final':'draft';
+    const review=reviewState(reportDeliveryMode),invalid=invalidFields();
+    if(reportDeliveryMode==='final'&&(review.blockers.length||invalid.length)){
+      alert('No se puede emitir un informe definitivo. Existen '+(review.blockers.length+invalid.length)+' problemas que requieren revisión. Consulta «Revisión de calidad» o genera un borrador.');
+      move('quality');return;
+    }
+    if(reportDeliveryMode==='final'&&review.warnings.length&&!confirm('El informe definitivo contiene '+review.warnings.length+' avisos documentales. Revisa su justificación antes de entregar. ¿Continuar?'))return;
     buildReport();window.print();
   }
 
