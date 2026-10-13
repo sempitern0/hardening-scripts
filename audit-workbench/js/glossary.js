@@ -6,7 +6,7 @@
     "id": "term-1",
     "title": "Segmentación de red",
     "category": "Redes",
-    "description": "Separar equipos y servicios en zonas con reglas de comunicación explícitas.",
+    "description": "Una red segmentada separa equipos y servicios en zonas con reglas de comunicación explícitas.",
     "check": "Identifica VLAN/subredes, revisa ACL y firewall entre zonas y prueba solamente flujos autorizados."
   },
   {
