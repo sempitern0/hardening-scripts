@@ -45,6 +45,8 @@ El asistente admite **hora de inicio** y **hora de fin** en formato local de 24 
 
 La entrega ofrece dos modos: **Generar borrador PDF**, siempre marcado como trabajo no validado, e **Informe definitivo PDF**, que bloquea errores críticos de calidad y exige revisar las advertencias restantes. En el modo definitivo se comprueban referencias a evidencias, controles pendientes, firma y coherencia temporal; los campos vacíos de hora generan avisos de precisión, no errores para los expedientes antiguos. Los informes incluyen índice interno, resumen de cobertura y paginación A4 mejorada. La exportación sigue utilizando el navegador, sin subir documentos a servicios externos.
 
+La opción **Descargar expediente JSON** solicita una descarga local y muestra un aviso de estado; el navegador decide el destino según su configuración. Verifica la presencia del archivo en Descargas. La barra superior utiliza el mismo flujo y no recibe accidentalmente el evento `click` como contenido del expediente. Los borradores reflejan los bloqueos del preflight definitivo y el informe evita duplicar la nota legal final.
+
 ## Flujo recomendado
 
 1. **Configuración:** registra tu consultora y su equipo de auditores; asigna profesionales al expediente.
