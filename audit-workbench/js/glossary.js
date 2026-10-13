@@ -3124,6 +3124,65 @@
 ].map(({id,...guide})=>[id,Object.freeze(guide)])));
  const MAC_COMMANDS=[{"id":"term-25","platform":"macOS","command":"scutil --dns","lookFor":"Resolutores DNS efectivos por interfaz y orden de búsqueda."},{"id":"term-28","platform":"macOS","command":"lsof -nP -iTCP -sTCP:LISTEN","lookFor":"Procesos y puertos TCP en escucha (privilegios según proceso)."},{"id":"term-29","platform":"macOS","command":"curl -Iv https://servidor.autorizado.invalid","lookFor":"Validación TLS y respuesta de cabeceras del host aprobado."},{"id":"term-30","platform":"macOS","command":"security find-certificate -a -p /Library/Keychains/System.keychain","lookFor":"Certificados públicos del llavero del sistema; no extrae claves privadas."},{"id":"term-40","platform":"macOS","command":"fdesetup status","lookFor":"Estado FileVault del volumen de arranque; puede requerir permisos."},{"id":"term-15","platform":"macOS","command":"shasum -a 256 '/ruta/evidencia.bin'","lookFor":"SHA-256 reproducible de evidencia."},{"id":"term-72","platform":"macOS","command":"shasum -a 256 '/ruta/evidencia.bin'","lookFor":"Comprueba integridad en una copia preservada."},{"id":"term-100","platform":"macOS","command":"systemsetup -getusingnetworktime; systemsetup -getnetworktimeserver","lookFor":"Estado/configuración NTP; ciertos datos requieren privilegios."},{"id":"term-36","platform":"macOS","command":"lsof -nP -iTCP -sTCP:LISTEN","lookFor":"Servicios en escucha."},{"id":"term-21","platform":"macOS","command":"ifconfig; netstat -rn -f inet","lookFor":"Direcciones/prefijos y rutas IPv4."},{"id":"term-19","platform":"macOS","command":"scutil --nwi; netstat -rn -f inet","lookFor":"Contexto de interfaces y rutas para VPN."},{"id":"term-34","platform":"macOS","command":"softwareupdate --list","lookFor":"Actualizaciones ofrecidas al host; no instala actualizaciones."},{"id":"term-99","platform":"macOS","command":"log show --last 1h --style compact --predicate 'messageType == error'","lookFor":"Errores recientes; filtra sin guardar datos personales innecesarios."},{"id":"term-101","platform":"macOS","command":"log show --last 1h --style compact --predicate 'process == \"sshd\"'","lookFor":"Eventos recientes del servicio SSH cuando existan."},{"id":"term-26","platform":"macOS","command":"ipconfig getpacket en0","lookFor":"Parámetros DHCP de en0; comprobar interfaz activa."},{"id":"term-31","platform":"macOS","command":"system_profiler SPAirPortDataType","lookFor":"Seguridad y configuración Wi-Fi visible desde el cliente."},{"id":"term-42","platform":"macOS","command":"systemextensionsctl list","lookFor":"Extensiones de sistema presentes; verificar estado EDR en consola del fabricante."},{"id":"term-39","platform":"macOS","command":"system_profiler SPiBridgeDataType","lookFor":"Componentes de seguridad disponibles según hardware Apple (no implica TPM)."}];
  for(const entry of MAC_COMMANDS){const g=GUIDES[entry.id];if(g)g.commands.push({platform:entry.platform,command:entry.command,lookFor:entry.lookFor});}
+ // Contextual glossary references scoped to the wizard section and field.
+ const CONTEXT_HELP=Object.freeze({
+  "fields": {
+    "meta": {
+      "scope": "term-41",
+      "methodology": "term-110",
+      "limitations": "term-76"
+    },
+    "assets": {
+      "os": "term-9",
+      "criticality": "term-17"
+    },
+    "networks": {
+      "cidr": "term-3",
+      "vlan": "term-2",
+      "dns": "term-25",
+      "firewall": "term-14",
+      "exposure": "term-1"
+    },
+    "software": {
+      "support": "term-9",
+      "exposure": "term-36"
+    },
+    "cves": {
+      "id": "term-7",
+      "cvss": "term-8",
+      "status": "term-60"
+    },
+    "controls": {
+      "status": "term-76",
+      "reference": "term-110"
+    },
+    "findings": {
+      "cvss": "term-8",
+      "likelihood": "term-81",
+      "impact": "term-82",
+      "recommendation": "term-83",
+      "residual": "term-16"
+    },
+    "evidence": {
+      "source": "term-20",
+      "sha256": "term-15"
+    },
+    "legal": {
+      "dataProtection": "term-92",
+      "retention": "term-95"
+    },
+    "final": {
+      "roadmap": "term-83"
+    }
+  },
+  "stages": {
+    "cves": "term-7",
+    "controls": "term-76",
+    "evidence": "term-20",
+    "quality": "term-76",
+    "followup": "term-83"
+  }
+});
  const CATEGORIES=Object.freeze([...new Set(TERMS.map(t=>t.category))]);
  const normalize = input=>String(input??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase('es').trim();
  const byId=id=>TERMS.find(t=>t.id===id)||null;
@@ -3144,5 +3203,5 @@
    return score(b)-score(a)||a.title.localeCompare(b.title,'es');
   });
  };
- globalThis.AuditGlossary=Object.freeze({TERMS,CATEGORIES,GUIDES,search,byId,normalize});
+ globalThis.AuditGlossary=Object.freeze({TERMS,CATEGORIES,GUIDES,CONTEXT_HELP,search,byId,normalize});
 })();
