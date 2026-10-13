@@ -863,8 +863,40 @@
     if(!reply.ok)throw Error('WebDAV devolvió HTTP '+reply.status+'. Revisa permisos y CORS.');
     byId('dav-upload-status').textContent='Expediente enviado por HTTPS. Conserva igualmente una copia offline.';
   }
+  // Connectivity is advisory: navigator.onLine never establishes Internet reachability.
+  let serverVerified=false,networkBusy=false;
+  function refreshNetworkStatus(){
+    const panel=byId('network-panel'),title=byId('network-status'),detail=byId('network-description'),button=byId('network-check');
+    if(!panel||!title||!detail)return;
+    const connected=navigator.onLine;
+    const state=networkBusy?'checking':!connected?'offline':serverVerified?'reachable':'unverified';
+    panel.dataset.state=state;
+    const copy={
+      offline:['Sin conexión detectada','El expediente sigue disponible offline.'],
+      unverified:['Red detectada · sin verificar','No implica acceso a Internet.'],
+      reachable:['Servidor de la PWA accesible','No certifica acceso a Internet.'],
+      checking:['Comprobando servidor…','Sin enviar datos del expediente.']
+    }[state];
+    title.textContent=copy[0];detail.textContent=copy[1];if(button)button.disabled=networkBusy;
+    const status=byId('online-status');if(status)status.textContent=copy.join(' · ');
+  }
+  async function checkNetworkServer(){
+    if(networkBusy)return;
+    serverVerified=false;
+    if(!navigator.onLine){refreshNetworkStatus();return;}
+    if(!['http:','https:'].includes(location.protocol)){refreshNetworkStatus();return;}
+    networkBusy=true;refreshNetworkStatus();
+    const controller=new AbortController();
+    // No cross-origin requests, credentials, telemetry or audit data.
+    try{
+      const url=new URL('./manifest.webmanifest',location.href);
+      const response=await fetch(url.href,{method:'GET',cache:'no-store',credentials:'omit',redirect:'error',signal:controller.signal});
+      serverVerified=response.ok&&response.type!=='opaque';
+    }catch(_error){serverVerified=false;}
+    finally{networkBusy=false;refreshNetworkStatus();}
+  }
   function renderOnline(){
-    const status=navigator.onLine?'El navegador declara conexión disponible.':'Sin conexión detectada. El expediente sigue siendo editable.';
+    const status=navigator.onLine?'Red detectada por el navegador; disponibilidad de servicios externos no comprobada.':'Sin conexión detectada. El expediente sigue siendo editable.';
     return `<span class="eyebrow">CONECTIVIDAD / ENTREGA OPCIONAL</span><h1 class="page-title">Herramientas conectadas</h1>
       <p class="lead">La auditoría no necesita Internet. Estas operaciones solo se ejecutan tras pulsar y confirmar, sin credenciales guardadas.</p>
       <section class="card"><h2>Estado de conexión e instalación</h2><p id="online-status" role="status">${html(status)}</p><div class="action-row"><button class="button quiet" id="check-connectivity">Comprobar conectividad</button><button class="button accent" id="install-pwa" ${deferredInstallPrompt?'':'hidden'}>Instalar aplicación en este dispositivo</button><button class="button quiet" data-go="cves">Consultar CVE por identificador</button></div><p class="subtle online-install-note">Para tablets: primero abre el sitio mediante HTTPS. Si el navegador no ofrece instalación directa, usa «Añadir a pantalla de inicio» desde su menú. Tras abrirla online, prueba la aplicación en modo avión.</p></section>
@@ -1198,7 +1230,7 @@
     }
     if(b.dataset.go){if(b.dataset.go==='intake'&&['assets','networks','software'].includes(page)){intakeReturn=page;intakeBlock=page;intakePreview=null;intakeSelected.clear();intakeError='';}move(b.dataset.go);return}
     if(b.id==='install-pwa'){alert('Instala desde el menú del navegador: Instalar aplicación / Añadir a pantalla de inicio. Requiere HTTPS o localhost y compatibilidad PWA.');return;}
-    if(b.id==='check-connectivity'){byId('online-status').textContent=navigator.onLine?'Conexión disponible según el navegador. La disponibilidad de servicios externos no se garantiza.':'Sin conexión según el navegador. No se ha contactado con ningún servidor.';return}
+    if(b.id==='check-connectivity'){await checkNetworkServer();return}
     if(b.id==='member-add'){
       if(settings.members.length>=TEAM_MAX){alert('Máximo de 60 profesionales por perfil.');return;}
       const member={id:uid(),name:'',role:'',idType:'DNI',documentId:'',email:'',phone:''};settings.members.push(member);saveSettings();render();
@@ -1479,6 +1511,10 @@
   byId('open-library').addEventListener('click',async()=>{try{await flush();move('records')}catch(error){alert(error.message)}});
   document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')void saveCurrent()});
   window.addEventListener('pagehide',()=>void saveCurrent());
+  byId('network-check')?.addEventListener('click',()=>void checkNetworkServer());
+  window.addEventListener('online',()=>{serverVerified=false;refreshNetworkStatus()});
+  window.addEventListener('offline',()=>{serverVerified=false;refreshNetworkStatus()});
+  refreshNetworkStatus();
   byId('local-date').textContent=new Date().toLocaleDateString('es-ES');
   try{selectPalette(localStorage.getItem(PALETTE_KEY)||'ocean')}catch(_ignored){selectPalette('ocean')}
   void initialLoad();
