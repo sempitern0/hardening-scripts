@@ -109,7 +109,7 @@
       const field=input.dataset.field||input.dataset.memberField;
       const block=input.dataset.block||'member';
       if(field==='phone'||field==='clientPhone'){
-        const saved=input.value,country=detect(saved);
+        const saved=input.value,country=detect(saved);let activeCountry=country.id;
         const wrap=document.createElement('div');wrap.className='phone-widget';
         const select=document.createElement('select');select.className='phone-country';select.setAttribute('aria-label','País y prefijo telefónico');
         for(const c of [...COUNTRIES,OTHER]){
@@ -124,9 +124,9 @@
         input.value=country.id==='OTHER'?saved:format(national(saved,country.id),country.id);
         select.addEventListener('change',()=>{
           const old=input.value,next=byId(select.value);
-          input.value=old&&country.id!==next.id?'':format(old,next.id);
+          input.value=old&&activeCountry!==next.id?'':format(old,next.id);
           input.placeholder=next.example;
-          country.id=next.id;
+          activeCountry=next.id;
           input.dispatchEvent(new Event('input',{bubbles:true}));
           input.focus();
         });
