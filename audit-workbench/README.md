@@ -1,14 +1,14 @@
 # Audit Workbench · sysadmin
 
-[← Volver al repositorio sysadmin](../README.md) · [Instalación](INSTALLATION.md) · [Seguridad](SECURITY.md) · [Notas legales](LEGAL.md)
+[← Back to the sysadmin repository](../README.md) · [Installation](INSTALLATION.md) · [Security](SECURITY.md) · [Legal notes](LEGAL.md)
 
-**Herramienta de auditoría, inventario y documentación técnica offline-first** para inventariar activos, evaluar controles, documentar hallazgos y evidencias, planificar correcciones y preparar informes para clientes.
+**Offline-first technical auditing, inventory, and documentation tool** for recording assets, evaluating controls, documenting findings and evidence, planning remediation, and preparing client reports.
 
-Funciona en el navegador, sin servicios externos obligatorios. No escanea redes ni modifica equipos.
+It runs in the browser without requiring external services. It does not scan networks or modify devices.
 
-## Comenzar
+## Getting started
 
-Desde la carpeta `audit-workbench/` del repositorio:
+From the repository's `audit-workbench/` directory:
 
 ```bash
 bash ./audit-workbench.sh
@@ -18,121 +18,123 @@ bash ./audit-workbench.sh
 .\audit-workbench.ps1
 ```
 
-Para trabajar a través de un origen estable en el equipo:
+To work through a stable local origin:
 
 ```bash
 cd audit-workbench
 python -m http.server 8765 --bind 127.0.0.1
 ```
 
-Abre `http://127.0.0.1:8765`. Para instalar la PWA en tablet o móvil, consulta **[Instalación por dispositivo](INSTALLATION.md)**: la primera carga requiere HTTPS y un navegador compatible.
+Open `http://127.0.0.1:8765`. For installation as a PWA on a tablet or phone, see **[Installation by device](INSTALLATION.md)**: the initial load requires HTTPS and a compatible browser.
 
-## Entrada guiada de datos
+## Guided data entry
 
-Los formularios muestran ejemplos contextuales para DNI, NIE, CIF/NIF entidad, identificación fiscal, IP, CIDR, VLAN, CVE, CVSS, SHA-256, referencias y otros campos de formato especializado. Los campos de teléfono de cliente, consultora y auditores admiten selección de país con bandera y prefijo, y presentan una máscara orientativa. Se conserva el teléfono en formato internacional dentro del campo existente (sin migración del JSON); la validación de identidad y teléfono sigue siendo local y no comprueba la titularidad o asignación real. Los números antiguos permanecen editables.
+Forms provide contextual examples for DNI, NIE, entity CIF/NIF, tax identification, IP, CIDR, VLAN, CVE, CVSS, SHA-256, references, and other specially formatted fields. Phone fields for clients, consulting firms, and auditors support a country flag and dialing code selector, along with a suggested entry mask. Numbers are stored in international format in the existing field (no JSON migration); identity and phone validation stays local and does not verify actual ownership or assignment. Existing phone numbers remain editable.
 
-## Distribución segura de expedientes y PDF
+## Secure distribution of audit records and PDFs
 
-En **Conexiones online → Nextcloud** es posible descargar o subir un backup JSON cifrado localmente (AES-256-GCM y PBKDF2). La frase no se envía al servidor. La recuperación descarga un JSON para revisar e importar manualmente. WebDAV requiere HTTPS, contraseña de aplicación, autorización explícita y CORS compatible.
+Under **Online connections → Nextcloud**, you can download or upload a locally encrypted JSON backup (AES-256-GCM and PBKDF2). The passphrase is not sent to the server. Recovery downloads a JSON file for review and manual import. WebDAV requires HTTPS, an app password, explicit authorization, and compatible CORS settings.
 
-Para el PDF: genera el documento mediante **Generar PDF**, guárdalo desde impresión y selecciónalo en Conexiones. Se previsualiza mediante una URL local temporal, sin publicarse. Si lo autorizas, se sube por WebDAV y se puede crear un enlace de Nextcloud mediante OCS, con contraseña, permiso de lectura y caducidad de 1 a 7 días. Es Nextcloud quien aplica caducidad y permisos: no se crea un túnel hacia el equipo. Los enlaces de sesiones anteriores se gestionan desde Nextcloud. El PDF se almacena en claro en el servidor, sujeto a los controles y cifrado en reposo de éste.
+For PDFs: generate the document using **Generate PDF**, save it through the print dialog, and select it under Connections. A temporary local URL is used to preview it without publication. With authorization, it can be uploaded over WebDAV, and a Nextcloud link can be created through OCS with a password, read-only permission, and an expiration of 1 to 7 days. Nextcloud enforces expiration and permissions: no tunnel to the auditor's device is created. Links created during earlier sessions must be managed in Nextcloud. PDFs are stored without file-level encryption on the server, subject to its access controls and encryption-at-rest configuration.
 
-Google Drive, OneDrive, S3 y la generación binaria automática de PDF no están conectados. Las operaciones online dependen de CORS y la configuración del servidor.
+Google Drive, OneDrive, S3, and automatic binary PDF generation are not connected. Online operations depend on CORS and server configuration.
 
-La ayuda contextual del diccionario usa botones SVG independientes de las etiquetas de los campos para no interferir con selectores nativos. El diccionario ofrece retorno inmediato al paso o campo desde el que se abrió. El catálogo offline incluye familias adicionales de portátiles y sobremesa, con entrada personalizada si no aparece un modelo.
+Contextual dictionary help uses SVG buttons separate from field labels to avoid interfering with native selectors. The dictionary offers a direct return to the step or field from which it was opened. The offline catalog includes additional laptop and desktop families, with custom entry for models not listed.
 
-## Informes y revisión previa
+## Reports and pre-delivery review
 
-El asistente admite **hora de inicio** y **hora de fin** en formato local de 24 horas, junto a las fechas existentes. Los JSON antiguos que solo contienen fechas siguen siendo válidos y no reciben horarios supuestos. Se valida el orden cronológico, incluidas auditorías realizadas en un mismo día.
+The assistant supports **start time** and **end time** in local 24-hour format alongside existing dates. Older JSON files containing only dates remain valid, without assumed times. Chronological order is checked, including audits that start and end on the same day.
 
-La entrega ofrece dos modos: **Generar borrador PDF**, siempre marcado como trabajo no validado, e **Informe definitivo PDF**, que bloquea errores críticos de calidad y exige revisar las advertencias restantes. En el modo definitivo se comprueban referencias a evidencias, controles pendientes, firma y coherencia temporal; los campos vacíos de hora generan avisos de precisión, no errores para los expedientes antiguos. Los informes incluyen índice interno, resumen de cobertura y paginación A4 mejorada. La exportación sigue utilizando el navegador, sin subir documentos a servicios externos.
+Delivery provides two modes: **Generate draft PDF**, always marked as unvalidated work, and **Final report PDF**, which blocks critical quality issues and requires review of remaining warnings. Final-report checks include evidence references, pending controls, sign-off, and chronological consistency; empty time fields produce precision warnings rather than errors for older records. Reports include an internal table of contents, a coverage summary, and improved A4 pagination. Export continues to use the browser without uploading documents to external services.
 
-La opción **Descargar expediente JSON** solicita una descarga local y muestra un aviso de estado; el navegador decide el destino según su configuración. Verifica la presencia del archivo en Descargas. La barra superior utiliza el mismo flujo y no recibe accidentalmente el evento `click` como contenido del expediente. Los borradores reflejan los bloqueos del preflight definitivo y el informe evita duplicar la nota legal final.
+**Download audit record JSON** requests a local download and displays a status message; the browser decides where to save it according to its configuration. Verify that the file appears in Downloads. The top toolbar uses the same workflow and does not accidentally treat the `click` event as audit content. Draft reports show blockers from the final-report preflight, and the report avoids duplicating the final legal note.
 
-## Flujo recomendado
+## Recommended workflow
 
-1. **Configuración:** registra tu consultora y su equipo de auditores; asigna profesionales al expediente.
-2. **Biblioteca:** crea o abre una auditoría, identifica el cliente y delimita alcance, autorizaciones y exclusiones.
-3. **Inventario:** documenta hardware, sistemas operativos, redes y software. Usa búsquedas y selectores; se admiten valores personalizados.
-4. **Controles:** selecciona plantillas de sistemas, redes, identidad o continuidad. Todos comienzan como *Pendiente* y requieren verificación real.
-5. **Hallazgos y evidencias:** registra lo observado, vincula activos y controles, documenta consecuencias, acciones recomendadas y criterios de cierre. Conserva los originales de evidencias y sus huellas SHA-256.
-6. **Calidad y entrega:** revisa avisos, prioridades y plan de remediación antes de generar el PDF. Si faltan datos esenciales, el informe se identifica como borrador.
-7. **Seguimiento:** registra las correcciones verificadas y emite un informe de reevaluación independiente, con evolución histórica y decisiones pendientes.
+1. **Settings:** register your consultancy and audit team; assign professionals to the audit record.
+2. **Library:** create or open an audit, identify the client, and define scope, authorizations, and exclusions.
+3. **Inventory:** document hardware, operating systems, networks, and software. Use search and selectors; custom values are supported.
+4. **Controls:** select templates for systems, networks, identity, or continuity. All start as *Pending* and require actual verification.
+5. **Findings and evidence:** record observations, link assets and controls, describe consequences, recommended actions, and closure criteria. Retain original evidence and its SHA-256 hashes.
+6. **Quality and delivery:** review warnings, priorities, and the remediation plan before generating the PDF. If essential information is missing, the report is marked as a draft.
+7. **Follow-up:** record verified remediation and issue a separate reassessment report with historical changes and pending decisions.
 
-### Captura asistida de inventario
+### Assisted inventory capture
 
-El indicador inferior del menú informa del estado de red declarado por el navegador (rojo: sin conexión; ámbar: red detectada, no verificada). Su botón de comprobación solo consulta el manifiesto de la propia PWA (verde cuando responde), sin transmitir datos del expediente; **no verifica acceso general a Internet**, y una respuesta servida por una caché o proxy tampoco acredita conectividad externa.
+The bottom sidebar indicator reports the browser-declared network state (red: no connection; amber: network detected, not verified). Its check button only requests the PWA's own manifest (green when a response is received), without transmitting audit data; **it does not verify general Internet access**, and a response served by a cache or proxy does not establish external connectivity either.
 
-Desde **Hardware, Redes o Software → Captura asistida** puedes importar un archivo CSV o JSON, inspeccionar sus registros localmente, detectar duplicados y seleccionar solo las entradas nuevas. No se sobrescriben datos y se solicita confirmación antes de incorporar elementos al expediente. CSV debe incluir encabezados (coma o punto y coma); JSON admite colecciones `assets`, `networks`, `software` o el formato de captura `audit-workbench-discovery-v1`. Máximo 2 MiB/500 filas. Las entradas importadas quedan pendientes de verificación.
+From **Hardware, Networks, or Software → Assisted capture**, import a CSV or JSON file, review its records locally, detect duplicates, and select only new entries. Existing records are not overwritten, and confirmation is required before adding data to the audit. CSV requires a header row (comma or semicolon separator); JSON accepts `assets`, `networks`, and `software` collections or the `audit-workbench-discovery-v1` capture format. Maximum 2 MiB/500 rows. Imported entries remain pending verification.
 
-Los recopiladores `collect-local.sh` (Linux/macOS con Python 3) y `collect-local.ps1` (Windows PowerShell) recogen datos básicos **solo del equipo local**. Ejecútalos únicamente con permiso y sin elevar privilegios innecesariamente. Ejemplos: `bash collect-local.sh --output captura.json` o `powershell -File .\\collect-local.ps1 -Output captura.json`. El archivo contiene identificadores de sistema: revísalo y protege su almacenamiento. Recogen también interfaces, discos locales, servicios y un inventario limitado de paquetes o aplicaciones instaladas; no realizan descubrimiento de hosts remotos ni envían datos a terceros. El inventario de servicios no confirma vulnerabilidades, versiones ni exposición.
+The `collect-local.sh` (Linux/macOS with Python 3) and `collect-local.ps1` (Windows PowerShell) collectors gather basic information **only from the local computer**. Run them only with authorization and without unnecessary privilege elevation. Examples: `bash collect-local.sh --output captura.json` or `powershell -File .\\collect-local.ps1 -Output captura.json`. The resulting file contains system identifiers: review it and protect its storage. The collectors also gather interfaces, local disks, services, and a limited inventory of installed packages or applications; they do not discover remote hosts or transmit data to third parties. A service inventory does not establish vulnerabilities, versions, or exposure.
 
-El **Diccionario técnico** incluye 135 conceptos, búsqueda por sinónimos y, en los términos aplicables, guías de troubleshooting y alternativas de diagnóstico por consola (Windows/PowerShell, Linux, macOS y herramientas especializadas). Los comandos son orientativos y copiables, **nunca se ejecutan desde la PWA**. Muchos requieren permisos específicos o conexión a equipos autorizados; sustituye los destinos de ejemplo, valida la versión de cada herramienta y protege los resultados antes de incorporarlos a una evidencia. La referencia añade nombres extendidos de siglas, estándares ISO/IEC, NIST, IETF/IANA, OWASP y enlaces oficiales que solo necesitan conexión cuando el auditor decide abrirlos. Los iconos Windows, Linux y macOS se incluyen localmente como SVG reutilizables. Las secciones del asistente y los campos donde una aclaración aporta valor incluyen accesos «ⓘ» al diccionario. Se conserva el contexto de navegación y se puede volver directamente al campo de origen; los enlaces se definen por sección para evitar referencias ambiguas.\n\nEl término **Respuesta a incidentes** ofrece una sección desplegable con el recurso público español **INCIBE 017**, la información oficial del servicio y el canal diferenciado de reporte empresarial INCIBE-CERT. Es una referencia opcional, sin avisos globales ni transmisión de datos del expediente. Una observación aislada no acredita una vulnerabilidad.
+The **Technical dictionary** includes 135 concepts, synonym search, and, where applicable, troubleshooting guides and alternative console diagnostics (Windows/PowerShell, Linux, macOS, and specialized tools). Commands are illustrative and copyable; **the PWA never executes them**. Many require specific privileges or connections to authorized systems; replace example targets, check tool versions, and protect results before using them as evidence. The reference also includes expanded acronyms, ISO/IEC, NIST, IETF/IANA, and OWASP standards, and official links that require a connection only when the auditor chooses to open them. Windows, Linux, and macOS icons are included locally as reusable SVG assets. Wizard sections and fields where clarification is useful include contextual dictionary help. Navigation context is preserved so the auditor can return directly to the originating field; links are assigned by section to avoid ambiguous references.
 
-## Dónde se guardan los datos
+The **Incident response** entry contains an expandable section for Spain's public **INCIBE 017** service, the official service information, and the separate INCIBE-CERT corporate incident reporting channel. This resource is optional, without global alerts or transmission of audit data. An isolated observation does not establish a vulnerability.
 
-Los expedientes se guardan **en el navegador**, preferentemente en **IndexedDB** y con alternativa en `localStorage`. **No** se crean JSON automáticamente en la carpeta de instalación.
+## Where data is stored
 
-**No consideres este almacenamiento una copia de seguridad.** Antes de actualizar o cambiar de dispositivo, entra en **Copias y exportaciones → Descargar backup completo (.json)** y comprueba el archivo descargado.
+Audit records are stored **in the browser**, preferably in **IndexedDB**, with `localStorage` as a fallback. JSON files are **not** automatically created in the installation directory.
 
-| Formato | Para qué sirve | Se puede restaurar |
+**Do not treat browser storage as a backup.** Before updating or switching devices, use **Backups and exports → Download full backup (.json)** and check the downloaded file.
+
+| Format | Purpose | Restorable |
 | --- | --- | --- |
-| JSON individual | Continuar una auditoría en otro navegador | Sí |
-| Backup JSON completo | Resguardar y recuperar todos los expedientes | Sí |
-| PDF | Entrega formal de la auditoría o reevaluación | No |
-| XLSX | Inventario y seguimiento tabular editable | No |
-| CSV | Intercambiar una sección con otras herramientas | No |
+| Individual JSON | Continue an audit in another browser | Yes |
+| Full JSON backup | Back up and recover all audit records | Yes |
+| PDF | Formal delivery of an audit or reassessment | No |
+| XLSX | Editable tabular inventory and tracking | No |
+| CSV | Exchange a section with other tools | No |
 
-Para recuperar un expediente, pulsa **Importar** y selecciona el JSON. Comprueba la información restaurada antes de eliminar copias anteriores. Algunos navegadores permiten guardar copias periódicas en una carpeta autorizada **solo mientras la aplicación está abierta**; no sustituye un sistema externo de backups.
+To restore a record, choose **Import** and select the JSON file. Check the recovered information before deleting earlier copies. Some browsers support periodic backups to an authorized folder **only while the application remains open**; this does not replace an external backup system.
 
-Cambiar la URL, el puerto, el perfil o el navegador puede cambiar el espacio de almacenamiento. Por ejemplo, `localhost` y `127.0.0.1` no comparten necesariamente los mismos expedientes.
+Changing the URL, port, profile, or browser may change the storage namespace. For example, `localhost` and `127.0.0.1` do not necessarily share the same audit records.
 
-## Compatibilidad y trabajo offline
+## Compatibility and offline use
 
-- **Escritorio:** navegadores modernos en Windows, Linux y macOS.
-- **Tablet/móvil:** instalación PWA desde HTTPS donde el navegador lo permita; después de almacenar los recursos, puede abrirse sin conexión.
-- **Tipografía:** Atkinson Hyperlegible (regular, negrita, cursiva y negrita cursiva) servida localmente.
-- **Temas:** claros y oscuros; usa la paleta que facilite tu lectura. El PDF conserva un formato preparado para impresión A4.
-- **Operaciones conectadas:** consulta CVE, WebDAV/Nextcloud y herramientas de compartir solo a petición expresa. No se transmiten expedientes automáticamente.
+- **Desktop:** modern browsers on Windows, Linux, and macOS.
+- **Tablet/mobile:** PWA installation over HTTPS where supported; once assets are cached, it can open without a connection.
+- **Typeface:** Atkinson Hyperlegible (regular, bold, italic, and bold italic), served locally.
+- **Themes:** light and dark; select the palette that is easiest to read. The PDF uses an A4 print-ready layout.
+- **Connected operations:** CVE lookups, WebDAV/Nextcloud, and sharing tools only when expressly requested. Audit records are never transmitted automatically.
 
-El catálogo de sistemas operativos y modelos es orientativo; **no certifica vigencia de soporte, vulnerabilidad ni conformidad**.
+The operating system and model catalog is illustrative; **it does not certify support status, vulnerabilities, or compliance**.
 
-## Seguridad y limitaciones
+## Security and limitations
 
-- El JSON y los PDF pueden contener **información confidencial**, identificadores personales y detalles de infraestructura. Consérvalos en almacenamiento cifrado y compártelos únicamente con destinatarios autorizados.
-- Las credenciales WebDAV pueden protegerse con una frase de paso local. **Esto no cifra los expedientes en IndexedDB ni los JSON exportados.**
-- Los textos legales son plantillas editables, **no asesoramiento jurídico** ni sustituyen el acuerdo de auditoría o tratamiento de datos.
-- Las plantillas de controles no acreditan por sí mismas cumplimiento normativo. Un control sin comprobar no debe presentarse como conforme.
-- Los resultados de una auditoría se limitan al alcance, fecha y evidencias efectivamente revisados.
+- JSON and PDF files may contain **confidential information**, personal identifiers, and infrastructure details. Store them on encrypted media and share only with authorized recipients.
+- WebDAV credentials can be protected by a local passphrase. **This does not encrypt audit records in IndexedDB or ordinary exported JSON files.**
+- Legal texts are editable templates, **not legal advice**, and do not replace an audit agreement or data-processing agreement.
+- Control templates alone do not establish compliance. An unchecked control must not be presented as compliant.
+- Audit results are limited to the scope, date, and evidence actually reviewed.
 
-Consulta **[Seguridad y privacidad](SECURITY.md)** y **[Cláusulas modelo (España)](LEGAL.md)**.
+See **[Security and privacy](SECURITY.md)** and **[Model clauses (Spain)](LEGAL.md)**.
 
-## Ayuda e incidencias
+## Help and troubleshooting
 
-| Situación | Qué comprobar |
+| Situation | What to check |
 | --- | --- |
-| No aparecen mis auditorías | Verifica la misma URL/origen, navegador y perfil; restaura desde JSON |
-| No se carga la interfaz tras actualizar | Fuerza recarga; revisa caché/service worker sin borrar IndexedDB |
-| No puedo instalar en tablet | Comprueba HTTPS, manifiesto y compatibilidad del navegador |
-| Faltan fuentes o colores | Comprueba `css/`, `fonts/`, rutas y errores CSP en consola |
-| PDF incompleto | Revisa **Calidad**, activa impresión de fondos y verifica A4 |
+| My audits are missing | Verify the same URL/origin, browser, and profile; restore from JSON |
+| Interface fails to load after an update | Force a reload; inspect the cache/service worker without deleting IndexedDB |
+| Cannot install on a tablet | Check HTTPS, manifest, and browser support |
+| Fonts or colors are missing | Check `css/`, `fonts/`, paths, and CSP errors in the console |
+| PDF is incomplete | Review **Quality**, enable background printing, and verify A4 |
 
-El proceso completo de instalación, actualización y diagnóstico está en **[INSTALLATION.md](INSTALLATION.md)**.
+Full installation, updating, and troubleshooting instructions are in **[INSTALLATION.md](INSTALLATION.md)**.
 
-## Organización
+## Organization
 
 ```text
 audit-workbench/
 ├── index.html
 ├── manifest.webmanifest
-├── sw.js                  # En raíz: mantiene el alcance offline de la PWA
+├── sw.js                  # At root: maintains the PWA's offline scope
 ├── audit-workbench.sh
 ├── audit-workbench.ps1
-├── js/                    # Catálogos, persistencia, relaciones y UI
-├── css/                   # Temas, formularios e impresión
-├── fonts/                 # Atkinson Hyperlegible local
+├── js/                    # Catalogs, storage, relationships, and UI
+├── css/                   # Themes, forms, and printing
+├── fonts/                 # Local Atkinson Hyperlegible
 ├── icons/
 └── tests/
 ```
 
-Audit Workbench forma parte de **sysadmin**, un conjunto de herramientas de administración de sistemas. Funciona de manera independiente de los asistentes de Active Directory de la raíz: su papel es registrar y analizar auditorías, no ejecutar tareas de administración o hardening sobre equipos remotos.
+Audit Workbench is part of **sysadmin**, a collection of system administration tools. It operates independently of the Active Directory assistants at the repository root: its purpose is to record and analyze audits, not to perform administration or hardening actions on remote systems.
