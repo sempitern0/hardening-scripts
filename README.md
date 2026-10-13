@@ -884,38 +884,38 @@ For a delegated administrator recently added to privileged groups, signing out o
 <a id="suricata-ids"></a>
 ## Suricata IDS
 
-Los control planes de DC incluyen integración opcional con Suricata para visibilidad de red y protocolos relacionados con Active Directory. En Linux el sensor se configura en modo **pasivo**: observa tráfico, genera telemetría y alertas, pero no bloquea paquetes.
+DC control planes include optional Suricata integration for visibility into networks and protocols related to Active Directory. On Linux, the sensor is configured in **passive** mode: it observes traffic and generates telemetry and alerts, but does not block packets.
 
-### Modelo mental: actividad no es lo mismo que alerta
+### Mental model: activity is not the same as an alert
 
-Esta distinción evita una de las confusiones más frecuentes al empezar con un IDS:
+This distinction avoids one of the most common sources of confusion when starting with an IDS:
 
 ```text
 ACTIVIDAD
-Suricata ha visto tráfico o un protocolo.
-Ejemplos: ping, DNS, Kerberos, LDAP, SMB, una conexión TCP.
+Suricata has observed traffic or a protocol.
+Examples: ping, DNS, Kerberos, LDAP, SMB, a TCP connection.
 
 ALERTA
-Una regla/signature ha coincidido con ese tráfico.
-Ejemplos: acceso a una superficie AD desde fuera de HOME_NET,
-ráfaga anómala de SMB, una firma ET/Open o una anomalía de protocolo.
+A rule/signature has matched that traffic.
+Examples: access to an AD service from outside HOME_NET,
+an unusual SMB burst, an ET/Open signature, or a protocol anomaly.
 ```
 
-Por tanto:
+Therefore:
 
-> Un `ping` normal **no debería generar necesariamente una alerta**. En las versiones recientes del asistente se habilita telemetría EVE `flow`, por lo que el ICMP puede aparecer en **Connection activity** aunque `Recent alerts` siga vacío.
+> A normal `ping` **should not necessarily trigger an alert**. Recent assistant versions enable EVE `flow` telemetry, so ICMP may appear in **Connection activity** even when `Recent alerts` remains empty.
 
-Los registros `flow` suelen emitirse cuando el flujo termina o expira. Un ping enviado hace unos segundos puede tardar algo en aparecer en la vista de actividad.
+`flow` records are generally emitted when a flow ends or times out. A ping sent seconds ago may take some time to appear in the activity view.
 
 ### Linux / Samba AD
 
-Acceso habitual:
+Typical access:
 
 ```bash
 sudo bash ./debian-ad-assistant.sh --ids
 ```
 
-El workspace diferencia la vista diaria del administrador de la evidencia técnica:
+The workspace distinguishes the administrator's daily view from technical evidence:
 
 ```text
 [1]  IDS readiness assessment
@@ -933,9 +933,9 @@ El workspace diferencia la vista diaria del administrador de la evidencia técni
 [13] Connection activity
 ```
 
-#### Qué mirar primero
+#### What to check first
 
-Para operación diaria, una secuencia útil es:
+For daily operation, a useful sequence is:
 
 ```text
 Sensor health
@@ -946,53 +946,53 @@ Connection activity
      ↓
 Recent alerts explained
      ↓
-AD protocol intelligence si necesitas detalle
+AD protocol intelligence if more detail is needed
 ```
 
-`Operator overview` intenta responder preguntas operativas, no mostrar JSON:
+`Operator overview` aims to answer operational questions, not display JSON:
 
-- ¿está llegando telemetría reciente?;
-- ¿hay pérdida de paquetes del sensor?;
-- ¿quién está hablando con este DC?;
-- ¿qué servicios reciben tráfico?;
-- ¿hay ICMP/ping?;
-- ¿hay alertas y qué significan en términos prácticos?;
-- ¿el origen está dentro o fuera del `HOME_NET` confiable?
+- is recent telemetry arriving?;
+- is the sensor dropping packets?;
+- who is communicating with this DC?;
+- which services are receiving traffic?;
+- is there ICMP/ping activity?;
+- are there alerts, and what do they mean in practical terms?;
+- is the source inside or outside the trusted `HOME_NET`?
 
-`Connection activity` está orientado específicamente a **quién se conecta**. Agrupa fuentes, servicios y actividad reciente. Una línea de esa vista significa que Suricata vio tráfico; no implica por sí sola actividad maliciosa.
+`Connection activity` focuses specifically on **who is connecting**. It groups sources, services, and recent activity. A line in this view means Suricata observed traffic; it does not by itself imply malicious activity.
 
 #### Trusted network scope / HOME_NET
 
-`HOME_NET` puede contener varias redes legítimas, por ejemplo:
+`HOME_NET` may include multiple legitimate networks, for example:
 
 ```text
 192.168.10.0/24,10.20.0.0/16,10.8.0.0/24
 ```
 
-Incluye aquí las LAN, VLAN de administración, VPN y redes site-to-site cuyos clientes deban acceder legítimamente al DC. Las reglas locales de exposición utilizan `!$HOME_NET`; una red legítima olvidada en este scope puede producir alertas que parecen externas.
+Include the LANs, management VLANs, VPNs, and site-to-site networks whose clients legitimately need DC access. Local exposure rules use `!$HOME_NET`; omitting a legitimate network from this scope can produce alerts that appear to originate externally.
 
-No añadas una red al scope únicamente para silenciar una alerta: primero confirma que realmente sea una red administrada y confiable.
+Do not add a network to the scope merely to silence an alert: first confirm it is actually managed and trusted.
 
-### Pruebas seguras para aprender qué ve el sensor
+### Safe tests to learn what the sensor sees
 
-Haz estas pruebas únicamente en infraestructura propia o expresamente autorizada.
+Perform these tests only on infrastructure you own or are expressly authorized to assess.
 
 #### 1. ICMP / ping
 
-Desde otro equipo:
+From another device:
 
 ```bash
 ping <IP_DEL_DC>
 ```
 
-Esperado:
+Expected:
 
 ```text
 Connection activity  → ICMP / ping
-Recent alerts        → normalmente ninguna alerta nueva
+Recent alerts        → usually no new alert
 ```
 
-Esto prueba visibilidad básica, **no la capacidad de disparar firmas**.
+This verifies basic visibility, **not the ability to trigger signatures**.
 
 #### 2. DNS
 
@@ -1008,9 +1008,9 @@ Windows:
 Resolve-DnsName example.org -Server <IP_DEL_DC>
 ```
 
-Esperado: actividad DNS, IP origen y nombres consultados en las vistas de actividad/inteligencia.
+Expected: DNS activity, source IP, and queried names in the activity/intelligence views.
 
-#### 3. Kerberos + SMB desde un miembro del dominio
+#### 3. Kerberos + SMB from a domain member
 
 Windows:
 
@@ -1019,11 +1019,11 @@ klist purge
 dir \\<DC_FQDN>\SYSVOL
 ```
 
-En un cliente correctamente unido al dominio esto suele generar actividad Kerberos y SMB. `klist purge` elimina tickets del cache del usuario para forzar una nueva negociación; úsalo solo si entiendes el efecto sobre esa sesión.
+On a properly domain-joined client, this usually produces Kerberos and SMB activity. `klist purge` removes tickets from the user's cache to force renegotiation; use it only if you understand the effect on that session.
 
-#### 4. Probar una regla local de exposición
+#### 4. Test a local exposure rule
 
-Desde una máquina de laboratorio cuya IP esté **fuera de `HOME_NET`**, realiza únicamente una conexión al servicio del DC que quieras comprobar.
+From a laboratory machine whose IP is **outside `HOME_NET`**, make only one connection to the DC service you want to check.
 
 Linux:
 
@@ -1037,39 +1037,39 @@ Windows:
 Test-NetConnection <IP_DEL_DC> -Port 445
 ```
 
-Si la ruta llega al sensor y el origen está realmente fuera del scope confiable, la regla local de SMB/RPC debería poder producir una alerta similar a:
+If the connection passes the sensor and the source is truly outside the trusted scope, the local SMB/RPC rule should be able to produce an alert such as:
 
 ```text
 DAD IDS External access to AD SMB-RPC TCP surface
 ```
 
-No utilices scanners ni tráfico agresivo contra sistemas de terceros para "probar Suricata".
+Do not use scanners or aggressive traffic against third-party systems to "test Suricata".
 
-### Cómo interpretar alertas comunes
+### Interpreting common alerts
 
-| Señal | Interpretación inicial | Qué comprobar |
+| Signal | Initial interpretation | What to check |
 |---|---|---|
-| `DAD IDS External access ...` | Un origen fuera de `HOME_NET` alcanzó una superficie del DC | IP origen, red/VPN esperada, puerto y si falta una CIDR legítima |
-| `DAD IDS High-rate SMB ...` | Muchas conexiones SMB en poco tiempo | scanner autorizado, inventario, cliente roto o reconocimiento |
-| `applayer` / `app-layer` | Suricata no pudo interpretar limpiamente una conversación de aplicación | origen/destino, protocolo real, recurrencia y firma exacta |
-| `ET SCAN` / firma de scanning | Tráfico parecido a discovery/reconocimiento | si el origen es un scanner autorizado y qué puertos tocó |
-| `ET POLICY` | Tráfico relevante para una política, no necesariamente malware | contexto y necesidad operativa |
-| malware / trojan / C2 | Patrón asociado a compromiso o command-and-control | endpoint origen, DNS/TLS, proceso y evidencia adicional |
+| `DAD IDS External access ...` | A source outside `HOME_NET` reached a DC service | source IP, expected network/VPN, port, and any missing legitimate CIDR |
+| `DAD IDS High-rate SMB ...` | Many SMB connections in a short time | authorized scanner, inventory, malfunctioning client, or reconnaissance |
+| `applayer` / `app-layer` | Suricata could not cleanly interpret an application conversation | source/destination, actual protocol, recurrence, and exact signature |
+| `ET SCAN` / firma de scanning | Traffic resembling discovery/reconnaissance | whether the source is an authorized scanner and which ports it touched |
+| `ET POLICY` | Traffic relevant to a policy, not necessarily malware | context and operational need |
+| malware / trojan / C2 | Pattern associated with compromise or command-and-control | source endpoint, DNS/TLS, process, and additional evidence |
 
-Una alerta es una **señal de investigación**, no una sentencia. Correlaciona siempre firma, IP origen, destino, servicio, hora, Event Center y logs del endpoint.
+An alert is an **investigative signal**, not a verdict. Always correlate signature, source IP, destination, service, time, Event Center, and endpoint logs.
 
-### ¿Qué significa una alerta `applayer`?
+### What does an `applayer` alert mean?
 
-Una alerta o anomalía `applayer` puede aparecer porque Suricata esperaba un protocolo y recibió datos incompletos, inesperados, cifrados, malformados o que su parser no pudo clasificar. Puede ser ruido, software extraño, una versión de protocolo poco común o tráfico hostil.
+An `applayer` alert or anomaly may appear when Suricata expects a protocol but receives incomplete, unexpected, encrypted, malformed, or unclassifiable data. This could be noise, unfamiliar software, an uncommon protocol version, or hostile traffic.
 
-Antes de escalarla como incidente:
+Before escalating it as an incident:
 
-1. identifica `src_ip`, `dest_ip`, puerto y protocolo;
-2. comprueba si el host origen es conocido;
-3. mira si la alerta se repite;
-4. revisa la actividad de la misma IP alrededor de esa hora;
-5. comprueba Event Center y logs del servicio/endpoint;
-6. escala si hay otras señales coherentes con scanning, explotación o compromiso.
+1. identify `src_ip`, `dest_ip`, port, and protocol;
+2. check whether the source host is known;
+3. check whether the alert recurs;
+4. review the same IP's activity around that time;
+5. check Event Center and service/endpoint logs;
+6. escalate if other signs are consistent with scanning, exploitation, or compromise.
 
 ### Rule management: feeds mantenidos antes que reglas manuales
 
