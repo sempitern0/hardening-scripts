@@ -1490,7 +1490,7 @@
       [10,section(10,'Registro de evidencias',reportRows('evidence'))],[12,closing],[1,legal]
     ];
     byId('report').innerHTML=cover.replace('<div class="report-cover">','<div class="report-cover">'+draftMarker)+toc+
-      chapters.map(([num,part])=>part.replace('class="report-section"','class="report-section" id="report-section-'+num+'"')).join('');
+      chapters.map(([num,part],index)=>part.replace('class="report-section"','class="report-section" id="report-section-'+num+'"').replace(/(<h2>)\\d+\\. /,(_,tag)=>tag+(index+1)+'. ')).join('');
   }
   function buildRetestReport(){
     byId('report').dataset.palette=selectedPalette;
