@@ -18,5 +18,16 @@ assert.equal(new Set(g.TERMS.map(x=>x.id)).size,g.TERMS.length,'Duplicate term I
 const app=fs.readFileSync(path.join(root,'js/app.js'),'utf8'),css=fs.readFileSync(path.join(root,'css/glossary.css'),'utf8'),sw=fs.readFileSync(path.join(root,'sw.js'),'utf8');
 for(const marker of ['glossary-index','glossary-detail','glossary-category','glossary-search','renderGlossaryDetail','data-glossary-select'])assert(app.includes(marker),marker);
 assert(css.includes('.glossary-layout')&&css.includes('@media(max-width:760px)'),'Adaptive layout missing');
-assert(sw.includes('v22-glossary-guide'),'Service worker cache not invalidated');
+assert(sw.includes('v23-glossary-diagnostics'),'Service worker cache not invalidated');
+assert(Object.keys(g.GUIDES).length>=50,'Expected practical diagnostic guides');
+assert(g.GUIDES['term-25'].commands.some(x=>x.command.includes('dig')),'DNS diagnostic missing');
+assert(g.search('journalctl').some(x=>x.title==='SIEM'||x.title==='Registro de auditoría'),'Console commands should be searchable');
+for(const [id,guide] of Object.entries(g.GUIDES)){
+ assert(g.byId(id),'Guide without glossary term');
+ assert(guide.symptom&&guide.verify&&guide.interpret,'Incomplete troubleshooting: '+id);
+ assert(guide.commands.length,'Missing console alternatives: '+id);
+ for(const item of guide.commands)assert(item.platform&&item.command&&item.lookFor,'Incomplete command guidance: '+id);
+}
+assert(app.includes('renderGlossaryGuide')&&app.includes('data-glossary-copy'),'Diagnostic UI missing');
+assert(css.includes('.glossary-command')&&css.includes('.glossary-diagnostic'),'Diagnostic styles missing');
 console.log('PASS offline glossary: concepts, synonyms, filters, contextual guidance');
