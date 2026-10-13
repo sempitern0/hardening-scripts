@@ -1510,6 +1510,17 @@
     "aliases": [
       "incident response"
     ],
+    "help": {
+      "region": "España",
+      "organization": "INCIBE",
+      "title": "Línea de Ayuda en Ciberseguridad",
+      "phone": "017",
+      "guidance": "Servicio gratuito y confidencial de orientación para ciudadanos y empresas ante dudas o problemas de ciberseguridad. Si el incidente está activo, sigue también el plan de respuesta y los canales internos establecidos.",
+      "officialUrl": "https://www.incibe.es/linea-de-ayuda-en-ciberseguridad",
+      "reportUrl": "https://www.incibe.es/empresas/te-ayudamos/reporta-tu-incidente",
+      "reporting": "Para comunicar un incidente de una empresa, consulta la vía correspondiente de INCIBE-CERT. El 017 es una línea de orientación, no sustituye la notificación formal ni las obligaciones aplicables.",
+      "privacy": "Evita compartir contraseñas, claves o evidencias sensibles sin autorización."
+    },
     "example": "",
     "references": [
       {
@@ -3122,7 +3133,7 @@
    if(category!=='Todas'&&t.category!==category)return false;
    if(!tokens.length)return true;
    const guide=GUIDES[t.id];
-   const haystack=normalize([t.title,t.category,t.description,t.check,t.why,t.example,t.fullName,...(t.references||[]).map(x=>x.label),...(t.aliases||[]),guide?.symptom,guide?.verify,guide?.interpret,...(guide?.commands||[]).flatMap(c=>[c.platform,c.command,c.lookFor])].join(' '));
+   const haystack=normalize([t.title,t.category,t.description,t.check,t.why,t.example,t.fullName,...Object.values(t.help||{}),...(t.references||[]).map(x=>x.label),...(t.aliases||[]),guide?.symptom,guide?.verify,guide?.interpret,...(guide?.commands||[]).flatMap(c=>[c.platform,c.command,c.lookFor])].join(' '));
    return tokens.every(token=>haystack.includes(token));
   }).sort((a,b)=>{
    if(!tokens.length)return a.title.localeCompare(b.title,'es');
