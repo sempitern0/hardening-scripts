@@ -49,7 +49,17 @@ elif sys.platform=='darwin':
  for line in run('launchctl','list').splitlines()[1:31]:
   parts=line.split(None,2)
   if len(parts)==3:services.append({'name':parts[2], 'asset':host,'notes':'Servicio launchd inventariado; revisar estado y exposición.'})
-software=services[:35]
+software=services[:25]
+packages=''
+if sys.platform.startswith('linux'):
+ packages=run('dpkg-query','-W','-f=${Package}\\t${Version}\\n') or run('rpm','-qa','--qf','%{NAME}\\t%{VERSION}-%{RELEASE}\\n')
+elif sys.platform=='darwin':
+ packages=run('pkgutil','--pkgs')
+for line in packages.splitlines()[:30]:
+ parts=line.split('\\t',1)
+ if parts and parts[0] and len(parts[0])<170:
+  software.append({'name':parts[0],'version':parts[1] if len(parts)>1 else '', 'asset':host,'notes':'Paquete local enumerado; relevancia y vulnerabilidad por verificar.'})
+software=software[:55]
 data={'kind':'audit-workbench-discovery-v1','schemaVersion':1,'capturedAt':datetime.datetime.now(datetime.timezone.utc).isoformat(),'source':{'platform':platform.system(),'collector':'collect-local.sh','scope':'local','mode':'read-only'},'items':{'assets':[asset],'networks':networks,'software':software}}
 with open(out,'x',encoding='utf-8') as f:json.dump(data,f,indent=2,ensure_ascii=False)
 print('Saved',out)
