@@ -1253,6 +1253,984 @@
     "example": ""
   }
 ]);
+ // Read-only diagnostic playbooks. Commands are examples, NEVER executed by this PWA.
+ // Replace .invalid hosts and illustrative paths with explicitly authorized assets.
+ const GUIDES=Object.freeze(Object.fromEntries([
+  {
+    "id": "term-1",
+    "symptom": "Una zona de invitados llega a servicios internos.",
+    "verify": "Contrasta origen, rutas y política del firewall; prueba solo destinos autorizados.",
+    "interpret": "Una ruta disponible no demuestra acceso: correlaciona con la ACL y el resultado de conexión.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "ip route show",
+        "lookFor": "Ruta y puerta de enlace hacia el segmento revisado."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-NetRoute | Sort-Object DestinationPrefix",
+        "lookFor": "Prefijos y rutas efectivas del equipo."
+      },
+      {
+        "platform": "PowerShell · red",
+        "command": "Test-NetConnection -ComputerName servidor.autorizado.invalid -Port 443",
+        "lookFor": "TcpTestSucceeded y origen; sustituye el host tras autorizar la prueba."
+      }
+    ]
+  },
+  {
+    "id": "term-2",
+    "symptom": "Tráfico entre VLAN inesperadas o pérdida de conectividad.",
+    "verify": "Comprueba etiquetado en interfaz, trunk y política entre VLAN.",
+    "interpret": "La VLAN local no refleja por sí sola la configuración completa del switch.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "ip -d link show",
+        "lookFor": "Subinterfaces 802.1Q, VLAN ID y estado del enlace."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-NetAdapter | Format-Table Name,Status,LinkSpeed",
+        "lookFor": "Adaptadores, estado y velocidad; el VLAN ID puede exigir herramienta del fabricante."
+      }
+    ]
+  },
+  {
+    "id": "term-3",
+    "symptom": "Dos redes parecen solaparse o una ruta envía tráfico a otro destino.",
+    "verify": "Compara máscara, prefijos y tabla de rutas.",
+    "interpret": "Prefijos más específicos prevalecen; documenta rutas asimétricas o solapadas.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "ip -4 address show",
+        "lookFor": "Dirección y longitud del prefijo de cada interfaz."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-NetIPAddress -AddressFamily IPv4",
+        "lookFor": "IPAddress y PrefixLength de cada interfaz."
+      }
+    ]
+  },
+  {
+    "id": "term-4",
+    "symptom": "Un equipo publicado tiene acceso innecesario a gestión interna.",
+    "verify": "Documenta flujos permitidos de la DMZ hacia LAN y políticas de salida.",
+    "interpret": "La mera existencia de la DMZ no acredita aislamiento.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "ip route get 192.0.2.10",
+        "lookFor": "Interfaz y siguiente salto elegidos para un destino de documentación (reemplazar IP)."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-NetFirewallRule -PolicyStore ActiveStore | Where-Object Enabled -eq 'True' | Select-Object -First 30 DisplayName,Direction,Action",
+        "lookFor": "Muestra reglas locales activas; para la política perimetral consulta el firewall central."
+      }
+    ]
+  },
+  {
+    "id": "term-5",
+    "symptom": "Hay sesiones privilegiadas sin segundo factor.",
+    "verify": "Revisa políticas y excepciones desde la consola del proveedor de identidad.",
+    "interpret": "Los comandos del equipo no prueban por sí solos que el IdP exija MFA.",
+    "commands": [
+      {
+        "platform": "PowerShell · Entra CLI",
+        "command": "az ad signed-in-user show --query '{id:id,userPrincipalName:userPrincipalName}'",
+        "lookFor": "Identidad autenticada en CLI; revisar MFA en políticas del portal/Graph."
+      },
+      {
+        "platform": "Linux · SSH",
+        "command": "sshd -T | grep -Ei 'authenticationmethods|kbdinteractiveauthentication|passwordauthentication'",
+        "lookFor": "Configuración efectiva del demonio SSH (ejecutar en servidor autorizado)."
+      }
+    ]
+  },
+  {
+    "id": "term-6",
+    "symptom": "Persisten administradores locales o privilegios excesivos.",
+    "verify": "Enumera grupos y eleva la revisión a permisos efectivos por recurso.",
+    "interpret": "Una membresía privilegiada requiere justificación y propietario.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "id; getent group sudo; getent group wheel",
+        "lookFor": "Grupos del usuario y miembros de grupos administrativos presentes."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-LocalGroup | Where-Object SID -eq 'S-1-5-32-544' | Get-LocalGroupMember",
+        "lookFor": "Miembros del grupo Administradores, independiente del idioma del sistema."
+      }
+    ]
+  },
+  {
+    "id": "term-7",
+    "symptom": "Un escáner marca una CVE sin confirmar afectación.",
+    "verify": "Recoge versión real, características habilitadas y boletín oficial.",
+    "interpret": "Una coincidencia de versión no basta para confirmar vulnerabilidad.",
+    "commands": [
+      {
+        "platform": "Linux · Debian",
+        "command": "dpkg-query -W -f='${Package} ${Version}\\n' openssl",
+        "lookFor": "Versión instalada; consultar backports y avisos del proveedor."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-ComputerInfo | Select-Object WindowsProductName,OsVersion,OsBuildNumber",
+        "lookFor": "Producto y compilación; contrasta con avisos de seguridad aplicables."
+      }
+    ]
+  },
+  {
+    "id": "term-9",
+    "symptom": "Un sistema parece fuera de soporte pero hay soporte extendido.",
+    "verify": "Identifica versión exacta y edición; solicita contrato o canal de mantenimiento.",
+    "interpret": "No declares EOL sin confirmar producto, release y condiciones contractuales.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "cat /etc/os-release",
+        "lookFor": "ID, versión y nombre completo de la distribución."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-ComputerInfo | Select-Object WindowsProductName,WindowsVersion,OsBuildNumber",
+        "lookFor": "Versión y build del equipo auditado."
+      }
+    ]
+  },
+  {
+    "id": "term-10",
+    "symptom": "El EDR aparece desplegado pero el agente no reporta.",
+    "verify": "Consulta estado local y última telemetría en consola central.",
+    "interpret": "Proceso activo no equivale a protección funcional.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "systemctl --type=service --state=running",
+        "lookFor": "Servicios activos; identifica el agente por producto."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-Service | Where-Object Status -eq 'Running' | Select-Object Name,DisplayName",
+        "lookFor": "Servicios en ejecución; validar salud en la consola EDR."
+      }
+    ]
+  },
+  {
+    "id": "term-11",
+    "symptom": "Existen servicios y opciones no alineados con la línea base.",
+    "verify": "Compara ajustes reales frente a benchmark aplicable y excepciones aprobadas.",
+    "interpret": "Un endurecimiento aislado puede causar incompatibilidades; no apliques cambios durante la verificación.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "systemctl list-unit-files --state=enabled --type=service",
+        "lookFor": "Servicios configurados para arrancar."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-NetFirewallProfile | Select-Object Name,Enabled,DefaultInboundAction,DefaultOutboundAction",
+        "lookFor": "Postura del firewall local por perfil."
+      }
+    ]
+  },
+  {
+    "id": "term-14",
+    "symptom": "Una regla parece demasiado amplia o nunca se utiliza.",
+    "verify": "Revisa origen, destino, acción, orden, ámbito y contadores en el firewall responsable.",
+    "interpret": "No cambies políticas para probar: una ausencia de logs tampoco demuestra bloqueo.",
+    "commands": [
+      {
+        "platform": "Linux · nftables",
+        "command": "sudo nft list ruleset",
+        "lookFor": "Reglas efectivas; la lectura suele requerir permisos de administrador."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-NetFirewallRule -PolicyStore ActiveStore | Where-Object Enabled -eq 'True' | Select-Object DisplayName,Direction,Action",
+        "lookFor": "Reglas de Windows activas; revisar filtros y políticas de red por separado."
+      }
+    ]
+  },
+  {
+    "id": "term-15",
+    "symptom": "Dos copias de una evidencia tienen huellas distintas.",
+    "verify": "Calcula SHA-256 del original y de la copia sin modificar ninguno.",
+    "interpret": "Hashes distintos indican contenido diferente, no prueban el motivo del cambio.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "sha256sum '/ruta/evidencia.bin'",
+        "lookFor": "Huella SHA-256 del archivo indicado."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-FileHash -Algorithm SHA256 -Path 'C:\\Ruta\\evidencia.bin'",
+        "lookFor": "Hash SHA-256; cotejar con la cadena de custodia."
+      }
+    ]
+  },
+  {
+    "id": "term-18",
+    "symptom": "Una publicación NAT permite tráfico inesperado.",
+    "verify": "Contrasta tablas NAT con las reglas de filtrado aplicadas.",
+    "interpret": "La traducción de direcciones no actúa como control de autorización.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "sudo nft list ruleset",
+        "lookFor": "Busca reglas de dnat/snat y políticas de filtrado."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-NetNat | Format-Table Name,InternalIPInterfaceAddressPrefix",
+        "lookFor": "NAT configurado en Windows; puede no existir en el host auditado."
+      }
+    ]
+  },
+  {
+    "id": "term-19",
+    "symptom": "Una VPN se conecta, pero no accede a recursos o usa rutas excesivas.",
+    "verify": "Verifica interfaz, rutas asignadas, DNS y control de acceso.",
+    "interpret": "Estar conectado a la VPN no garantiza segmentación correcta.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "ip route show",
+        "lookFor": "Rutas instaladas con el túnel conectado."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-VpnConnection | Select-Object Name,ServerAddress,SplitTunneling,ConnectionStatus",
+        "lookFor": "Configuración VPN del usuario; consulta -AllUserConnection si procede."
+      }
+    ]
+  },
+  {
+    "id": "term-21",
+    "symptom": "Hay conflictos de direcciones o tráfico enviado al gateway erróneo.",
+    "verify": "Revisa prefijos en todos los interfaces y la tabla de rutas.",
+    "interpret": "Una máscara equivocada puede originar accesos fallidos o rutas amplias.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "ip -br -4 addr",
+        "lookFor": "Direcciones y prefijos IPv4 por interfaz."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-NetIPConfiguration",
+        "lookFor": "Interfaces, gateway y servidores DNS reportados."
+      }
+    ]
+  },
+  {
+    "id": "term-22",
+    "symptom": "Se aplica una denegación pese a existir una regla permitida.",
+    "verify": "Contrasta orden y prioridad de ACL en el dispositivo responsable.",
+    "interpret": "Un permiso mostrado no garantiza coincidencia o precedencia.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "sudo nft -a list ruleset",
+        "lookFor": "Reglas y handles de nftables; requiere lectura privilegiada."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-NetFirewallRule -PolicyStore ActiveStore | Select-Object DisplayName,Direction,Action,Enabled",
+        "lookFor": "Inventario local de reglas (no sustituye revisión de ACL en switch/firewall)."
+      }
+    ]
+  },
+  {
+    "id": "term-24",
+    "symptom": "Un puerto con NAC no pide credenciales o recibe VLAN incorrecta.",
+    "verify": "Consulta sesiones de autenticación en switch y cliente.",
+    "interpret": "Un puerto excepcional debe documentarse; el estado del cliente no prueba política del switch.",
+    "commands": [
+      {
+        "platform": "Windows · CMD",
+        "command": "netsh lan show interfaces",
+        "lookFor": "Interfaces LAN y estado 802.1X cuando lo soporta el adaptador."
+      },
+      {
+        "platform": "Linux",
+        "command": "nmcli -f GENERAL,802-1X connection show",
+        "lookFor": "Propiedades 802.1X de NetworkManager; depende de conexiones configuradas."
+      }
+    ]
+  },
+  {
+    "id": "term-25",
+    "symptom": "El nombre resuelve a IP diferente según origen o aparecen fallos intermitentes.",
+    "verify": "Compara resolutores, respuestas A/AAAA y TTL entre red interna y externa.",
+    "interpret": "Respuestas divergentes pueden ser split DNS legítimo; registra servidor consultado.",
+    "commands": [
+      {
+        "platform": "Linux · dig",
+        "command": "dig servidor.autorizado.invalid A",
+        "lookFor": "Respuesta, TTL y servidor DNS consultado; reemplaza el nombre."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Resolve-DnsName servidor.autorizado.invalid -Type A",
+        "lookFor": "Registros A y servidor usado; reemplaza el nombre."
+      },
+      {
+        "platform": "Linux",
+        "command": "resolvectl status",
+        "lookFor": "Resolutores efectivos por enlace en sistemas con systemd-resolved."
+      }
+    ]
+  },
+  {
+    "id": "term-26",
+    "symptom": "Los equipos reciben DNS, gateway o rango IP incorrectos.",
+    "verify": "Contrasta arrendamiento efectivo con opciones del servidor DHCP.",
+    "interpret": "Un cliente no revela por sí solo si existe un servidor DHCP rogue.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "nmcli -f IP4,GENERAL device show",
+        "lookFor": "Dirección IP, puerta de enlace y DNS según NetworkManager."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object DHCPEnabled | Select-Object Description,DHCPServer,IPAddress",
+        "lookFor": "Servidor DHCP anunciado y direcciones en adaptadores con DHCP."
+      }
+    ]
+  },
+  {
+    "id": "term-27",
+    "symptom": "La MAC del gateway cambia repetidamente sin mantenimiento previsto.",
+    "verify": "Correlaciona vecinos ARP con inventario y telemetría del switch.",
+    "interpret": "Cambios ARP no son prueba aislada de suplantación.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "ip neigh show",
+        "lookFor": "Asociaciones IP–MAC y su estado."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-NetNeighbor -AddressFamily IPv4 | Select-Object IPAddress,LinkLayerAddress,State",
+        "lookFor": "Entradas ARP/vecinos observadas localmente."
+      }
+    ]
+  },
+  {
+    "id": "term-28",
+    "symptom": "SSH/RDP está escuchando en interfaces no previstas.",
+    "verify": "Valida listeners locales y comprueba la exposición solo desde segmentos autorizados.",
+    "interpret": "Puerto escuchando no significa accesibilidad desde Internet.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "ss -lntp",
+        "lookFor": "TCP en escucha y procesos; algunos PID precisan privilegios."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-NetTCPConnection -State Listen | Sort-Object LocalPort",
+        "lookFor": "Dirección y puerto de escuchas TCP."
+      },
+      {
+        "platform": "PowerShell · red",
+        "command": "Test-NetConnection -ComputerName servidor.autorizado.invalid -Port 3389",
+        "lookFor": "Prueba activa de conectividad RDP: solo en alcance autorizado."
+      }
+    ]
+  },
+  {
+    "id": "term-29",
+    "symptom": "Un servicio negocia TLS antiguo o tiene errores de validación.",
+    "verify": "Inspecciona certificado, hostname y protocolo sin desactivar verificación.",
+    "interpret": "La prueba de un endpoint no cubre el resto de servicios TLS.",
+    "commands": [
+      {
+        "platform": "OpenSSL · red",
+        "command": "openssl s_client -connect servidor.autorizado.invalid:443 -servername servidor.autorizado.invalid </dev/null",
+        "lookFor": "Certificado y versión TLS; conexión a extremo autorizado."
+      },
+      {
+        "platform": "curl · red",
+        "command": "curl -Iv https://servidor.autorizado.invalid",
+        "lookFor": "Handshake y validación; no uses -k para ocultar errores de confianza."
+      }
+    ]
+  },
+  {
+    "id": "term-30",
+    "symptom": "Un certificado caduca o no coincide con el nombre del host.",
+    "verify": "Revisa subjectAltName, issuer, fechas, cadena y renovación.",
+    "interpret": "Un certificado vigente puede ser inválido para el nombre o la cadena.",
+    "commands": [
+      {
+        "platform": "OpenSSL · archivo",
+        "command": "openssl x509 -in '/ruta/certificado.pem' -noout -subject -issuer -dates -ext subjectAltName",
+        "lookFor": "Identidad, emisor, validez y SAN sin exponer clave privada."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-ChildItem Cert:\\LocalMachine\\My | Select-Object Subject,Issuer,NotAfter,Thumbprint",
+        "lookFor": "Certificados del almacén personal de equipo."
+      }
+    ]
+  },
+  {
+    "id": "term-31",
+    "symptom": "Un cliente se asocia pero la red Wi-Fi tiene protección débil.",
+    "verify": "Contrasta método de autenticación, cifrado y perfil con configuración del punto de acceso.",
+    "interpret": "El perfil cliente no demuestra aislamiento ni claves adecuadas de toda la WLAN.",
+    "commands": [
+      {
+        "platform": "Windows · CMD",
+        "command": "netsh wlan show interfaces",
+        "lookFor": "SSID, tipo de autenticación y cifrado de conexión actual."
+      },
+      {
+        "platform": "Linux",
+        "command": "nmcli -f IN-USE,SSID,SECURITY,SIGNAL dev wifi list",
+        "lookFor": "Seguridad anunciada de redes visibles; no valida políticas del controlador."
+      }
+    ]
+  },
+  {
+    "id": "term-32",
+    "symptom": "Los invitados pueden resolver o alcanzar recursos internos.",
+    "verify": "Comprueba rutas, DNS y políticas con pruebas explícitamente autorizadas.",
+    "interpret": "La respuesta DNS interna no equivale a acceso permitido al servicio.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "ip route",
+        "lookFor": "Rutas visibles desde el equipo invitado."
+      },
+      {
+        "platform": "PowerShell · red",
+        "command": "Test-NetConnection -ComputerName servidor.autorizado.invalid -Port 443",
+        "lookFor": "Acceso al puerto aprobado; registrar origen, destino y resultado."
+      }
+    ]
+  },
+  {
+    "id": "term-34",
+    "symptom": "Inventario y consola de parches discrepan.",
+    "verify": "Revisa fecha, paquetes instalados, reinicio pendiente y fuente de actualización.",
+    "interpret": "Un parche pendiente no siempre equivale a CVE explotable: comprueba el boletín.",
+    "commands": [
+      {
+        "platform": "Linux · Debian",
+        "command": "apt list --upgradable",
+        "lookFor": "Paquetes actualizables según índices disponibles; no instala nada."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 20",
+        "lookFor": "Actualizaciones registradas por Windows; no cubre todo el software."
+      }
+    ]
+  },
+  {
+    "id": "term-36",
+    "symptom": "Un puerto aparece abierto sin propietario técnico.",
+    "verify": "Relaciona socket con proceso, unidad y justificación de negocio.",
+    "interpret": "No clasifiques exposición externa solo con inspección local.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "ss -lntup",
+        "lookFor": "Sockets TCP/UDP en escucha, PID cuando sea visible."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-NetTCPConnection -State Listen | Select-Object LocalAddress,LocalPort,OwningProcess",
+        "lookFor": "Puerto, dirección y PID en escucha."
+      }
+    ]
+  },
+  {
+    "id": "term-38",
+    "symptom": "El arranque seguro figura habilitado solo en documentación.",
+    "verify": "Consulta estado UEFI/firmware y registra excepciones.",
+    "interpret": "La presencia de UEFI no prueba Secure Boot activo.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "mokutil --sb-state",
+        "lookFor": "Estado Secure Boot (requiere mokutil y arranque EFI)."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Confirm-SecureBootUEFI",
+        "lookFor": "True/False en hardware UEFI compatible; puede requerir elevación."
+      }
+    ]
+  },
+  {
+    "id": "term-39",
+    "symptom": "El TPM no está disponible para cifrado o atestación.",
+    "verify": "Contrasta disponibilidad, versión y estado de aprovisionamiento.",
+    "interpret": "Un TPM presente puede estar deshabilitado o sin inicializar.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "ls -l /dev/tpm*",
+        "lookFor": "Dispositivos TPM expuestos por el sistema, si existen."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-Tpm",
+        "lookFor": "Presencia, activación y estado de preparación del TPM."
+      }
+    ]
+  },
+  {
+    "id": "term-40",
+    "symptom": "Una unidad con datos sensibles no muestra cifrado efectivo.",
+    "verify": "Revisa estado del volumen y claves bajo custodia; nunca extraigas material secreto.",
+    "interpret": "Una partición cifrada no implica que todos los volúmenes lo estén.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "lsblk -f",
+        "lookFor": "Tipos de sistema de archivos y dispositivos LUKS visibles."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-BitLockerVolume | Select-Object MountPoint,VolumeStatus,ProtectionStatus,EncryptionPercentage",
+        "lookFor": "Estado de BitLocker por volumen."
+      }
+    ]
+  },
+  {
+    "id": "term-42",
+    "symptom": "El antivirus aparece instalado pero está deshabilitado.",
+    "verify": "Valida motor, firmas, protección en tiempo real y exclusiones con consola EPP.",
+    "interpret": "No basta con detectar un proceso o producto instalado.",
+    "commands": [
+      {
+        "platform": "PowerShell · Defender",
+        "command": "Get-MpComputerStatus | Select-Object AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureLastUpdated",
+        "lookFor": "Estado reportado por Microsoft Defender, si se utiliza."
+      },
+      {
+        "platform": "Linux",
+        "command": "systemctl --type=service --state=running",
+        "lookFor": "Servicios activos; contrastar agente concreto con gestión central."
+      }
+    ]
+  },
+  {
+    "id": "term-45",
+    "symptom": "Se detectan administradores inesperados en el dominio.",
+    "verify": "Revisa delegaciones y grupos sensibles desde equipo con RSAT/autorización.",
+    "interpret": "Distingue grupos anidados y cuentas de servicio antes de atribuir riesgo.",
+    "commands": [
+      {
+        "platform": "PowerShell · RSAT",
+        "command": "Get-ADGroupMember -Identity 'Domain Admins' -Recursive | Select-Object Name,ObjectClass,SamAccountName",
+        "lookFor": "Miembros efectivos; requiere módulo ActiveDirectory y privilegios de lectura."
+      },
+      {
+        "platform": "Windows · CMD",
+        "command": "whoami /groups",
+        "lookFor": "Grupos presentes en el token de la sesión actual."
+      }
+    ]
+  },
+  {
+    "id": "term-46",
+    "symptom": "La política de seguridad no se aplica a un equipo.",
+    "verify": "Comprueba OU, filtrado, herencia y resultado efectivo.",
+    "interpret": "Una GPO vinculada no garantiza que sus opciones se hayan aplicado.",
+    "commands": [
+      {
+        "platform": "Windows · CMD",
+        "command": "gpresult /scope computer /r",
+        "lookFor": "GPO de equipo realmente aplicadas y filtradas."
+      },
+      {
+        "platform": "Windows · CMD",
+        "command": "gpresult /scope user /r",
+        "lookFor": "GPO del usuario de sesión; permisos y contexto influyen."
+      }
+    ]
+  },
+  {
+    "id": "term-47",
+    "symptom": "Hay fallos Kerberos o relojes fuera de sincronía.",
+    "verify": "Comprueba tickets del usuario, SPN y sincronización horaria.",
+    "interpret": "La ausencia de ticket puede ser normal si no hubo autenticación Kerberos.",
+    "commands": [
+      {
+        "platform": "Windows / Linux",
+        "command": "klist",
+        "lookFor": "Tickets del contexto actual; la sintaxis disponible depende de la plataforma."
+      },
+      {
+        "platform": "Windows · CMD",
+        "command": "w32tm /query /status",
+        "lookFor": "Origen y estado horario, relevantes para Kerberos."
+      }
+    ]
+  },
+  {
+    "id": "term-48",
+    "symptom": "Un directorio LDAP se consulta sin cifrado válido.",
+    "verify": "Distingue LDAP, LDAPS y StartTLS, y valida la cadena de certificados.",
+    "interpret": "Un puerto 636 abierto no demuestra que la aplicación valide el certificado.",
+    "commands": [
+      {
+        "platform": "OpenSSL · red",
+        "command": "openssl s_client -connect dc.autorizado.invalid:636 -servername dc.autorizado.invalid </dev/null",
+        "lookFor": "Certificado y handshake LDAPS en destino autorizado."
+      },
+      {
+        "platform": "PowerShell · red",
+        "command": "Test-NetConnection -ComputerName dc.autorizado.invalid -Port 636",
+        "lookFor": "Conectividad TCP; no verifica la seguridad de la autenticación."
+      }
+    ]
+  },
+  {
+    "id": "term-49",
+    "symptom": "Cuentas con acceso administrativo carecen de propietario.",
+    "verify": "Cruza membresías, uso real, necesidad y revisiones aprobadas.",
+    "interpret": "La existencia de una cuenta no indica actividad ni autorización.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "getent group sudo; getent group wheel",
+        "lookFor": "Grupos administrativos locales disponibles."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-LocalGroup | Where-Object SID -eq 'S-1-5-32-544' | Get-LocalGroupMember",
+        "lookFor": "Miembros del grupo de administradores locales."
+      }
+    ]
+  },
+  {
+    "id": "term-51",
+    "symptom": "Una identidad de servicio tiene privilegios excesivos.",
+    "verify": "Revisa ejecución efectiva y dueño del servicio sin extraer credenciales.",
+    "interpret": "Cuentas técnicas deben tener alcance y rotación justificados.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "systemctl show ssh.service -p User -p Group",
+        "lookFor": "Usuario/grupo configurados en ejemplo de servicio systemd (ajusta unidad)."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-CimInstance Win32_Service | Select-Object Name,StartName,State",
+        "lookFor": "Identidades bajo las que se ejecutan los servicios."
+      }
+    ]
+  },
+  {
+    "id": "term-57",
+    "symptom": "La versión identificada por escáner corresponde a otro producto.",
+    "verify": "Corrobora producto/edición/versión y CPE normalizado.",
+    "interpret": "Un CPE sugerido no constituye identificación fiable del software.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "cat /etc/os-release; uname -r",
+        "lookFor": "Identidad del SO y kernel."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-ComputerInfo | Select-Object WindowsProductName,OsBuildNumber",
+        "lookFor": "Producto y build reportados por Windows."
+      }
+    ]
+  },
+  {
+    "id": "term-62",
+    "symptom": "Se desconoce qué procesos atienden conexiones.",
+    "verify": "Enumera listeners y distingue interfaz local de exposición remota.",
+    "interpret": "Inventario de puertos locales no sustituye la evaluación perimetral.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "ss -lntup",
+        "lookFor": "Servicios TCP/UDP en escucha y procesos visibles."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-NetTCPConnection -State Listen",
+        "lookFor": "Puertos de escucha TCP por interfaz."
+      }
+    ]
+  },
+  {
+    "id": "term-64",
+    "symptom": "El catálogo muestra backups, pero faltan puntos esperados.",
+    "verify": "Consulta el histórico de ejecuciones y retención configurada.",
+    "interpret": "Una copia existente no demuestra restaurabilidad.",
+    "commands": [
+      {
+        "platform": "Linux · restic",
+        "command": "restic snapshots",
+        "lookFor": "Snapshots disponibles en repositorio ya configurado; requiere acceso de lectura."
+      },
+      {
+        "platform": "PowerShell · Windows Backup",
+        "command": "Get-WBSummary",
+        "lookFor": "Resumen de Windows Server Backup si el componente está disponible."
+      }
+    ]
+  },
+  {
+    "id": "term-67",
+    "symptom": "No se dispone de evidencia de restauraciones.",
+    "verify": "Busca resultados de simulacros y verifica checksums sin sobrescribir producción.",
+    "interpret": "No ejecutes restauraciones ni montajes de producción durante una comprobación documental.",
+    "commands": [
+      {
+        "platform": "Linux · restic",
+        "command": "restic snapshots",
+        "lookFor": "Inventario de puntos de restauración (no realiza restauración)."
+      },
+      {
+        "platform": "PowerShell · Windows Backup",
+        "command": "Get-WBSummary",
+        "lookFor": "Resultado resumido de operaciones anteriores, si se instaló el módulo."
+      }
+    ]
+  },
+  {
+    "id": "term-72",
+    "symptom": "El archivo recibido difiere del registrado en el acta.",
+    "verify": "Repite hash sobre copia preservada y contrasta hora y custodios.",
+    "interpret": "La coincidencia de hash apoya integridad, no acredita autoría.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "sha256sum '/ruta/evidencia.bin'",
+        "lookFor": "Calcula huella sin escribir sobre el archivo."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-FileHash -Path 'C:\\Ruta\\evidencia.bin' -Algorithm SHA256",
+        "lookFor": "Hash reproducible para anexar a la evidencia."
+      }
+    ]
+  },
+  {
+    "id": "term-87",
+    "symptom": "Los permisos efectivos cloud exceden los documentados.",
+    "verify": "Identifica la sesión activa y enumera permisos del recurso aprobado.",
+    "interpret": "Credenciales CLI pueden tener acceso amplio; protege la salida y evita enumeraciones fuera de alcance.",
+    "commands": [
+      {
+        "platform": "AWS CLI",
+        "command": "aws sts get-caller-identity",
+        "lookFor": "Identidad y cuenta de la sesión actual; la salida contiene identificadores."
+      },
+      {
+        "platform": "Azure CLI",
+        "command": "az account show --query '{name:name,id:id,tenantId:tenantId}'",
+        "lookFor": "Suscripción y tenant activos; datos sensibles del cliente."
+      }
+    ]
+  },
+  {
+    "id": "term-88",
+    "symptom": "Un bucket podría permitir exposición pública.",
+    "verify": "Valida configuración de bloqueo público y políticas en el recurso autorizado.",
+    "interpret": "La falta de PublicAccessBlock no implica publicación automática; revisar política y ACL.",
+    "commands": [
+      {
+        "platform": "AWS CLI",
+        "command": "aws s3api get-public-access-block --bucket NOMBRE_BUCKET",
+        "lookFor": "Configuración Block Public Access; requiere permisos s3:GetBucketPublicAccessBlock."
+      },
+      {
+        "platform": "AWS CLI",
+        "command": "aws s3api get-bucket-policy-status --bucket NOMBRE_BUCKET",
+        "lookFor": "IsPublic según evaluación de política; no sustituye otras comprobaciones."
+      }
+    ]
+  },
+  {
+    "id": "term-90",
+    "symptom": "Un contenedor publica puertos o ejecuta imágenes no aprobadas.",
+    "verify": "Consulta inventario de contenedores y bindings sin inspeccionar variables secretas.",
+    "interpret": "Exposición de puertos debe evaluarse junto con firewall y red del host.",
+    "commands": [
+      {
+        "platform": "Docker",
+        "command": "docker ps --format 'table {{.Names}}\\t{{.Image}}\\t{{.Ports}}'",
+        "lookFor": "Nombre, imagen y publicación de puertos; acceso al socket Docker es privilegiado."
+      },
+      {
+        "platform": "Docker",
+        "command": "docker image ls --format 'table {{.Repository}}\\t{{.Tag}}\\t{{.ID}}'",
+        "lookFor": "Imágenes locales; validar procedencia y digest por política."
+      }
+    ]
+  },
+  {
+    "id": "term-91",
+    "symptom": "Cargas Kubernetes se ejecutan sin políticas de red.",
+    "verify": "Consulta namespaces, pods y NetworkPolicy con un rol autorizado.",
+    "interpret": "La presencia de NetworkPolicy no asegura aplicación: depende del CNI.",
+    "commands": [
+      {
+        "platform": "Kubernetes CLI",
+        "command": "kubectl get networkpolicies --all-namespaces",
+        "lookFor": "Políticas existentes por namespace; requiere permisos de lectura."
+      },
+      {
+        "platform": "Kubernetes CLI",
+        "command": "kubectl auth can-i --list",
+        "lookFor": "Permisos concedidos a la identidad actual; puede mostrar recursos sensibles."
+      }
+    ]
+  },
+  {
+    "id": "term-94",
+    "symptom": "Se confunde cifrado del disco con cifrado de datos de aplicación.",
+    "verify": "Inspecciona volúmenes protegidos y límites del mecanismo.",
+    "interpret": "El cifrado en reposo no sustituye permisos y gestión de claves.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "lsblk -f",
+        "lookFor": "Dispositivos cifrados identificables por FSTYPE."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-BitLockerVolume | Select-Object MountPoint,ProtectionStatus,VolumeStatus",
+        "lookFor": "Volúmenes BitLocker y estado de protección."
+      }
+    ]
+  },
+  {
+    "id": "term-96",
+    "symptom": "Un usuario consulta recursos que no pertenecen a su rol.",
+    "verify": "Comprueba grupos, ACL locales y políticas aplicadas sin cambiar permisos.",
+    "interpret": "Los permisos del sistema de archivos no representan todos los controles de aplicación.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "namei -l '/ruta/recurso'",
+        "lookFor": "Permisos y propietarios a lo largo de la ruta."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-Acl -Path 'C:\\Ruta\\Recurso' | Select-Object -ExpandProperty Access",
+        "lookFor": "Entradas ACL para el recurso elegido."
+      }
+    ]
+  },
+  {
+    "id": "term-97",
+    "symptom": "Se reciben menos eventos en el SIEM de los esperados.",
+    "verify": "Comprueba generación y entrega de logs en el origen, desfase temporal y filtros.",
+    "interpret": "Tener agentes instalados no prueba ingestión ni correlación.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "journalctl --since '1 hour ago' -p warning --no-pager",
+        "lookFor": "Eventos recientes de severidad warning o superior."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-WinEvent -ListLog Security | Select-Object LogName,RecordCount,IsEnabled",
+        "lookFor": "Estado y volumen del registro Security (requiere permisos)."
+      }
+    ]
+  },
+  {
+    "id": "term-99",
+    "symptom": "Faltan eventos relevantes o la retención es insuficiente.",
+    "verify": "Comprueba política de auditoría, tamaño y filtros de logs.",
+    "interpret": "Ausencia de registro no prueba ausencia de actividad.",
+    "commands": [
+      {
+        "platform": "Windows · CMD",
+        "command": "auditpol /get /category:*",
+        "lookFor": "Subcategorías de auditoría de Windows y su estado."
+      },
+      {
+        "platform": "Linux",
+        "command": "journalctl --disk-usage",
+        "lookFor": "Uso estimado del journal; consulta configuración de retención por separado."
+      }
+    ]
+  },
+  {
+    "id": "term-100",
+    "symptom": "Marcas temporales entre equipos no coinciden.",
+    "verify": "Consulta fuente, estado y desfase NTP sin cambiar configuración.",
+    "interpret": "Para incidentes registra zona horaria, offset y hora de captura.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "timedatectl status",
+        "lookFor": "Estado NTP y sincronización local en sistemas systemd."
+      },
+      {
+        "platform": "Linux · chrony",
+        "command": "chronyc tracking",
+        "lookFor": "Referencia, offset y dispersión si usa chrony."
+      },
+      {
+        "platform": "Windows · CMD",
+        "command": "w32tm /query /status",
+        "lookFor": "Origen y estado de sincronización de hora Windows."
+      }
+    ]
+  },
+  {
+    "id": "term-101",
+    "symptom": "Se sospecha un patrón de fallos de autenticación.",
+    "verify": "Filtra eventos por ventana y contrasta usuarios, origen y procesos esperados.",
+    "interpret": "Repeticiones pueden deberse a errores operativos; no atribuyas incidente sin contexto.",
+    "commands": [
+      {
+        "platform": "PowerShell",
+        "command": "Get-WinEvent -FilterHashtable @{LogName='Security';Id=4625;StartTime=(Get-Date).AddHours(-2)} -MaxEvents 50",
+        "lookFor": "Fallos de inicio de sesión Windows; contiene datos personales."
+      },
+      {
+        "platform": "Linux",
+        "command": "journalctl --since '2 hours ago' --no-pager | grep -Ei 'authentication failure|failed password'",
+        "lookFor": "Patrones de autenticación fallida; proteger resultados."
+      }
+    ]
+  },
+  {
+    "id": "term-104",
+    "symptom": "Hay actividad de cifrado sospechosa o borrado de copias.",
+    "verify": "Correlaciona alertas EDR, cambios de archivos, cuentas y copias protegidas.",
+    "interpret": "No ejecutes muestras, detengas servicios ni alteres evidencias desde esta guía.",
+    "commands": [
+      {
+        "platform": "Windows · CMD",
+        "command": "vssadmin list shadows",
+        "lookFor": "Puntos de sombra visibles; su ausencia no prueba ataque."
+      },
+      {
+        "platform": "Linux",
+        "command": "journalctl --since '1 hour ago' -p warning --no-pager",
+        "lookFor": "Avisos recientes para correlacionar con telemetría EDR y almacenamiento."
+      }
+    ]
+  }
+].map(({id,...guide})=>[id,Object.freeze(guide)])));
  const CATEGORIES=Object.freeze([...new Set(TERMS.map(t=>t.category))]);
  const normalize = input=>String(input??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase('es').trim();
  const byId=id=>TERMS.find(t=>t.id===id)||null;
@@ -1261,7 +2239,8 @@
   return TERMS.filter(t=>{
    if(category!=='Todas'&&t.category!==category)return false;
    if(!tokens.length)return true;
-   const haystack=normalize([t.title,t.category,t.description,t.check,t.why,t.example,...(t.aliases||[])].join(' '));
+   const guide=GUIDES[t.id];
+   const haystack=normalize([t.title,t.category,t.description,t.check,t.why,t.example,...(t.aliases||[]),guide?.symptom,guide?.verify,guide?.interpret,...(guide?.commands||[]).flatMap(c=>[c.platform,c.command,c.lookFor])].join(' '));
    return tokens.every(token=>haystack.includes(token));
   }).sort((a,b)=>{
    if(!tokens.length)return a.title.localeCompare(b.title,'es');
@@ -1272,5 +2251,5 @@
    return score(b)-score(a)||a.title.localeCompare(b.title,'es');
   });
  };
- globalThis.AuditGlossary=Object.freeze({TERMS,CATEGORIES,search,byId,normalize});
+ globalThis.AuditGlossary=Object.freeze({TERMS,CATEGORIES,GUIDES,search,byId,normalize});
 })();
