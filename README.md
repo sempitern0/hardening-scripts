@@ -1,5 +1,7 @@
 # sysadmin · System Administration Toolkit
 
+**English** · [Español](README_ES.md)
+
 [![Status](https://img.shields.io/badge/status-active%20development-0A7EA4)](#estado-del-proyecto)
 [![License](https://img.shields.io/badge/license-MIT-2E8540)](./LICENSE)
 [![Linux](https://img.shields.io/badge/platform-Linux-455A64?logo=linux&logoColor=white)](#que-herramienta-usar)
