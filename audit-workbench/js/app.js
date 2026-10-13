@@ -306,7 +306,15 @@
     if(field==='cvss'&& !(/^(?:10(?:\.0)?|[0-9](?:\.[0-9])?)$/.test(v)))return 'La puntuación CVSS debe estar entre 0.0 y 10.0.';
     if(field==='vlan'&&(!/^\d+$/.test(v)||Number(v)<1||Number(v)>4094))return 'VLAN válida: de 1 a 4094.';
     if(field==='cidr'&& !/^(?:\d{1,3}\.){3}\d{1,3}\/(?:[0-9]|[12][0-9]|3[0-2])$/.test(v))return 'Subred IPv4 CIDR no válida (ej. 192.168.1.0/24).';
-    if(block==='meta'&&['start','startTime','end','endTime'].includes(field))return quality.periodProblems(obj)[0]?.message||'';
+    if(block==='meta'&&['start','startTime','end','endTime'].includes(field)){
+      const codesByField={
+        start:['FECHA_INICIO_REQUERIDA','PERIODO_INVERTIDO'],
+        startTime:['HORA_INICIO','FECHA_INICIO_REQUERIDA','PERIODO_INVERTIDO'],
+        end:['FECHA_FIN_REQUERIDA','PERIODO_INVERTIDO'],
+        endTime:['HORA_FIN','FECHA_FIN_REQUERIDA','PERIODO_INVERTIDO']
+      };
+      return quality.periodProblems(obj).find(issue=>codesByField[field].includes(issue.code))?.message||'';
+    }
     return '';
   }
   function updateValidation(target){
