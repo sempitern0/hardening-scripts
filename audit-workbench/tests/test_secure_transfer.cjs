@@ -24,7 +24,7 @@ const sec=ctx.AuditSecureTransfer;
  for(const file of ['secure-transfer.js','secure-transfer-ui.js'])
    for(const src of [html,sw,bash,powershell])assert(src.includes(file),'Missing offline resource '+file);
  assert(html.includes('frame-src blob:;')&&!html.includes("frame-src 'none'"),'Local PDF preview CSP missing');
- assert(sw.includes('v30-secure-distribution'));
+ assert(sw.includes('v31-connections-fixes'));
  const app=fs.readFileSync(path.join(root,'js/app.js'),'utf8');
  assert(app.includes('AuditSecureTransferUI.view')&&app.includes('AuditSecureTransferUI.bind'));
  console.log('PASS secure backup, tampering, URL isolation, expiry, offline distribution');
