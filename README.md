@@ -1071,26 +1071,26 @@ Before escalating it as an incident:
 5. check Event Center and service/endpoint logs;
 6. escalate if other signs are consistent with scanning, exploitation, or compromise.
 
-### Rule management: feeds mantenidos antes que reglas manuales
+### Rule management: maintained feeds before manual rules
 
-El flujo recomendado no consiste en copiar firmas una a una. `suricata-update` es el gestor oficial de reglas de Suricata y genera el ruleset consolidado en:
+The recommended workflow is not to copy individual signatures. `suricata-update` is Suricata's official rule manager and generates the consolidated ruleset at:
 
 ```text
 /var/lib/suricata/rules/suricata.rules
 ```
 
-Ese fichero es un **artefacto generado**. No debe editarse directamente. La arquitectura del asistente es:
+That file is a **generated artifact**. Do not edit it directly. The assistant's architecture is:
 
 ```text
                  SURICATA DETECTION PIPELINE
 
-  feeds mantenidos              contexto local
-  por suricata-update            del entorno
+  maintained feeds              local context
+  via suricata-update            for the environment
          │                            │
          ├─ ET/Open                   ├─ AD/DC context.rules
-         ├─ OISF TrafficID            └─ custom.rules (opcional)
+         ├─ OISF TrafficID            └─ custom.rules (optional)
          ├─ abuse.ch feeds                  │
-         └─ fuentes opcionales              │
+         └─ optional sources              │
                  │                          │
                  └──────────┬───────────────┘
                             ↓
@@ -1099,7 +1099,7 @@ Ese fichero es un **artefacto generado**. No debe editarse directamente. La arqu
                      safe rule reload
 ```
 
-La consola ofrece ahora:
+The console now provides:
 
 ```text
 Suricata IDS
@@ -1120,88 +1120,88 @@ SURICATA RULE MANAGEMENT
 
 #### Professional baseline
 
-Durante `Configure passive IDS`, el asistente propone este perfil con respuesta predeterminada **Y**. La activación sigue siendo explícita: el operador puede rechazarla y quedarse con ET/Open + las reglas contextuales del DC, y aplicarla más adelante desde `Rule management -> Professional baseline`.
+During `Configure passive IDS`, the assistant offers this profile with **Y** as the default response. Enabling it remains explicit: the operator may decline and retain ET/Open plus DC-specific context rules, then apply the baseline later through `Rule management -> Professional baseline`.
 
-El perfil recomendado para un sensor pasivo profesional instala/activa estas capas:
+The recommended professional passive-sensor profile installs/enables these layers:
 
-| Capa | Fuente | Función |
+| Layer | Source | Purpose |
 |---|---|---|
-| General | ET/Open | amenazas, exploits, malware, scans y policy signatures mantenidas por ET |
-| Visibilidad | `oisf/trafficid` | identificación de aplicaciones/tráfico mediante reglas `noalert` |
-| Threat intelligence | `abuse.ch/feodotracker` | infraestructura C2 de botnets |
-| Threat intelligence | `abuse.ch/urlhaus` | URLs usadas para distribución de malware |
-| Threat intelligence | `abuse.ch/sslbl-blacklist` | certificados TLS asociados a infraestructura maliciosa |
-| Contexto | Debian AD Assistant | exposición de Kerberos/LDAP/SMB/RPC/DNS/NTP del DC y ráfagas SMB |
+| General | ET/Open | threats, exploits, malware, scans, and policy signatures maintained by ET |
+| Visibilidad | `oisf/trafficid` | application/traffic identification through `noalert` rules |
+| Threat intelligence | `abuse.ch/feodotracker` | botnet C2 infrastructure |
+| Threat intelligence | `abuse.ch/urlhaus` | URLs used for malware distribution |
+| Threat intelligence | `abuse.ch/sslbl-blacklist` | TLS certificates associated with malicious infrastructure |
+| Contexto | Debian AD Assistant | DC Kerberos/LDAP/SMB/RPC/DNS/NTP exposure and SMB bursts |
 
-ET/Open es el feed general por defecto de `suricata-update`. Si el administrador instala una fuente comercial que lo sustituya, el asistente no intenta mezclarla de forma ciega con ET/Open.
+ET/Open is the default general-purpose feed in `suricata-update`. If the administrator installs a commercial replacement, the assistant does not blindly combine it with ET/Open.
 
-El baseline **no**:
+The baseline **does not**:
 
-- convierte `alert` en `drop`;
-- habilita IPS/NFQUEUE;
-- activa feeds de hunting de alto coste por defecto;
-- añade fuentes comerciales sin licencia/token;
-- edita directamente `suricata.rules`;
-- deshabilita categorías del vendor silenciosamente.
+- convert `alert` into `drop`;
+- enable IPS/NFQUEUE;
+- enable resource-intensive hunting feeds by default;
+- add commercial feeds without a license/token;
+- directly edit `suricata.rules`;
+- silently disable vendor categories.
 
-El objetivo es disponer de una base útil y mantenida sin transformar el DC en un experimento de miles de firmas arbitrarias.
+The goal is a useful, maintained baseline without turning the DC into an experiment involving thousands of arbitrary signatures.
 
-#### Fuentes adicionales propuestas
+#### Additional recommended sources
 
-`Recommended sources` permite añadir de forma explícita fuentes del catálogo OISF. Además de las incluidas en el baseline, el asistente propone actualmente:
+`Recommended sources` explicitly enables sources from the OISF catalog. In addition to baseline feeds, the assistant currently suggests:
 
 ```text
 stamus/lateral
-    detecciones orientadas a movimiento lateral en entornos Windows/AD
+    detections for lateral movement in Windows/AD environments
 
 ptrules/open
-    conjunto adicional de detecciones abiertas de Positive Technologies
+    additional open detections from Positive Technologies
 ```
 
-Son **opcionales**. Más reglas no equivalen automáticamente a más seguridad: pueden aumentar CPU, memoria, volumen de EVE y falsos positivos. Activa una fuente adicional porque responde a una necesidad concreta y revisa después el comportamiento del sensor.
+These sources are **optional**. More rules do not automatically mean better security: they may increase CPU, memory consumption, EVE volume, and false positives. Enable an additional feed to address a specific need, then review sensor behavior.
 
-El catálogo en vivo se obtiene con:
+Retrieve the live catalog with:
 
 ```bash
 suricata-update update-sources
 suricata-update list-sources
 ```
 
-Desde el menú puedes refrescarlo y habilitar cualquier identificador `vendor/name`. La fuente solo se conserva como cambio válido si el ruleset resultante pasa la validación del sensor.
+The menu can refresh the catalog and enable any `vendor/name` identifier. The change is retained only if the resulting ruleset passes sensor validation.
 
-#### Fuente HTTPS no incluida en el catálogo
+#### HTTPS source not listed in the catalog
 
-Para un feed público/privado no indexado, `Add HTTPS source` utiliza el mecanismo nativo:
+For a public/private feed not listed in the index, `Add HTTPS source` uses the native mechanism:
 
 ```bash
 suricata-update add-source custom/<nombre> https://servidor/rules.tar.gz
 ```
 
-El workflow del asistente acepta únicamente HTTPS y después reconstruye y valida el ruleset.
+The assistant accepts only HTTPS in this workflow, then rebuilds and validates the ruleset.
 
-No introduce API keys, bearer tokens ni contraseñas en argumentos propios del asistente. Si un proveedor requiere credenciales y ya existe en el índice de `suricata-update`, utiliza la fuente indexada para que el gestor aplique sus parámetros. Revisa siempre cómo y dónde el proveedor/`suricata-update` persiste esas credenciales antes de usar un feed comercial.
+The assistant does not put API keys, bearer tokens, or passwords in its own command arguments. If a provider requires credentials and is already indexed by `suricata-update`, use the indexed source so the manager applies its parameters. Always inspect how and where the provider/`suricata-update` stores credentials before using a commercial feed.
 
-#### Reglas manuales locales: solo para contexto propio
+#### Local manual rules: only for your own context
 
-La edición manual sigue disponible como escape hatch, pero no como mecanismo principal de actualización:
+Manual editing remains available as an escape hatch, not as the primary update mechanism:
 
 ```text
 /etc/suricata/debian-ad-rules/context.rules
-    gestionado por el asistente; no editar
+    managed by the assistant; do not edit
 
 /etc/suricata/debian-ad-rules/custom.rules
-    gestionado por el operador
+    managed by the operator
 ```
 
-`custom.rules` sirve para información que un feed genérico no puede conocer, por ejemplo:
+`custom.rules` is intended for information a generic feed cannot know, such as:
 
-- una subred que jamás debe contactar determinado servicio interno;
-- un protocolo legacy que debe desaparecer después de una fecha;
-- una aplicación propia;
-- una IOC interna temporal;
-- un patrón específico descubierto durante un incidente.
+- a subnet that must never contact a particular internal service;
+- a legacy protocol that must be retired by a given date;
+- an in-house application;
+- a temporary internal IOC;
+- a specific pattern discovered during an incident.
 
-El editor integrado realiza:
+The integrated editor performs:
 
 ```text
 backup
@@ -1209,13 +1209,13 @@ backup
 edit
   ↓
 suricata -T
-  ├─ FAIL -> rollback del fichero
+  ├─ FAIL -> file rollback
   └─ PASS -> rule reload
 ```
 
-Cada regla debe utilizar un `sid` globalmente único. Consulta la documentación de SID y `sidallocation.org` antes de reservar un rango permanente. No reutilices SID de ET/Open u otros feeds.
+Each rule must use a globally unique `sid`. Consult SID documentation and `sidallocation.org` before reserving a permanent range. Do not reuse SIDs from ET/Open or other feeds.
 
-Las reglas locales se almacenan fuera de `/var/lib/suricata/rules`, porque esa ruta pertenece a `suricata-update`. El asistente también migra sus reglas contextuales antiguas fuera del directorio de reglas de la distribución para evitar cargar accidentalmente una misma firma dos veces.
+Local rules are stored outside `/var/lib/suricata/rules`, since that directory belongs to `suricata-update`. The assistant also migrates its older context rules out of the distribution's rules directory to avoid accidentally loading the same signature twice.
 
 #### Actualizaciones automáticas
 
