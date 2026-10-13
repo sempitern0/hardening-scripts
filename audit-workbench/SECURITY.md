@@ -1,60 +1,60 @@
-# Modelo de seguridad de Audit Workbench
+# Audit Workbench security model
 
-## Superficie
+## Attack surface
 
-- Aplicación web sin backend, cuentas, servidores propios, cookies de seguimiento, analítica ni librerías externas.
-- Expedientes locales en IndexedDB y, cuando falla, `localStorage`. El navegador no cifra los JSON exportados y el usuario gestiona su almacenamiento seguro.
-- Imágenes/logos pasan por canvas y se convierten a JPEG base64; importaciones validan tamaño, tipo de esquema y campos permitidos.
-- Textos se escapan antes de insertarlos en HTML; no se evalúa código proveniente de expedientes JSON ni hay HTML arbitrario del cliente.
-- La CSP limita scripts y recursos ejecutables al origen; `connect-src https:` admite integraciones HTTPS iniciadas expresamente por el auditor (CVE y WebDAV/Nextcloud). No hay conexión a servicios externos por defecto.
-- Service worker con caché de archivos estáticos; no está diseñado para conservar expedientes, respuestas de CVE, archivos PDF ni credenciales. La comprobación explícita del servidor omite la caché.
+- Web application without a backend, accounts, proprietary servers, tracking cookies, analytics, or external libraries.
+- Local audit records in IndexedDB and, if that fails, `localStorage`. The browser does not encrypt ordinarily exported JSON files; users are responsible for secure storage.
+- Images/logos pass through canvas and are converted to base64 JPEG; imports validate size, schema type, and allowed fields.
+- Text is escaped before insertion into HTML; code from audit JSON records is not evaluated and arbitrary client HTML is not allowed.
+- The CSP restricts executable scripts and resources to the origin; `connect-src https:` permits HTTPS integrations explicitly initiated by the auditor (CVE and WebDAV/Nextcloud). No external connection is required by default.
+- The service worker caches static assets; it is not designed to retain audit records, CVE responses, PDFs, or credentials. Explicit server connectivity checks bypass the cache.
 
-## Amenazas residuales
+## Residual threats
 
-Una persona con acceso al perfil del navegador/almacenamiento del dispositivo puede tener acceso a los expedientes. Una extensión maliciosa, sincronización de navegador, malware, copias de seguridad del sistema operativo, un dispositivo perdido o una cuenta compartida también pueden comprometer la confidencialidad. Las capturas pueden contener IP, nombres de usuario o secretos accidentales. Por ello:
+Anyone with access to the browser profile or the device's storage may access audit records. A malicious extension, browser synchronization, malware, operating-system backups, a lost device, or a shared account may also compromise confidentiality. Captures may contain IPs, usernames, or accidentally included secrets. Accordingly:
 
-- Cifra disco/volumen y copias de backup; exige bloqueo de sesión y acceso individual.
-- Usa perfiles separados por cliente/consultor si el procedimiento lo permite.
-- Nunca pegues contraseñas, tokens, hashes reutilizables ni claves sin redacción. Inspecciona capturas antes de incorporarlas.
-- Conserva originales fuera de la aplicación con hash e identificadores de custodia cuando sea necesario.
-- Valida el destinatario antes de compartir, y clasifica el informe y el JSON.
-- No uses `mailto` para enviar documentos sin adjuntarlos manualmente; no se realiza SMTP/API automático.
+- Encrypt disks/volumes and backup copies; require screen locking and individual access.
+- Use separate profiles per client/consultant when procedures allow.
+- Never paste passwords, tokens, reusable hashes, or keys without redaction. Inspect captures before including them.
+- Preserve original evidence separately from the application with hashes and chain-of-custody identifiers as appropriate.
+- Verify recipients before sharing, and classify the report and JSON.
+- Do not use `mailto` to transmit documents without manually attaching them; no automatic SMTP/API sending takes place.
 
-## Operaciones online opcionales
+## Optional online operations
 
-| Acción | Destino | Datos transmitidos | Disparador |
+| Action | Destination | Data transmitted | Trigger |
 |---|---|---|---|
-| Consultar CVE | `https://cveawg.mitre.org/api/cve/CVE-...` | Identificador CVE solamente | Botón + confirmación (consulta puede fallar por CORS). |
-| Ver CVE.org | CVE.org | Identificador CVE en URL | Botón «Ver en CVE.org». |
-| Compartir JSON | Destino que elija el usuario en el diálogo del SO | **JSON completo del expediente** | Botón + confirmación; API Web Share si disponible. |
-| Preparar correo | Cliente de correo del usuario | Asunto y texto con nombre de cliente/proyecto; **ningún adjunto** | Botón + confirmación, destinatario manual. |
-| Subir JSON sin cifrar mediante WebDAV | Servidor Nextcloud configurado | **Expediente completo sin cifrado a nivel de archivo** (TLS en tránsito) | Desbloqueo de conexión, botón y confirmación. Se desaconseja frente al backup cifrado. |
-| Backup JSON cifrado | Nextcloud configurado | Archivo cifrado AES-256-GCM antes de enviarse | Frase de cifrado, botón y confirmación. |
-| Compartir PDF | Nextcloud configurado | PDF completo, no cifrado a nivel de archivo | Selección de PDF, subida explícita y confirmación. |
-| Enlace temporal PDF | API OCS de Nextcloud | Solicitud de enlace de lectura con contraseña y caducidad | Creación explícita después de subir el PDF. |
-| Revocar enlace | API OCS de Nextcloud | Identificador de compartición de la sesión | Confirmación expresa. |
-| Otros proveedores (S3/Google Drive/OneDrive) | No integrados | Ninguno | Requieren desarrollo o envío manual. |
+| Look up a CVE | `https://cveawg.mitre.org/api/cve/CVE-...` | CVE identifier only | Button and confirmation (query may fail due to CORS) |
+| Open CVE.org | CVE.org | CVE identifier in the URL | "View on CVE.org" button |
+| Share JSON | Destination selected in the OS sharing dialog | **Complete audit-record JSON** | Button and confirmation; Web Share API where available |
+| Prepare email | User's email client | Subject and text including client/project name; **no attachment** | Button, confirmation, manual recipient |
+| Upload unencrypted JSON over WebDAV | Configured Nextcloud server | **Complete record without file-level encryption** (TLS in transit) | Unlock connection, button, and confirmation; encrypted backup is preferable |
+| Encrypted JSON backup | Configured Nextcloud | AES-256-GCM encrypted file before transmission | Encryption passphrase, button, and confirmation |
+| Share PDF | Configured Nextcloud | Complete PDF without file-level encryption | PDF selection, explicit upload, and confirmation |
+| Temporary PDF link | Nextcloud OCS API | Request for read-only link with password and expiration | Explicit creation after PDF upload |
+| Revoke link | Nextcloud OCS API | Current session's share identifier | Express confirmation |
+| Other providers (S3/Google Drive/OneDrive) | Not integrated | None | Requires development or manual delivery |
 
-No existe búsqueda de CVE por producto/versión ni escaneo automático; un registro CVE tampoco acredita afectación de un activo. **La ausencia de consulta online no bloquea la auditoría ni el PDF.**
+There is no automated CVE search by product/version or automated scanning; a CVE record does not, by itself, prove that an asset is affected. **The absence of online CVE lookup does not block an audit or PDF generation.**
 
-## Límites y seguimiento
+## Limitations and follow-up
 
-La PWA no tiene autenticación de usuario propia, control multiusuario, firmas digitales, auditoría de acceso al perfil ni verificación de integridad firmada. Los expedientes permanecen en claro en IndexedDB: **el cifrado opcional protege el archivo de backup exportado, no cifra automáticamente toda la base local**. Las credenciales Nextcloud pueden guardarse cifradas bajo una frase local; una sesión de navegador desbloqueada o comprometida sigue siendo una amenaza. Para otros proveedores harán falta autorización del cliente, permisos mínimos y una estrategia verificable de revocación. No se deben introducir secretos API persistentes en JavaScript público.
+The PWA has no built-in user authentication, multiuser access control, digital signatures, browser-profile access auditing, or signed integrity verification. Audit records remain unencrypted in IndexedDB: **optional encryption protects exported backup files, not the entire local database**. Nextcloud credentials can be stored encrypted under a local passphrase; an unlocked or compromised browser session remains a threat. Other providers will require client authorization, least-privilege permissions, and verifiable revocation. Persistent API secrets must not be embedded in public JavaScript.
 
-## Conexiones y copias cifradas opcionales
+## Optional connections and encrypted backups
 
-Las credenciales WebDAV se cifran localmente con AES-GCM, derivando la clave de una frase de paso del auditor con PBKDF2-SHA256/310.000 rondas y sal aleatoria. Se necesitan contexto seguro (HTTPS o localhost) y Web Crypto API. La frase de paso no se persiste, y el perfil se desbloquea manualmente cada sesión. **No hay un servidor de respaldo de claves ni recuperación de contraseñas**. La protección no equivale a un gestor de secretos empresarial ni cubre terminales comprometidos o acceso a la sesión desbloqueada.
+WebDAV credentials are encrypted locally with AES-GCM, using a key derived from an auditor passphrase through PBKDF2-SHA256 with 310,000 iterations and a random salt. A secure context (HTTPS or localhost) and the Web Crypto API are required. The passphrase is not persisted, and the profile is unlocked manually each session. **There is no key-escrow service or password recovery mechanism**. This protection is not equivalent to an enterprise secrets manager and does not protect compromised endpoints or access to an unlocked session.
 
-No utilices WebDAV con credenciales personales principales: crea una **contraseña de aplicación** dedicada, revocable y con permisos mínimos. Las transferencias requieren HTTPS válido, CORS permitido por el servidor y confirmación explícita del auditor. Si el servidor no permite CORS, utiliza exportación manual. Existen dos rutas distintas: la subida JSON original no aplica cifrado adicional al archivo (solo TLS en tránsito); **la función de backup cifrado** deriva una clave independiente con PBKDF2-SHA256 y cifra el JSON mediante AES-256-GCM antes de transferirlo. El PDF tampoco incorpora cifrado propio del archivo, aunque viaja por HTTPS. La custodia del almacenamiento remoto y sus controles de acceso corresponde al servidor y al cliente.
+Do not use primary personal credentials for WebDAV: create a dedicated, revocable **application password** with minimal permissions. Transfers require valid HTTPS, CORS support on the server, and explicit confirmation by the auditor. If the server does not allow CORS, use manual export. There are two separate paths: ordinary JSON upload adds no file-level encryption (only TLS in transit); **the encrypted backup function** derives an independent key using PBKDF2-SHA256 and encrypts JSON using AES-256-GCM before transmission. PDFs likewise lack file-level encryption, although they travel over HTTPS. Remote-storage custody and its access controls are the responsibility of the server and client.
 
-La CSP permite `connect-src https:` únicamente para soportar servidores Nextcloud definidos por el usuario y consultas CVE expresas. No hay analítica, conexiones en segundo plano ni inyección de scripts desde dominios externos. Configura una CSP más restrictiva en el reverse proxy cuando un despliegue corporativo utiliza proveedores conocidos.
+The CSP permits `connect-src https:` only to support user-configured Nextcloud servers and explicit CVE lookups. There are no analytics, background connections, or injected scripts from external domains. Configure a more restrictive CSP at the reverse proxy if a corporate deployment uses known providers.
 
-El algoritmo de checksum español de DNI/NIE y el de NIF ordinario de entidad son **validadores de formato y control**, no verificaciones contra el censo de la AEAT ni contra la identidad de sus titulares.
+The Spanish DNI/NIE checksum algorithms and ordinary entity NIF checks **validate format and check digits**; they do not verify records with the Spanish Tax Agency (AEAT) or the holder's identity.
 
-## Exportaciones tabulares y carpeta de respaldo
+## Tabular exports and backup folder
 
-- **JSON:** formato restaurable de auditorías. La exportación normal no cifra el archivo y puede incluir imágenes, identificadores y datos personales; requiere custodia cifrada.
-- **Backup cifrado (`.awenc`):** contiene JSON cifrado con frase independiente y puede recuperarse desde el panel de conexiones. La pérdida de la frase puede impedir la recuperación.
-- **XLSX/CSV:** exportaciones de tablas sin imágenes. CSV protege campos que empiezan por caracteres interpretables como fórmulas; XLSX utiliza celdas de texto, sin macros ni fórmulas generadas. Revisa cada entregable antes de enviarlo.
-- **Carpeta local:** la aplicación solo escribe en una carpeta seleccionada explícitamente mediante File System Access API, si está disponible. El permiso puede revocarse al cerrar o actualizar el navegador. No se proporciona ejecución automática con la app cerrada. Los nombres de carpeta y los tiempos de respaldo se guardan como preferencias; los permisos se custodian localmente mediante IndexedDB.
-- No utilices como destino del backup la carpeta pública servida por Python o un servidor web: los expedientes podrían quedar accesibles a terceros.
+- **JSON:** restorable audit-record format. Ordinary exports do not encrypt files and may contain images, identifiers, and personal data; encrypted custody is required.
+- **Encrypted backup (`.awenc`):** contains JSON encrypted with a separate passphrase and can be recovered from the connections panel. Losing the passphrase may make recovery impossible.
+- **XLSX/CSV:** table exports without images. CSV protects fields beginning with characters that spreadsheet programs might interpret as formulas; XLSX uses text cells, without macros or generated formulas. Review each deliverable before sending.
+- **Local folder:** the application writes only to a folder explicitly selected with the File System Access API, when available. Permission may be revoked when the browser closes or updates. Automatic execution while the application is closed is not supported. Folder names and backup times are stored as preferences; permissions are kept locally in IndexedDB.
+- Do not use a publicly served Python or web-server directory as a backup destination: audit records could become accessible to third parties.
