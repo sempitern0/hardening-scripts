@@ -106,9 +106,9 @@ Open `http://127.0.0.1:8765`. For tablets, initial PWA installation, origin poli
 ---
 
 <a id="principios-de-operacion"></a>
-## Principios de operación
+## Operating principles
 
-El flujo habitual es:
+The usual workflow is:
 
 ```text
 DETECT
@@ -128,7 +128,7 @@ VALIDATE
 REBOOT / RE-AUDIT
 ```
 
-Principios comunes:
+Shared principles:
 
 - detectar antes de modificar;
 - no reprovisionar silenciosamente infraestructura existente;
@@ -142,16 +142,16 @@ Principios comunes:
 - no aplicar rollback agresivo cuando el estado de una operación de dominio es ambiguo;
 - no afirmar cumplimiento CIS completo por validar únicamente un subconjunto de controles.
 
-### Qué no intenta hacer el proyecto
+### What the project does not attempt
 
 No pretende sustituir el diseño de Active Directory ni convertir un DC en un instalador de un clic. Decisiones como topología DNS, trusts, delegación, políticas Kerberos, LDAP channel binding, segmentación de red o estrategia de backup siguen requiriendo criterio de administración.
 
 ---
 
 <a id="inicio-rapido"></a>
-## Inicio rápido
+## Quick start
 
-### 1. Clonar y revisar
+### 1. Clone and review
 
 ```bash
 git clone https://github.com/sempitern0/sysadmin.git
@@ -160,11 +160,11 @@ cd sysadmin
 
 Antes de ejecutar un script con privilegios, revísalo y comprueba el modo que vas a utilizar.
 
-### 2. Elegir el flujo
+### 2. Choose a workflow
 
 Para **documentar una auditoría**, utiliza Audit Workbench siguiendo su [guía](./audit-workbench/README.md). Para **auditar u operar AD**, empieza por el modo de lectura del asistente correspondiente.
 
-### 3. Empezar por auditoría
+### 3. Start with an audit
 
 Samba AD / Linux:
 
@@ -197,11 +197,11 @@ Set-ExecutionPolicy -Scope Process Bypass
 ---
 
 <a id="control-plane-samba-ad"></a>
-## Control Plane Samba AD
+## Samba AD Control Plane
 
 `debian-ad-assistant.sh` administra un Samba Active Directory Domain Controller sobre Debian / Ubuntu Server.
 
-### Targets principales
+### Primary targets
 
 - Debian 13;
 - Ubuntu Server 26.04 LTS;
@@ -212,7 +212,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 Otros derivados Debian pueden funcionar en modo best-effort, pero no se consideran targets equivalentes hasta ser probados.
 
-### Operaciones habituales
+### Common operations
 
 ```bash
 sudo bash ./debian-ad-assistant.sh --audit
@@ -229,7 +229,7 @@ Consulta siempre la ayuda de la versión instalada para el conjunto completo de 
 sudo bash ./debian-ad-assistant.sh --help
 ```
 
-#### Bootstrap de un DC nuevo
+#### Bootstrapping a new DC
 
 ```bash
 sudo bash ./debian-ad-assistant.sh --bootstrap
@@ -246,7 +246,7 @@ Antes de iniciar:
 
 El asistente detecta una base AD existente y evita reprovisionarla como un dominio nuevo.
 
-#### Administración diaria
+#### Daily administration
 
 ```bash
 sudo bash ./debian-ad-assistant.sh --manage
@@ -276,7 +276,7 @@ El control plane agrupa funciones por workspace:
 - operaciones remotas;
 - decommission/reset controlado.
 
-#### CLI instalable
+#### Installable CLI
 
 El asistente puede instalar accesos directos administrativos:
 
@@ -310,7 +310,7 @@ ad-backup
 
 Tras sustituir el script principal por una versión nueva, refresca los shortcuts para evitar operar una copia instalada anterior.
 
-#### Después de un reboot
+#### After a reboot
 
 Un DC no debe considerarse validado solo porque el provisioning haya terminado. Tras reiniciar comprueba, como mínimo:
 
