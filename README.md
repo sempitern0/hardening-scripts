@@ -1,108 +1,107 @@
-# sysadmin · Herramientas de administración de sistemas
+# sysadmin · System Administration Toolkit
 
-[![Estado](https://img.shields.io/badge/estado-desarrollo%20activo-0A7EA4)](#estado-del-proyecto)
-[![Licencia](https://img.shields.io/badge/licencia-MIT-2E8540)](./LICENSE)
-[![Linux](https://img.shields.io/badge/plataforma-Linux-455A64?logo=linux&logoColor=white)](#que-herramienta-usar)
-[![Windows](https://img.shields.io/badge/plataforma-Windows-0078D4?logo=windows&logoColor=white)](#que-herramienta-usar)
+[![Status](https://img.shields.io/badge/status-active%20development-0A7EA4)](#estado-del-proyecto)
+[![License](https://img.shields.io/badge/license-MIT-2E8540)](./LICENSE)
+[![Linux](https://img.shields.io/badge/platform-Linux-455A64?logo=linux&logoColor=white)](#que-herramienta-usar)
+[![Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)](#que-herramienta-usar)
 [![Audit Workbench](https://img.shields.io/badge/PWA-Audit%20Workbench-5B5FC7)](./audit-workbench/)
-[![Seguridad](https://img.shields.io/badge/enfoque-audit--first%20%7C%20recovery--aware-25806D)](#principios-de-operacion)
+[![Security](https://img.shields.io/badge/approach-audit--first%20%7C%20recovery--aware-25806D)](#principios-de-operacion)
 
-**sysadmin** reúne herramientas para facilitar tareas reales de **administración de sistemas e infraestructura**: diagnóstico, auditoría, inventario, gestión de identidades y dominios, mantenimiento, operaciones remotas, respaldo, recuperación y seguridad.
+**sysadmin** brings together tools for practical **system and infrastructure administration**: troubleshooting, auditing, inventory, identity and domain management, maintenance, remote operations, backup, recovery, and security.
 
-El **hardening es una capacidad del conjunto, no su propósito exclusivo**. Los asistentes de Active Directory ayudan a desplegar y operar entornos Windows/Linux; [Audit Workbench](./audit-workbench/README.md) permite documentar auditorías desde el navegador, incluso sin conexión. Son herramientas independientes que comparten un enfoque de operación conservador.
+**Hardening is one capability within the toolkit, not its sole purpose.** The Active Directory assistants help deploy and operate Windows/Linux environments; [Audit Workbench](./audit-workbench/README.md) documents audits in the browser, even offline. These independent tools share a conservative operational approach.
 
-> **Alcance actual:** seis asistentes de consola en la raíz, enfocados principalmente en Active Directory y sus sistemas clientes, más una PWA de auditoría en `audit-workbench/`. No es una suite de inventariado remoto automático, un escáner de vulnerabilidades ni una plataforma central de gestión. El catálogo crecerá según se incorporen herramientas verificadas.
+> **Current scope:** six console assistants at the repository root, focused mainly on Active Directory and its clients, plus an auditing PWA in `audit-workbench/`. This is not an automated remote inventory suite, vulnerability scanner, or centralized management platform. The catalog will grow as validated tools are added.
 
-> **Antes de intervenir en producción:** revisa el código y la ayuda de cada script; ejecuta primero las comprobaciones de auditoría o diagnóstico; define alcance y permisos; conserva backups restaurables y una vía alternativa de acceso administrativo. Los flujos que modifican infraestructura requieren preparación y validación propias.
+> **Before working on production:** review each script and its help output; run auditing or diagnostics first; define scope and permissions; retain restorable backups and an alternative administrative access path. Infrastructure-changing workflows require preparation and validation.
 
-## Explorar por necesidad
+## Explore by task
 
-| Necesito… | Componente |
+| I need to… | Component |
 |---|---|
-| Documentar una auditoría, inventariar activos, vincular evidencias y generar informes | **[Audit Workbench](./audit-workbench/README.md)** · PWA offline-first |
-| Operar, auditar y recuperar un dominio Samba AD sobre Debian/Ubuntu | [Debian AD Assistant](./debian-ad-assistant.sh) |
-| Administrar un Samba AD DC en Rocky/AlmaLinux con comprobación de soporte | [Enterprise Linux AD Assistant](./rhel-ad-assistant.sh) |
-| Operar y diagnosticar AD DS en Windows Server | [Windows AD Assistant](./windows-ad-assistant.ps1) |
-| Unir, diagnosticar o retirar un cliente Linux de Active Directory | [Linux AD Client](./linux-ad-client-assistant.sh) o [RHEL AD Client](./rhel-ad-client-assistant.sh) |
-| Gestionar de forma reversible la pertenencia de Windows a un dominio | [Windows AD Client](./windows-ad-client-assistant.ps1) |
-| Revisar configuración de seguridad y aplicar medidas de endurecimiento justificadas | Workspaces de **Security/Hardening** de los asistentes compatibles |
+| Document an audit, inventory assets, link evidence, and generate reports | **[Audit Workbench](./audit-workbench/README.md)** · Offline-first PWA |
+| Operate, audit, and recover a Samba AD domain on Debian/Ubuntu | [Debian AD Assistant](./debian-ad-assistant.sh) |
+| Manage a Samba AD DC on Rocky/AlmaLinux with support checks | [Enterprise Linux AD Assistant](./rhel-ad-assistant.sh) |
+| Operate and diagnose AD DS on Windows Server | [Windows AD Assistant](./windows-ad-assistant.ps1) |
+| Join, diagnose, or remove a Linux client from Active Directory | [Linux AD Client](./linux-ad-client-assistant.sh) or [RHEL AD Client](./rhel-ad-client-assistant.sh) |
+| Reversibly manage Windows domain membership | [Windows AD Client](./windows-ad-client-assistant.ps1) |
+| Review security settings and apply justified hardening measures | **Security/Hardening** workspaces in supported assistants |
 
-### Componentes y documentación
+### Components and documentation
 
-- **[Audit Workbench](./audit-workbench/README.md):** funcionamiento, inventarios, diccionario técnico, evidencias y entrega de informes. Incluye [instalación y PWA](./audit-workbench/INSTALLATION.md), [modelo de seguridad](./audit-workbench/SECURITY.md) y [notas legales](./audit-workbench/LEGAL.md).
-- **Asistentes en la raíz:** scripts autocontenidos, descargables individualmente, con sus propias opciones, dependencias y registros. No es necesario instalar Audit Workbench para utilizarlos.
-- **Guía operativa de Active Directory (más abajo):** pasos concretos para provisionamiento, DNS, Kerberos, GPO, IDS, snapshots, hardening y troubleshooting.
+- **[Audit Workbench](./audit-workbench/README.md):** operation, inventories, technical dictionary, evidence, and report delivery. Includes [installation and PWA](./audit-workbench/INSTALLATION.md), [security model](./audit-workbench/SECURITY.md), and [legal notes](./audit-workbench/LEGAL.md).
+- **Root-level assistants:** self-contained scripts that can be downloaded individually, with their own options, dependencies, and logs. Audit Workbench is not required to use them.
+- **Active Directory operations guide (below):** concrete procedures for provisioning, DNS, Kerberos, GPO, IDS, snapshots, hardening, and troubleshooting.
 
-## Contenido
+## Contents
 
-- [Qué herramienta usar](#que-herramienta-usar)
-- [Audit Workbench: auditoría y gestión de evidencias](#audit-workbench)
-- [Principios de operación](#principios-de-operacion)
-- [Inicio rápido](#inicio-rapido)
-- [Control Plane Samba AD (Debian / Ubuntu)](#control-plane-samba-ad)
-- [Control Plane Samba AD (Rocky / AlmaLinux)](#control-plane-enterprise-linux)
-- [Control Plane Windows Server](#control-plane-windows-server)
-- [Asistentes de clientes AD](#asistentes-de-clientes-ad)
-- [DNS: requisito fundamental](#dns-requisito-fundamental)
-- [Operaciones remotas](#operaciones-remotas)
-- [GPO y SYSVOL: permisos y diagnóstico](#gpo-y-sysvol-permisos-y-diagnostico)
+- [Choosing a tool](#que-herramienta-usar)
+- [Audit Workbench: auditing and evidence management](#audit-workbench)
+- [Operating principles](#principios-de-operacion)
+- [Quick start](#inicio-rapido)
+- [Samba AD Control Plane (Debian / Ubuntu)](#control-plane-samba-ad)
+- [Samba AD Control Plane (Rocky / AlmaLinux)](#control-plane-enterprise-linux)
+- [Windows Server Control Plane](#control-plane-windows-server)
+- [AD client assistants](#asistentes-de-clientes-ad)
+- [DNS: a fundamental requirement](#dns-requisito-fundamental)
+- [Remote operations](#operaciones-remotas)
+- [GPO and SYSVOL: permissions and diagnostics](#gpo-y-sysvol-permisos-y-diagnostico)
 - [Suricata IDS](#suricata-ids)
-- [Backups, snapshots y recuperación](#backups-snapshots-y-recuperacion)
-- [Hardening y compatibilidad](#hardening-y-compatibilidad)
-- [Virtualización y hosts multi-NIC](#virtualizacion-y-hosts-multi-nic)
+- [Backups, snapshots, and recovery](#backups-snapshots-y-recuperacion)
+- [Hardening and compatibility](#hardening-y-compatibilidad)
+- [Virtualization and multi-NIC hosts](#virtualizacion-y-hosts-multi-nic)
 - [Troubleshooting](#troubleshooting)
-- [Rutas de estado y logs](#rutas-de-estado-y-logs)
-- [Checklist antes de producción](#checklist-antes-de-produccion)
-- [Estado del proyecto](#estado-del-proyecto)
+- [State and log paths](#rutas-de-estado-y-logs)
+- [Pre-production checklist](#checklist-antes-de-produccion)
+- [Project status](#estado-del-proyecto)
 
 ---
 
 <a id="que-herramienta-usar"></a>
-## Qué herramienta usar
+## Choosing a tool
 
-| Herramienta | Plataforma principal | Uso |
+| Tool | Primary platform | Purpose |
 |---|---|---|
-| [`audit-workbench/`](./audit-workbench/README.md) | Navegador de escritorio o tablet; PWA | Auditoría técnica, inventario, controles, evidencias, remediación, informes y backups opcionales |
-| [`debian-ad-assistant.sh`](./debian-ad-assistant.sh) | Debian 13 / Ubuntu Server 26.04 LTS | Samba AD DC: aprovisionamiento, operación, validación, backup, DNS/GPO, seguridad |
-| [`rhel-ad-assistant.sh`](./rhel-ad-assistant.sh) | Rocky / AlmaLinux 9–10 | Samba AD DC condicionado a capacidad AD-DC y soporte del sistema |
-| [`windows-ad-assistant.ps1`](./windows-ad-assistant.ps1) | Windows Server 2019 / 2022 / 2025 | AD DS, administración de directorio, diagnóstico, recuperación y hardening |
-| [`linux-ad-client-assistant.sh`](./linux-ad-client-assistant.sh) | Linux con APT o DNF/YUM y systemd | Unión reversible de clientes Linux a AD, diagnóstico y snapshots |
-| [`rhel-ad-client-assistant.sh`](./rhel-ad-client-assistant.sh) | Linux con APT o DNF/YUM y systemd | Variante de cliente AD Linux con flujos de unión, recuperación y seguridad |
-| [`windows-ad-client-assistant.ps1`](./windows-ad-client-assistant.ps1) | Windows / PowerShell 5.1+ | Ciclo de vida de membresía AD, preflight, diagnóstico y restauración |
+| [`audit-workbench/`](./audit-workbench/README.md) | Desktop or tablet browser; PWA | Technical auditing, inventory, controls, evidence, remediation, reporting, and optional backups |
+| [`debian-ad-assistant.sh`](./debian-ad-assistant.sh) | Debian 13 / Ubuntu Server 26.04 LTS | Samba AD DC: provisioning, operation, validation, backup, DNS/GPO, security |
+| [`rhel-ad-assistant.sh`](./rhel-ad-assistant.sh) | Rocky / AlmaLinux 9–10 | Samba AD DC subject to AD-DC capability and operating system support |
+| [`windows-ad-assistant.ps1`](./windows-ad-assistant.ps1) | Windows Server 2019 / 2022 / 2025 | AD DS, directory administration, diagnostics, recovery, and hardening |
+| [`linux-ad-client-assistant.sh`](./linux-ad-client-assistant.sh) | Linux with APT or DNF/YUM and systemd | Reversible Linux AD client joins, diagnostics, and snapshots |
+| [`rhel-ad-client-assistant.sh`](./rhel-ad-client-assistant.sh) | Linux with APT or DNF/YUM and systemd | Linux AD client variant with join, recovery, and security workflows |
+| [`windows-ad-client-assistant.ps1`](./windows-ad-client-assistant.ps1) | Windows / PowerShell 5.1+ | AD membership lifecycle, preflight, diagnostics, and restoration |
 
-**Orientación rápida:**
+**Quick guidance:**
 
-- **Auditar y documentar sin administrar un DC:** empieza por Audit Workbench. No depende de un dominio.
-- **Administrar un controlador:** utiliza el asistente del sistema operativo del DC y consulta su modo de auditoría antes de modificar nada.
-- **Gestionar clientes de dominio:** utiliza uno de los asistentes de cliente, no el de provisionamiento del DC.
-- **Endurecer un sistema:** evalúa primero el impacto sobre identidad, DNS, aplicaciones y continuidad; hardening es una operación posible, no el resultado automático de una auditoría.
+- **Audit and document without administering a DC:** start with Audit Workbench. It does not require a domain.
+- **Administer a domain controller:** use the assistant for the DC's operating system and run its audit mode before changing anything.
+- **Manage domain clients:** use a client assistant, not the DC provisioning assistant.
+- **Harden a system:** first assess the impact on identity, DNS, applications, and continuity; hardening is an available operation, not an automatic outcome of an audit.
 
-> **Nota de soporte RHEL:** Red Hat no ofrece soporte para usar Samba como AD Domain Controller en RHEL. `rhel-ad-assistant.sh` bloquea ese provisionamiento salvo aceptación explícita de una operación no soportada mediante `--allow-unsupported-rhel-dc`. No se recomienda asumir equivalencia con Rocky/AlmaLinux ni desplegarlo sin evaluar el soporte.
+> **RHEL support note:** Red Hat does not support running Samba as an AD Domain Controller on RHEL. `rhel-ad-assistant.sh` blocks provisioning unless the operator explicitly accepts this unsupported use with `--allow-unsupported-rhel-dc`. Do not assume equivalence with Rocky/AlmaLinux or deploy without assessing support.
 
 ---
 
 <a id="audit-workbench"></a>
-## Audit Workbench · auditoría y gestión de evidencias
+## Audit Workbench · auditing and evidence management
 
-**[Abrir documentación de Audit Workbench](./audit-workbench/README.md)** · [Instalación](./audit-workbench/INSTALLATION.md) · [Seguridad](./audit-workbench/SECURITY.md)
+**[Read Audit Workbench documentation](./audit-workbench/README.md)** · [Installation](./audit-workbench/INSTALLATION.md) · [Security](./audit-workbench/SECURITY.md)
 
-La PWA de `audit-workbench/` es un producto complementario a los asistentes de consola; **no los ejecuta desde el navegador ni escanea automáticamente la red**.
+The `audit-workbench/` PWA complements the console assistants; **it does not execute them from the browser or automatically scan the network**.
 
-- Bibliotecas de expedientes con persistencia local y exportación/importación JSON.
-- Inventario de hardware, software y redes; captura asistida CSV/JSON y recopiladores locales de solo lectura.
-- Controles, hallazgos, evidencias vinculadas, diccionario técnico con ayuda contextual y seguimiento.
-- Validación previa al informe, borrador/entrega, exportaciones y generación de PDF mediante impresión del navegador.
-- Copias locales y opciones de distribución remota activadas expresamente (consulta los requisitos de seguridad y servidor).
+- Audit-record library with local persistence and JSON import/export.
+- Hardware, software, and network inventories; assisted CSV/JSON capture and read-only local collectors.
+- Controls, findings, linked evidence, a contextual technical dictionary, and follow-up.
+- Pre-report validation, draft/final delivery, exports, and PDF generation through browser printing.
+- Local backups and explicitly activated remote-distribution options (subject to security and server requirements).
 
-**Ejecución local opcional** desde la raíz del repositorio:
+**Optional local execution** from the repository root:
 
 ```bash
 cd audit-workbench
 python3 -m http.server 8765 --bind 127.0.0.1
 ```
 
-Abre `http://127.0.0.1:8765`. Para tablets, primera instalación PWA, política de origen y HTTPS, sigue [INSTALLATION.md](./audit-workbench/INSTALLATION.md). Los expedientes almacenados en un origen de navegador no se sincronizan por el mero hecho de publicar la aplicación.
-
+Open `http://127.0.0.1:8765`. For tablets, initial PWA installation, origin policies, and HTTPS, see [INSTALLATION.md](./audit-workbench/INSTALLATION.md). Audit records stored under one browser origin are not synchronized merely by publishing the application.
 
 ---
 
