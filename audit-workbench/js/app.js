@@ -849,7 +849,7 @@
       <div class="action-row"><button class="button accent" id="dav-upload" ${unlockedConnection&&currentId?'':'disabled'}>Subir expediente JSON</button><button class="button quiet" id="open-email">Preparar correo</button><button class="button quiet" id="native-share-json">Compartir JSON</button></div><p class="subtle" id="dav-upload-status" role="status"></p></section>
       <section class="card" id="connection-email" ${connectionChannel==='email'?'':'hidden'}><h2>2 · Envío por correo</h2><p class="subtle">Abre un correo con asunto y texto preparados. Los navegadores no pueden adjuntar automáticamente un PDF a un enlace mailto. Genera y revisa el PDF, adjúntalo en tu cliente y verifica destinatarios antes de enviar.</p><button type="button" class="button accent" id="open-email">Redactar correo</button></section>
       <section class="card" id="connection-share" ${connectionChannel==='share'?'':'hidden'}><h2>2 · Compartir mediante el dispositivo</h2><p class="subtle">Utiliza Web Share API si el dispositivo la ofrece; elige manualmente la aplicación de destino. También puedes exportar JSON y compartir el PDF ya generado desde el gestor de archivos.</p><button type="button" class="button accent" id="native-share-json">Compartir expediente JSON</button></section>
-      <section class="card"><h2>Otros proveedores</h2><p class="subtle">Drive, OneDrive y Microsoft 365 requieren OAuth mediante PKCE, registro de aplicación y políticas CORS. No guardes <em>client secrets</em> de OAuth en una aplicación JavaScript distribuida: no pueden mantenerse secretos en un cliente público. Se añadirán integraciones específicas cuando tengan un flujo seguro verificado.</p></section>`;
+      ${globalThis.AuditSecureTransferUI.view(Boolean(currentId),Boolean(unlockedConnection))}<section class="card"><h2>Otros proveedores</h2><p class="subtle">Drive, OneDrive y Microsoft 365 requieren OAuth mediante PKCE, registro de aplicación y políticas CORS. No guardes <em>client secrets</em> de OAuth en una aplicación JavaScript distribuida: no pueden mantenerse secretos en un cliente público. Se añadirán integraciones específicas cuando tengan un flujo seguro verificado.</p></section>`;
   }
   function renderConnections(){return connectionSettingsMarkup()}
   async function uploadDav(){
@@ -1517,6 +1517,7 @@
   refreshNetworkStatus();
   byId('local-date').textContent=new Date().toLocaleDateString('es-ES');
   try{selectPalette(localStorage.getItem(PALETTE_KEY)||'ocean')}catch(_ignored){selectPalette('ocean')}
+  globalThis.AuditSecureTransferUI.bind({getProfile:()=>unlockedConnection,getAudit:()=>currentId?state:null,download,flush});
   void initialLoad();
   // Leave beforeinstallprompt to the browser: suppressing its default UI caused warning banners.
   window.addEventListener('appinstalled',()=>{
