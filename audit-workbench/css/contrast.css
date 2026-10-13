@@ -1,10 +1,15 @@
-/* Workbench v11 · coherent field surfaces across light/dark palettes.
-   Keeps inputs visually distinct from their parent cards without changing the
-   customer's print design or using inline styles prohibited by CSP. */
+/* Interface contrast tokens and reusable controls. The report remains styled by print.css. */
 :root {
+  /* Force the native input palette to match our light UI, regardless of OS mode. */
+  color-scheme: light;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  --aw-field-placeholder: #5c7084;
+  --aw-field-focus-ring: #007e8360;
   --aw-field-bg: #fff;
-  --aw-field-border: #9ab4c8;
+  --aw-field-border: #778da3;
   --aw-field-hover: #678ba6;
+  --aw-card-bg: var(--canvas);
   --aw-card-bg: color-mix(in srgb, var(--canvas) 70%, var(--brand-tint));
   --aw-field-focus: var(--brand);
 }
@@ -13,9 +18,13 @@
 :root[data-palette="pine-dark"],
 :root[data-palette="amethyst-dark"],
 :root[data-palette="crimson-dark"] {
+  color-scheme: dark;
   --aw-field-bg: #101b27;
+  --aw-field-placeholder: #b5c4d2;
+  --aw-field-focus-ring: #63aadb80;
   --aw-field-border: #637b91;
   --aw-field-hover: #a0b5c8;
+  --aw-card-bg: var(--paper);
   --aw-card-bg: color-mix(in srgb, var(--paper) 82%, var(--brand-tint));
 }
 #workspace .member-card,
@@ -29,28 +38,39 @@
   background-color: var(--brand-tint);
   border-color: var(--aw-field-focus);
 }
-#workspace .field :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea),
+/* Consistent surfaces even when a control is outside a .field wrapper.
+   Exclude file, checkbox, radio and hidden controls to retain native affordances. */
+#workspace .field :is(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea),
+#workspace .entry :is(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea),
+#workspace .library-toolbar input,
 #workspace .backup-exports select,
 #workspace .wizard-jump select,
-#workspace .entry :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+#workspace .card :is(input[type="search"], input[type="text"], input[type="email"], input[type="url"], input[type="password"], input[type="tel"], select, textarea),
+#workspace #glossary-search {
   background: var(--aw-field-bg);
   color: var(--ink);
+  color-scheme: inherit;
   border: 1.5px solid var(--aw-field-border);
   box-shadow: 0 1px 2px #00000012;
   min-height: 48px;
   transition: border-color .16s ease, box-shadow .16s ease;
 }
 #workspace .field :is(input, select, textarea):hover,
+#workspace .library-toolbar input:hover,
 #workspace .backup-exports select:hover,
-#workspace .wizard-jump select:hover {
+#workspace .wizard-jump select:hover,
+#workspace #glossary-search:hover {
   border-color: var(--aw-field-hover);
 }
 #workspace .field :is(input, select, textarea):focus-visible,
+#workspace .library-toolbar input:focus-visible,
 #workspace .backup-exports select:focus-visible,
-#workspace .wizard-jump select:focus-visible {
+#workspace .wizard-jump select:focus-visible,
+#workspace #glossary-search:focus-visible {
   background: var(--aw-field-bg);
   border-color: var(--aw-field-focus);
-  outline: 3px solid color-mix(in srgb, var(--aw-field-focus) 32%, transparent);
+  outline: 3px solid var(--aw-field-focus-ring);
+  outline-color: color-mix(in srgb, var(--aw-field-focus) 32%, transparent);
   outline-offset: 2px;
   box-shadow: 0 0 0 1px var(--aw-field-focus);
 }
@@ -58,10 +78,14 @@
   opacity: .7;
   cursor: not-allowed;
 }
-#workspace .field :is(input, textarea)::placeholder,
-#workspace .entry :is(input, textarea)::placeholder {
-  color: var(--muted);
-  opacity: .85;
+#workspace :is(input, textarea)::placeholder {
+  color: var(--aw-field-placeholder);
+  opacity: 1;
+}
+/* Native search appearance is normalized without removing the clear button. */
+#workspace input[type="search"] {
+  -webkit-appearance: textfield;
+  appearance: textfield;
 }
 /* Explicit custom-value field remains hidden unless the operator chooses Other. */
 #workspace input[hidden] { display: none !important; }

@@ -1,0 +1,18 @@
+'use strict';
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const root=path.resolve(__dirname,'..');
+const read=p=>fs.readFileSync(path.join(root,p),'utf8');
+const sheet=read('css/contrast.css'),html=read('index.html'),sw=read('sw.js');
+assert(sheet.includes('color-scheme: light;'),'Light palettes must set native form colors');
+assert(sheet.includes('color-scheme: dark;'),'Dark palettes must set native form colors');
+assert(sheet.includes('#workspace .library-toolbar input'),'Library search must use themed field surface');
+assert(sheet.includes('--aw-field-bg'),'Themed input backgrounds required');
+assert(sheet.includes('--aw-field-placeholder'),'Placeholder contrast must be explicit');
+assert(sheet.includes('#workspace #glossary-search'),'Glossary search must follow the shared field style');
+assert(sheet.includes('-webkit-appearance: textfield'),'Safari search controls need a compatible appearance');
+assert(!/unsafe-inline/.test(html),'No CSP loosening expected');
+assert(html.includes('css/contrast.css')&&sw.includes('./css/contrast.css'),'Styles must be cached offline');
+assert(sw.includes('audit-workbench-shell-v20-contrast'),'Cache should refresh after CSS change');
+console.log('PASS consistent input contrast, PWA cache and CSP');
