@@ -513,18 +513,18 @@ Run from Windows PowerShell 5.1+ as Administrator.
 
 Without `-Mode`, the interactive menu opens.
 
-#### Flujo de join
+#### Join workflow
 
 ```text
-preflight DNS directo
+direct DNS preflight
         ↓
-selección de NIC / ruta
+NIC / route selection
         ↓
 snapshot pre-join
         ↓
-configurar DNS AD
+configure AD DNS
         ↓
-discovery + puertos + hora
+discovery + ports + time
         ↓
 Add-Computer
         ↓
@@ -533,11 +533,11 @@ reboot
 secure channel + nltest + DNS
 ```
 
-El snapshot conserva la información necesaria para recuperar el estado DNS/hostname previo al join.
+The snapshot preserves the information required to restore the pre-join DNS/hostname state.
 
-#### Estados de lifecycle
+#### Lifecycle states
 
-El asistente mantiene una fase persistente para distinguir operaciones seguras de estados que requieren cautela. Algunos estados que puedes ver son:
+The assistant maintains a persistent phase to distinguish safe operations from states requiring caution. Some states you may encounter are:
 
 ```text
 SNAPSHOT_CREATED
@@ -552,17 +552,17 @@ RESTORE_READY
 RESTORE_PENDING_REBOOT
 ```
 
-No es necesario memorizar todos los estados. La regla importante es:
+You do not need to memorize every state. The important rule is:
 
-> Si el asistente indica `JOIN_SUBMITTED`, `JOIN_AMBIGUOUS` o `JOIN_PENDING_REBOOT`, **no restaures DNS manualmente** hasta verificar si Windows ha aceptado la membresía.
+> If the assistant reports `JOIN_SUBMITTED`, `JOIN_AMBIGUOUS`, or `JOIN_PENDING_REBOOT`, **do not manually restore DNS** until you have verified whether Windows accepted the membership.
 
-Utiliza:
+Use:
 
 ```powershell
 .\windows-ad-client-assistant.ps1 -Mode Recover
 ```
 
-El recovery combina el estado persistente, la membresía que reporta Windows y la evidencia de `NetSetup.log`. Cuando no puede demostrar si el join fue comprometido, evita el rollback automático.
+Recovery combines the persistent state, membership reported by Windows, and evidence in `NetSetup.log`. When it cannot establish whether the join was committed, automatic rollback is avoided.
 
 #### Snapshots
 
@@ -570,24 +570,24 @@ El recovery combina el estado persistente, la membresía que reporta Windows y l
 .\windows-ad-client-assistant.ps1 -Mode Snapshots
 ```
 
-Muestra snapshots conservados con dominio objetivo, equipo, interfaz y estado asociado.
+Lists retained snapshots with the target domain, computer, interface, and associated state.
 
-Los snapshots se conservan como evidencia aunque el lifecycle activo haya terminado.
+Snapshots are retained as evidence even after the active lifecycle has completed.
 
-#### DNS forwarding estricto
+#### Strict DNS forwarding
 
-Antes de reemplazar el resolver del cliente, el asistente comprueba cada DNS AD configurado:
+Before replacing the client's resolver, the assistant checks every configured AD DNS server:
 
-1. debe devolver los registros SRV del dominio;
-2. debe poder resolver un nombre fuera de la zona AD.
+1. it must return the domain's SRV records;
+2. it must resolve a name outside the AD zone.
 
-Por defecto se utiliza:
+By default, it uses:
 
 ```text
 www.microsoft.com
 ```
 
-Puedes seleccionar otro probe:
+You can select another probe:
 
 ```powershell
 .\windows-ad-client-assistant.ps1 `
@@ -595,7 +595,7 @@ Puedes seleccionar otro probe:
   -ExternalDnsProbe 'www.example.net'
 ```
 
-Para redes deliberadamente aisladas, existe un override explícito:
+For deliberately isolated networks, an explicit override is available:
 
 ```powershell
 .\windows-ad-client-assistant.ps1 `
@@ -603,25 +603,25 @@ Para redes deliberadamente aisladas, existe un override explícito:
   -AllowAdDnsWithoutExternalResolution
 ```
 
-No utilices el override para ocultar un forwarder roto en una red que sí necesita resolución externa.
+Do not use the override to conceal a broken forwarder on a network that requires external resolution.
 
-#### Leave y restauración
+#### Leaving and restoration
 
-En Windows, `Remove-Computer` requiere reboot para materializar completamente la salida del dominio. Por ello el flujo correcto es:
+On Windows, `Remove-Computer` requires a reboot to complete domain removal. Therefore, the correct workflow is:
 
 ```text
 Leave
   ↓
-AD DNS se conserva temporalmente
+AD DNS is retained temporarily
   ↓
 reboot
   ↓
 Restore / Recover
   ↓
-DNS + hostname pre-join
+pre-join DNS + hostname
 ```
 
-No restaures DNS antes del reboot del leave.
+Do not restore DNS before rebooting after leaving the domain.
 
 ---
 
