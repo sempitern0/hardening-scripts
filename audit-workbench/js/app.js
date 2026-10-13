@@ -536,11 +536,15 @@
       const custom=Boolean(value)&&!options.includes(value);
       control=`<select id="${id}" ${attrs} data-preset="true" aria-label="${html(label)}"><option value="">${block==='assets'&&name==='model'&&!obj.vendor?'Selecciona primero un fabricante…':'Seleccionar…'}</option>${options.map(x=>`<option value="${html(x)}"${x===value?' selected':''}>${html(x)}</option>`).join('')}<option value="__custom__"${custom?' selected':''}>Otro / escribir…</option></select><input ${attrs} data-custom="true" aria-label="${html(label)} personalizado" placeholder="Especifica el valor" value="${custom?html(value):''}" maxlength="20000" ${custom?'':'hidden'}>`;
     }else control=`<input id="${id}" type="${type==='date'?'date':'text'}" ${attrs} value="${html(value)}" maxlength="20000"${key==='decimal'?' inputmode="decimal"':''}>`;
-    return `<div class="field${type==='textarea'?' full':''}"><label for="${id}">${html(label)}${({os:'EOL / Fin de vida',exposure:'Segmentación de red',cidr:'CIDR',vlan:'VLAN',cvss:'CVSS',sha256:'Evidencia SHA-256',risk:'Riesgo residual'}[name])?` <button type="button" class="glossary-help" data-glossary-term="${html(({os:'EOL / Fin de vida',exposure:'Segmentación de red',cidr:'CIDR',vlan:'VLAN',cvss:'CVSS',sha256:'Evidencia SHA-256',risk:'Riesgo residual'}[name]))}" aria-label="Explicar ${html(label)}">ⓘ</button>`:''}</label>${control}</div>`;
+    const termId=glossary?.CONTEXT_HELP?.fields?.[block]?.[name];
+    const term=termId?glossary.byId(termId):null;
+    const help=term?` <button type="button" class="glossary-help" data-glossary-term="${html(term.id)}" data-glossary-from="${html(block)}" data-glossary-field="${html(id)}" title="Consultar: ${html(term.title)}" aria-label="Consultar ${html(term.title)} en el diccionario técnico">ⓘ</button>`:'';
+    return `<div class="field${type==='textarea'?' full':''}"><label for="${id}">${html(label)}${help}</label>${control}</div>`;
   }
   function pill(v){return `<span class="pill ${level(v)}">${html(v||'Sin clasificar')}</span>`}
   function metric(title,note,count){return `<div class="stat"><span class="metric">${count}</span><span class="metric-caption">${title}</span><span class="metric-foot">${note}</span></div>`}
   let glossaryQuery='', glossaryCategory='Todas', glossarySelected='';
+  let glossaryReturn=null;
   function glossaryResults(){return glossary?.search(glossaryQuery,glossaryCategory)||[]}
   function glossaryEmphasis(value){
     const safe=html(value);
@@ -556,7 +560,7 @@
     if(!terms.some(t=>t.id===glossarySelected))glossarySelected=terms[0]?.id||'';
     const selected=glossary?.byId(glossarySelected);
     const cats=['Todas',...(glossary?.CATEGORIES||[])];
-    return `<span class="eyebrow">CONSULTA TÉCNICA · OFFLINE</span><h1 class="page-title">Diccionario técnico</h1>
+    return `<span class="eyebrow">CONSULTA TÉCNICA · OFFLINE</span>${glossaryReturn?'<div class="glossary-return"><button class="button quiet small" type="button" data-glossary-back="true">← Volver al campo de auditoría</button></div>':''}<h1 class="page-title">Diccionario técnico</h1>
       <p class="lead">Busca un concepto, selecciona una categoría y consulta una explicación práctica sin salir del asistente.</p>
       <section class="glossary-shell" aria-label="Diccionario técnico">
         <div class="glossary-toolbar"><label for="glossary-search">Buscar términos o sinónimos</label>
@@ -619,8 +623,10 @@
       ${t.aliases?.length?`<p class="glossary-aliases"><strong>También se busca como:</strong> ${html(t.aliases.join(', '))}</p>`:''}
       <p class="glossary-disclaimer">Referencia orientativa. Documenta la prueba realizada y contrasta los criterios con el contexto del cliente.</p></article>`;
   }
-  function openGlossary(term){
-    glossaryQuery=term||'';glossaryCategory='Todas';glossarySelected='';
+  function openGlossary(term,origin){
+    glossaryReturn=origin||null;
+    const selected=glossary?.byId(term)||glossary?.search(term)?.[0];
+    glossaryQuery=selected?'':(term||'');glossaryCategory='Todas';glossarySelected=selected?.id||'';
     page='glossary';render();scrollTo(0,0);
   }
   function filterGlossary(q){
@@ -725,7 +731,12 @@
     const deleted=finding.originControlKey&&!state.controls.some(control=>control._key===finding.originControlKey);
     return `<div class="finding-origin field full"><label for="origin-control-${html(finding._key)}">Control relacionado (opcional)</label><select id="origin-control-${html(finding._key)}" data-finding-control="${html(finding._key)}"><option value="">Sin control relacionado</option>${deleted?'<option value="__deleted__" selected>Control anterior eliminado — revisa el vínculo</option>':''}${options}</select><p class="subtle">Relaciona un hallazgo manual con el control que lo originó. Las evidencias del control pueden reutilizarse.</p></div>`;
   }
-  function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p>${block==='controls'?renderTemplateLibrary():''}<section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Cada dato registrado podrá aparecer en el informe y en la copia JSON.</p></div>${block==='evidence'?'<button class="button quiet" data-export-manifest="true">Manifiesto SHA-256 (JSON)</button>':''}<button class="button accent" data-add="${block}">+ Añadir registro</button></div>${rows.length?rows.map((r,i)=>`<div class="entry" data-entry-key="${html(r._key||'')}" tabindex="-1"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="fields">${def.fields.map(f=>renderField(r,block,f,i)).join('')}</div>${['assets','controls','findings'].includes(block)?renderLinkedEvidence(block,r):''}${block==='controls'?renderControlExtras(r):''}${block==='findings'?renderFindingOrigin(r):''}${block==='evidence'?renderEvidenceRelations(r):''}${block==='cves'?`<div class="cve-tools"><button class="button quiet small" type="button" data-cve-check="${i}">Consultar CVE online (opcional)</button><button class="button small" type="button" data-cve-link="${i}">Ver en CVE.org ↗</button><span class="subtle">Solo se envía el identificador CVE, nunca los datos del cliente.</span></div>`:''}${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Adjuntar captura local</strong> (PNG, JPG, WebP hasta 5 MiB)</label><p class="subtle">Se guarda una copia optimizada. El SHA-256 identifica el archivo original, que debes conservar por separado.</p>${r.fileSha256?`<p class="evidence-digest">Archivo: ${html(r.fileName||'Sin nombre')} · ${(r.fileBytes||0).toLocaleString('es-ES')} bytes <span>SHA-256 ${html(r.fileSha256)}</span></p>`:''}<input type="file" accept="image/png,image/jpeg,image/webp" data-image-index="${i}" id="evidence-upload-${i}">${r.image?`<img class="evidence-preview" alt="Evidencia incrustada" src="${r.image}"><button class="button small danger" data-clear-image="${i}">Quitar imagen</button>`:''}</div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
+  function glossaryStageHint(block){
+    const id=glossary?.CONTEXT_HELP?.stages?.[block];
+    const term=id?glossary.byId(id):null;
+    return term?`<p class="glossary-stage-hint">Referencia técnica: <button type="button" class="glossary-stage-link" data-glossary-term="${html(term.id)}" title="Consultar definición y comprobaciones de ${html(term.title)}">${html(term.title)} ↗</button></p>`:'';
+  }
+  function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p>${glossaryStageHint(block)}${block==='controls'?renderTemplateLibrary():''}<section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Cada dato registrado podrá aparecer en el informe y en la copia JSON.</p></div>${block==='evidence'?'<button class="button quiet" data-export-manifest="true">Manifiesto SHA-256 (JSON)</button>':''}<button class="button accent" data-add="${block}">+ Añadir registro</button></div>${rows.length?rows.map((r,i)=>`<div class="entry" data-entry-key="${html(r._key||'')}" tabindex="-1"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="fields">${def.fields.map(f=>renderField(r,block,f,i)).join('')}</div>${['assets','controls','findings'].includes(block)?renderLinkedEvidence(block,r):''}${block==='controls'?renderControlExtras(r):''}${block==='findings'?renderFindingOrigin(r):''}${block==='evidence'?renderEvidenceRelations(r):''}${block==='cves'?`<div class="cve-tools"><button class="button quiet small" type="button" data-cve-check="${i}">Consultar CVE online (opcional)</button><button class="button small" type="button" data-cve-link="${i}">Ver en CVE.org ↗</button><span class="subtle">Solo se envía el identificador CVE, nunca los datos del cliente.</span></div>`:''}${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Adjuntar captura local</strong> (PNG, JPG, WebP hasta 5 MiB)</label><p class="subtle">Se guarda una copia optimizada. El SHA-256 identifica el archivo original, que debes conservar por separado.</p>${r.fileSha256?`<p class="evidence-digest">Archivo: ${html(r.fileName||'Sin nombre')} · ${(r.fileBytes||0).toLocaleString('es-ES')} bytes <span>SHA-256 ${html(r.fileSha256)}</span></p>`:''}<input type="file" accept="image/png,image/jpeg,image/webp" data-image-index="${i}" id="evidence-upload-${i}">${r.image?`<img class="evidence-preview" alt="Evidencia incrustada" src="${r.image}"><button class="button small danger" data-clear-image="${i}">Quitar imagen</button>`:''}</div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
   const settingsFields=[
     ['company','Nombre legal de la consultora'],['taxType','Identificador fiscal','select',['No indicado','NIF entidad / CIF','DNI / NIF persona física','NIE','NIF intracomunitario / otro']],
     ['taxId','Identificación fiscal'],['email','Email corporativo'],['phone','Teléfono'],
@@ -843,7 +854,7 @@
   function renderQuality(){
     const audit=reviewState();
     return `<span class="eyebrow">REVISIÓN ANTES DE ENTREGAR</span><h1 class="page-title">Control de calidad</h1><p class="lead">Solo los puntos que necesitan tu atención. Pulsa «Revisar» para ir directamente al apartado correspondiente. Los avisos no se corrigen automáticamente.</p>
-      <section class="card quality-overview"><div class="quality-counts"><div><strong>${audit.blockers.length}</strong><span>Imprescindibles</span></div><div><strong>${audit.warnings.length}</strong><span>Avisos</span></div><div><strong>${state.findings.length}</strong><span>Hallazgos</span></div></div>
+      ${glossaryStageHint('quality')}<section class="card quality-overview"><div class="quality-counts"><div><strong>${audit.blockers.length}</strong><span>Imprescindibles</span></div><div><strong>${audit.warnings.length}</strong><span>Avisos</span></div><div><strong>${state.findings.length}</strong><span>Hallazgos</span></div></div>
       <div class="notice ${audit.ready?'':'warn'}">${audit.ready?'No se han detectado impedimentos de entrega. Revisa los avisos antes de emitir el informe final.':'Hay datos esenciales pendientes. Si imprimes ahora, el documento se identificará claramente como BORRADOR.'}</div></section>
       <section class="card"><h2>Aspectos que conviene revisar</h2>${audit.issues.length?`${[['blockers','Imprescindibles'],['warnings','Avisos y recomendaciones']].map(([key,title])=>audit[key].length?`<details class="quality-review-section" ${key==='blockers'||!audit.blockers.length?'open':''}><summary>${title} (${audit[key].length})</summary><div class="quality-issues">${audit[key].map(issue=>`<div class="quality-issue"><span class="quality-severity ${issue.severity}">${issue.severity==='blocker'?'Imprescindible':'Aviso'}</span><p>${html(issue.message)}</p><button type="button" class="button quiet small" data-quality-section="${html(issue.section)}" data-quality-key="${html(issue.key)}">Revisar →</button></div>`).join('')}</div></details>`:'').join('')}`:'<p class="notice">Todos los puntos comprobados están resueltos. La revisión profesional del contenido sigue siendo necesaria.</p>'}</section>
       <section class="card"><h2>Plan de remediación automático</h2><p class="subtle">Se ordena por severidad técnica y deja al final los casos cerrados o mitigados. No asigna plazos ni prioridades inventadas.</p>${renderPlanSummary(audit.plan)}<div class="action-row"><button class="button accent" type="button" data-go="delivery">Ir al informe final →</button><button class="button quiet" type="button" data-go="findings">Editar hallazgos</button></div></section>`;
@@ -871,7 +882,7 @@
     const tiles=[['verified','Correcciones verificadas'],['pending','Persistentes'],['reopened','Reabiertos'],['accepted','Riesgos aceptados'],['unverified','No comprobables'],['inconsistent','Estado por aclarar'],['not-reviewed','Sin reevaluar']];
     const now=new Date();const today=new Date(now.getTime()-now.getTimezoneOffset()*60000).toISOString().slice(0,10);
     return `<span class="eyebrow">SEGUIMIENTO / REEVALUACIÓN</span><h1 class="page-title">¿Qué ha corregido el cliente?</h1><p class="lead">Documenta cada revisión en su hallazgo. Solo marca como corregido lo que has comprobado: una promesa de corrección no es una verificación.</p>
-      <section class="card"><h2>Estado de las correcciones</h2><div class="retest-summary">${tiles.map(([key,label])=>`<div><strong>${counts[key]}</strong><span>${label}</span></div>`).join('')}</div><p class="subtle">Se muestra el último resultado de cada hallazgo. Los históricos permanecen conservados en el expediente.</p>
+      ${glossaryStageHint('followup')}<section class="card"><h2>Estado de las correcciones</h2><div class="retest-summary">${tiles.map(([key,label])=>`<div><strong>${counts[key]}</strong><span>${label}</span></div>`).join('')}</div><p class="subtle">Se muestra el último resultado de cada hallazgo. Los históricos permanecen conservados en el expediente.</p>
       <div class="action-row"><button type="button" class="button accent" id="retest-pdf" ${!state.findings.length?'disabled':''}>Informe de reevaluación PDF ↗</button><button type="button" class="button quiet" data-go="findings">Editar hallazgos</button></div></section>
       ${renderComparison()}
       ${state.findings.length?state.findings.map((finding,index)=>{
@@ -1081,7 +1092,12 @@
       }
       return;
     }
-    if(b.dataset.glossaryTerm){openGlossary(b.dataset.glossaryTerm);return;}
+    if(b.dataset.glossaryBack!==undefined){
+      const origin=glossaryReturn;glossaryReturn=null;
+      if(origin){move(origin.page);const target=origin.field?byId(origin.field):null;if(target){target.scrollIntoView({block:'center'});target.focus({preventScroll:true});}}
+      return;
+    }
+    if(b.dataset.glossaryTerm){openGlossary(b.dataset.glossaryTerm,{page:page,field:b.dataset.glossaryField||''});return;}
     if(b.dataset.glossarySelect){glossarySelected=b.dataset.glossarySelect;filterGlossary(glossaryQuery);return;}
     if(b.dataset.glossaryCategory){glossaryCategory=b.dataset.glossaryCategory;glossarySelected='';render();return;}
     if(b.id==='comparison-capture'){
