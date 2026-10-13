@@ -1,6 +1,8 @@
 # Audit Workbench · sysadmin
 
-[← Volver al repositorio sysadmin](../README.md) · [Instalación](INSTALLATION.md) · [Seguridad](SECURITY.md) · [Notas legales](LEGAL.md)
+[English](README.md) · **Español**
+
+[← Volver al repositorio sysadmin](../README_ES.md) · [Instalación](INSTALLATION_ES.md) · [Seguridad](SECURITY_ES.md) · [Notas legales](LEGAL_ES.md)
 
 **Herramienta de auditoría, inventario y documentación técnica offline-first** para inventariar activos, evaluar controles, documentar hallazgos y evidencias, planificar correcciones y preparar informes para clientes.
 
@@ -25,7 +27,7 @@ cd audit-workbench
 python -m http.server 8765 --bind 127.0.0.1
 ```
 
-Abre `http://127.0.0.1:8765`. Para instalar la PWA en tablet o móvil, consulta **[Instalación por dispositivo](INSTALLATION.md)**: la primera carga requiere HTTPS y un navegador compatible.
+Abre `http://127.0.0.1:8765`. Para instalar la PWA en tablet o móvil, consulta **[Instalación por dispositivo](INSTALLATION_ES.md)**: la primera carga requiere HTTPS y un navegador compatible.
 
 ## Entrada guiada de datos
 
@@ -105,7 +107,7 @@ El catálogo de sistemas operativos y modelos es orientativo; **no certifica vig
 - Las plantillas de controles no acreditan por sí mismas cumplimiento normativo. Un control sin comprobar no debe presentarse como conforme.
 - Los resultados de una auditoría se limitan al alcance, fecha y evidencias efectivamente revisados.
 
-Consulta **[Seguridad y privacidad](SECURITY.md)** y **[Cláusulas modelo (España)](LEGAL.md)**.
+Consulta **[Seguridad y privacidad](SECURITY_ES.md)** y **[Cláusulas modelo (España)](LEGAL_ES.md)**.
 
 ## Ayuda e incidencias
 
@@ -117,7 +119,7 @@ Consulta **[Seguridad y privacidad](SECURITY.md)** y **[Cláusulas modelo (Espa�
 | Faltan fuentes o colores | Comprueba `css/`, `fonts/`, rutas y errores CSP en consola |
 | PDF incompleto | Revisa **Calidad**, activa impresión de fondos y verifica A4 |
 
-El proceso completo de instalación, actualización y diagnóstico está en **[INSTALLATION.md](INSTALLATION.md)**.
+El proceso completo de instalación, actualización y diagnóstico está en **[INSTALLATION.md](INSTALLATION_ES.md)**.
 
 ## Organización
 
