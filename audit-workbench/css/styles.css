@@ -2339,3 +2339,11 @@ button:focus-visible {
 .secure-transfer .transfer-preview[hidden]{display:none}
 .secure-transfer .transfer-share-link a{display:inline-block;padding:.6rem 0;color:var(--brand);font-weight:750}
 @media(max-width:620px){.secure-transfer .transfer-grid{grid-template-columns:1fr}.secure-transfer .transfer-section{padding:.9rem}.secure-transfer .transfer-actions .button{flex:1 1 100%}}
+
+/* Non-blocking feedback for file downloads (never claims disk write succeeded). */
+.export-feedback-toast{position:fixed;z-index:9000;right:1.1rem;bottom:1.1rem;max-width:min(460px,calc(100vw - 2.2rem));padding:.85rem 1rem;border:1px solid #99c7b9;border-radius:11px;background:#ecfbf5;color:#164537;box-shadow:0 10px 30px rgba(0,0,0,.16);font-weight:650;font-size:.9rem;line-height:1.5;overflow-wrap:anywhere}
+.export-feedback-toast.error{border-color:#ecb7bd;background:#fff0f1;color:#842934}
+.export-feedback-toast[hidden]{display:none}
+.export-inline-status{margin:1rem 0 0;color:var(--muted);font-size:.88rem;line-height:1.5}
+@media(max-width:560px){.export-feedback-toast{left:1rem;right:1rem;bottom:1rem;max-width:none}}
+@media print{.export-feedback-toast{display:none!important}}
