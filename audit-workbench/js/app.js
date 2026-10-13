@@ -538,8 +538,8 @@
     }else control=`<input id="${id}" type="${type==='date'?'date':'text'}" ${attrs} value="${html(value)}" maxlength="20000"${key==='decimal'?' inputmode="decimal"':''}>`;
     const termId=glossary?.CONTEXT_HELP?.fields?.[block]?.[name];
     const term=termId?glossary.byId(termId):null;
-    const help=term?` <button type="button" class="glossary-help" data-glossary-term="${html(term.id)}" data-glossary-from="${html(block)}" data-glossary-field="${html(id)}" title="Consultar: ${html(term.title)}" aria-label="Consultar ${html(term.title)} en el diccionario técnico">ⓘ</button>`:'';
-    return `<div class="field${type==='textarea'?' full':''}"><label for="${id}">${html(label)}${help}</label>${control}</div>`;
+    const help=term?`<button type="button" class="glossary-help" data-glossary-term="${html(term.id)}" data-glossary-field="${html(id)}" aria-label="Consultar ${html(term.title)} y volver a este campo"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5"></path><circle cx="12" cy="7.5" r=".85" fill="currentColor" stroke="none"></circle></svg></button>`:'';
+    return `<div class="field${type==='textarea'?' full':''}"><div class="field-heading"><label for="${id}">${html(label)}</label>${help}</div>${control}</div>`;
   }
   function pill(v){return `<span class="pill ${level(v)}">${html(v||'Sin clasificar')}</span>`}
   function metric(title,note,count){return `<div class="stat"><span class="metric">${count}</span><span class="metric-caption">${title}</span><span class="metric-foot">${note}</span></div>`}
