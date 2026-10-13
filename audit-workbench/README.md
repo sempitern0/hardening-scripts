@@ -37,6 +37,8 @@ Para el PDF: genera el documento mediante **Generar PDF**, guárdalo desde impre
 
 Google Drive, OneDrive, S3 y la generación binaria automática de PDF no están conectados. Las operaciones online dependen de CORS y la configuración del servidor.
 
+La ayuda contextual del diccionario usa botones SVG independientes de las etiquetas de los campos para no interferir con selectores nativos. El diccionario ofrece retorno inmediato al paso o campo desde el que se abrió. El catálogo offline incluye familias adicionales de portátiles y sobremesa, con entrada personalizada si no aparece un modelo.
+
 ## Flujo recomendado
 
 1. **Configuración:** registra tu consultora y su equipo de auditores; asigna profesionales al expediente.
