@@ -32,12 +32,12 @@ if disks:asset['storage']='; '.join(disks.splitlines()[:8])[:500]
 networks=[]
 if sys.platform.startswith('linux'):
  for line in run('ip','-o','-4','addr','show','scope','global').splitlines()[:24]:
-  match=re.match(r'^\\d+:\\s+([^ ]+)\\s+inet\\s+([^ ]+)',line)
+  match=re.match(r'^\d+:\s+([^ ]+)\s+inet\s+([^ ]+)',line)
   if match:networks.append({'name':match.group(1),'cidr':match.group(2),'notes':'Interfaz local detectada; no demuestra segmentación ni ACL.'})
 else:
  for line in run('ifconfig').splitlines():
   if line and not line[0].isspace():interface=line.split(':',1)[0]
-  match=re.search(r'\\binet\\s+([0-9.]+)',line)
+  match=re.search(r'\binet\s+([0-9.]+)',line)
   if match and match.group(1)!='127.0.0.1':networks.append({'name':interface,'cidr':match.group(1),'notes':'Dirección detectada localmente, prefijo por verificar.'})
 networks=networks[:24]
 services=[]
