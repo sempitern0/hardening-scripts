@@ -18,7 +18,7 @@ try:
   page.locator('[data-new]').first.click()
   page.locator('#wizard-step-select').select_option('assets')
   page.locator('[data-add="assets"]').click()
-  typ=page.locator('select[data-block="assets"][data-field="type"]').first
+  typ=page.locator('select[data-block="assets"][data-field="type"][data-preset]').first
   assert typ.is_visible()
   typ.select_option('Portátil')
   assert typ.input_value()=='Portátil'
