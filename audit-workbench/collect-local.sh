@@ -52,11 +52,11 @@ elif sys.platform=='darwin':
 software=services[:25]
 packages=''
 if sys.platform.startswith('linux'):
- packages=run('dpkg-query','-W','-f=${Package}\\t${Version}\\n') or run('rpm','-qa','--qf','%{NAME}\\t%{VERSION}-%{RELEASE}\\n')
+ packages=run('dpkg-query','-W','-f=${Package}\t${Version}\n') or run('rpm','-qa','--qf','%{NAME}\t%{VERSION}-%{RELEASE}\n')
 elif sys.platform=='darwin':
  packages=run('pkgutil','--pkgs')
 for line in packages.splitlines()[:30]:
- parts=line.split('\\t',1)
+ parts=line.split('\t',1)
  if parts and parts[0] and len(parts[0])<170:
   software.append({'name':parts[0],'version':parts[1] if len(parts)>1 else '', 'asset':host,'notes':'Paquete local enumerado; relevancia y vulnerabilidad por verificar.'})
 software=software[:55]
