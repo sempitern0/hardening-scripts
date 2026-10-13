@@ -1,5 +1,7 @@
 # sysadmin · Herramientas de administración de sistemas
 
+[English](README.md) · **Español**
+
 [![Estado](https://img.shields.io/badge/estado-desarrollo%20activo-0A7EA4)](#estado-del-proyecto)
 [![Licencia](https://img.shields.io/badge/licencia-MIT-2E8540)](./LICENSE)
 [![Linux](https://img.shields.io/badge/plataforma-Linux-455A64?logo=linux&logoColor=white)](#que-herramienta-usar)
@@ -9,7 +11,7 @@
 
 **sysadmin** reúne herramientas para facilitar tareas reales de **administración de sistemas e infraestructura**: diagnóstico, auditoría, inventario, gestión de identidades y dominios, mantenimiento, operaciones remotas, respaldo, recuperación y seguridad.
 
-El **hardening es una capacidad del conjunto, no su propósito exclusivo**. Los asistentes de Active Directory ayudan a desplegar y operar entornos Windows/Linux; [Audit Workbench](./audit-workbench/README.md) permite documentar auditorías desde el navegador, incluso sin conexión. Son herramientas independientes que comparten un enfoque de operación conservador.
+El **hardening es una capacidad del conjunto, no su propósito exclusivo**. Los asistentes de Active Directory ayudan a desplegar y operar entornos Windows/Linux; [Audit Workbench](./audit-workbench/README_ES.md) permite documentar auditorías desde el navegador, incluso sin conexión. Son herramientas independientes que comparten un enfoque de operación conservador.
 
 > **Alcance actual:** seis asistentes de consola en la raíz, enfocados principalmente en Active Directory y sus sistemas clientes, más una PWA de auditoría en `audit-workbench/`. No es una suite de inventariado remoto automático, un escáner de vulnerabilidades ni una plataforma central de gestión. El catálogo crecerá según se incorporen herramientas verificadas.
 
@@ -19,7 +21,7 @@ El **hardening es una capacidad del conjunto, no su propósito exclusivo**. Los 
 
 | Necesito… | Componente |
 |---|---|
-| Documentar una auditoría, inventariar activos, vincular evidencias y generar informes | **[Audit Workbench](./audit-workbench/README.md)** · PWA offline-first |
+| Documentar una auditoría, inventariar activos, vincular evidencias y generar informes | **[Audit Workbench](./audit-workbench/README_ES.md)** · PWA offline-first |
 | Operar, auditar y recuperar un dominio Samba AD sobre Debian/Ubuntu | [Debian AD Assistant](./debian-ad-assistant.sh) |
 | Administrar un Samba AD DC en Rocky/AlmaLinux con comprobación de soporte | [Enterprise Linux AD Assistant](./rhel-ad-assistant.sh) |
 | Operar y diagnosticar AD DS en Windows Server | [Windows AD Assistant](./windows-ad-assistant.ps1) |
@@ -29,7 +31,7 @@ El **hardening es una capacidad del conjunto, no su propósito exclusivo**. Los 
 
 ### Componentes y documentación
 
-- **[Audit Workbench](./audit-workbench/README.md):** funcionamiento, inventarios, diccionario técnico, evidencias y entrega de informes. Incluye [instalación y PWA](./audit-workbench/INSTALLATION.md), [modelo de seguridad](./audit-workbench/SECURITY.md) y [notas legales](./audit-workbench/LEGAL.md).
+- **[Audit Workbench](./audit-workbench/README_ES.md):** funcionamiento, inventarios, diccionario técnico, evidencias y entrega de informes. Incluye [instalación y PWA](./audit-workbench/INSTALLATION_ES.md), [modelo de seguridad](./audit-workbench/SECURITY_ES.md) y [notas legales](./audit-workbench/LEGAL_ES.md).
 - **Asistentes en la raíz:** scripts autocontenidos, descargables individualmente, con sus propias opciones, dependencias y registros. No es necesario instalar Audit Workbench para utilizarlos.
 - **Guía operativa de Active Directory (más abajo):** pasos concretos para provisionamiento, DNS, Kerberos, GPO, IDS, snapshots, hardening y troubleshooting.
 
@@ -62,7 +64,7 @@ El **hardening es una capacidad del conjunto, no su propósito exclusivo**. Los 
 
 | Herramienta | Plataforma principal | Uso |
 |---|---|---|
-| [`audit-workbench/`](./audit-workbench/README.md) | Navegador de escritorio o tablet; PWA | Auditoría técnica, inventario, controles, evidencias, remediación, informes y backups opcionales |
+| [`audit-workbench/`](./audit-workbench/README_ES.md) | Navegador de escritorio o tablet; PWA | Auditoría técnica, inventario, controles, evidencias, remediación, informes y backups opcionales |
 | [`debian-ad-assistant.sh`](./debian-ad-assistant.sh) | Debian 13 / Ubuntu Server 26.04 LTS | Samba AD DC: aprovisionamiento, operación, validación, backup, DNS/GPO, seguridad |
 | [`rhel-ad-assistant.sh`](./rhel-ad-assistant.sh) | Rocky / AlmaLinux 9–10 | Samba AD DC condicionado a capacidad AD-DC y soporte del sistema |
 | [`windows-ad-assistant.ps1`](./windows-ad-assistant.ps1) | Windows Server 2019 / 2022 / 2025 | AD DS, administración de directorio, diagnóstico, recuperación y hardening |
@@ -84,7 +86,7 @@ El **hardening es una capacidad del conjunto, no su propósito exclusivo**. Los 
 <a id="audit-workbench"></a>
 ## Audit Workbench · auditoría y gestión de evidencias
 
-**[Abrir documentación de Audit Workbench](./audit-workbench/README.md)** · [Instalación](./audit-workbench/INSTALLATION.md) · [Seguridad](./audit-workbench/SECURITY.md)
+**[Abrir documentación de Audit Workbench](./audit-workbench/README_ES.md)** · [Instalación](./audit-workbench/INSTALLATION_ES.md) · [Seguridad](./audit-workbench/SECURITY_ES.md)
 
 La PWA de `audit-workbench/` es un producto complementario a los asistentes de consola; **no los ejecuta desde el navegador ni escanea automáticamente la red**.
 
@@ -101,7 +103,7 @@ cd audit-workbench
 python3 -m http.server 8765 --bind 127.0.0.1
 ```
 
-Abre `http://127.0.0.1:8765`. Para tablets, primera instalación PWA, política de origen y HTTPS, sigue [INSTALLATION.md](./audit-workbench/INSTALLATION.md). Los expedientes almacenados en un origen de navegador no se sincronizan por el mero hecho de publicar la aplicación.
+Abre `http://127.0.0.1:8765`. Para tablets, primera instalación PWA, política de origen y HTTPS, sigue [INSTALLATION.md](./audit-workbench/INSTALLATION_ES.md). Los expedientes almacenados en un origen de navegador no se sincronizan por el mero hecho de publicar la aplicación.
 
 
 ---
@@ -163,7 +165,7 @@ Antes de ejecutar un script con privilegios, revísalo y comprueba el modo que v
 
 ### 2. Elegir el flujo
 
-Para **documentar una auditoría**, utiliza Audit Workbench siguiendo su [guía](./audit-workbench/README.md). Para **auditar u operar AD**, empieza por el modo de lectura del asistente correspondiente.
+Para **documentar una auditoría**, utiliza Audit Workbench siguiendo su [guía](./audit-workbench/README_ES.md). Para **auditar u operar AD**, empieza por el modo de lectura del asistente correspondiente.
 
 ### 3. Empezar por auditoría
 
