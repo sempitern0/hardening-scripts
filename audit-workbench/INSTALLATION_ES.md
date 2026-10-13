@@ -1,5 +1,7 @@
 # Instalación y actualización de Audit Workbench
 
+[English](INSTALLATION.md) · **Español**
+
 Esta guía está dirigida a auditores y administradores que necesitan usar la aplicación en escritorio, tablet o móvil, con conectividad limitada.
 
 ## Antes de empezar
@@ -116,4 +118,4 @@ Get-Content .\audit-workbench.ps1
 
 Evita ejecutar directamente scripts de Internet mediante tuberías sin inspeccionarlos. Los instaladores realizan la descarga inicial; el trabajo ordinario en la aplicación sigue siendo offline.
 
-Para manejo de información sensible consulta [SECURITY.md](SECURITY.md). Para funciones del asistente consulta [README.md](README.md).
+Para manejo de información sensible consulta [SECURITY.md](SECURITY_ES.md). Para funciones del asistente consulta [README.md](README_ES.md).
