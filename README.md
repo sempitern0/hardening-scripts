@@ -626,11 +626,11 @@ Do not restore DNS before rebooting after leaving the domain.
 ---
 
 <a id="dns-requisito-fundamental"></a>
-## DNS: requisito fundamental
+## DNS: a fundamental requirement
 
-Active Directory depende de sus registros DNS SRV.
+Active Directory relies on its DNS SRV records.
 
-El patrón recomendado es:
+The recommended pattern is:
 
 ```text
 AD clients
@@ -638,27 +638,27 @@ AD clients
     ├─ DNS → DC01
     └─ DNS → DC02
                │
-               ├─ zonas AD
-               └─ forwarders → resolución externa/corporativa
+               ├─ AD zones
+               └─ forwarders → external/corporate resolution
 ```
 
-### No mezclar DNS públicos en los clientes AD
+### Do not mix public DNS servers into AD client settings
 
-Evita configurar como DNS alternativo del cliente:
+Avoid configuring the following as alternate DNS servers on AD clients:
 
 ```text
 8.8.8.8
 1.1.1.1
 9.9.9.9
-router doméstico
-DNS de NAT del hipervisor
+home router
+hypervisor NAT DNS
 ```
 
-El cliente puede seleccionar ese resolver y perder discovery de Active Directory.
+The client may select that resolver and lose Active Directory discovery.
 
-Los resolvers externos pertenecen al **forwarding del DNS del dominio**, no a la lista DNS del miembro del dominio.
+External resolvers belong in **domain DNS forwarding**, not in the DNS server list of a domain member.
 
-### Pruebas Linux
+### Linux tests
 
 ```bash
 dig _ldap._tcp.dc._msdcs.corp.example.com SRV
@@ -669,7 +669,7 @@ dig @10.0.10.10 \
 getent hosts dc01.corp.example.com
 ```
 
-### Pruebas Windows
+### Windows tests
 
 ```powershell
 Resolve-DnsName `
@@ -684,120 +684,120 @@ Resolve-DnsName `
 nltest /dsgetdc:corp.example.com
 ```
 
-Si una consulta directa al DNS AD funciona pero la consulta del resolver del sistema falla, el problema está en el camino DNS local del cliente, no necesariamente en Active Directory.
+If a query directly to an AD DNS server succeeds but the system resolver fails, the issue lies in the client's local DNS path, not necessarily in Active Directory.
 
 ---
 
 <a id="operaciones-remotas"></a>
-## Operaciones remotas
+## Remote operations
 
-Los dos control planes de DC incluyen un centro de operaciones remotas para endpoints registrados en Active Directory.
+Both DC control planes include a remote operations center for endpoints registered in Active Directory.
 
-### Desde Windows Server
+### From Windows Server
 
-Camino recomendado:
+Recommended path:
 
 ```text
 Windows → Windows : WinRM / PowerShell Remoting / Kerberos
 Windows → Linux   : OpenSSH
 ```
 
-Windows puede mantener una credencial alternativa en memoria durante la sesión cuando el operador lo decide.
+Windows can retain alternative credentials in memory during the session when the operator chooses to do so.
 
-### Desde Samba AD / Linux
+### From Samba AD / Linux
 
 Camino recomendado:
 
 ```text
 Linux → Linux     : OpenSSH
 Linux → Windows   : OpenSSH
-                    Samba RPC como fallback limitado de power control
+                    Samba RPC as a limited power-control fallback
 ```
 
 ### Guardrails
 
-Las consolas remotas están pensadas para operaciones administrativas concretas:
+Remote consoles are intended for specific administrative tasks:
 
 - readiness;
-- sesiones activas;
-- mensajes a usuarios;
-- logoff controlado;
-- diagnóstico;
-- gestión limitada de servicios;
+- active sessions;
+- user messages;
+- controlled logoff;
+- diagnostics;
+- limited service management;
 - restart / shutdown;
-- export de evidencia.
+- evidence export.
 
-No se expone un shell arbitrario como opción normal del menú.
+An arbitrary shell is not exposed as a standard menu option.
 
-Para delegación operativa utiliza:
+For delegated operations, use:
 
 ```text
 Windows → JEA / role capabilities
-Linux   → sudoers limitado
-Network → WinRM/SSH solo desde redes de management
+Linux   → restricted sudoers
+Network → WinRM/SSH only from management networks
 ```
 
 ---
 
 <a id="gpo-y-sysvol-permisos-y-diagnostico"></a>
-## GPO y SYSVOL: permisos y diagnóstico
+## GPO and SYSVOL: permissions and diagnostics
 
-Crear una GPO en un Samba AD DC combina **privilegios locales** y **autorización de dominio**. Son capas diferentes:
+Creating a GPO on a Samba AD DC combines **local privileges** and **domain authorization**. These are separate layers:
 
 ```text
-shell del operador
+operator shell
       │
-      ├─ sudo/root ────────────────> ficheros locales, runtime, backups, herramientas
+      ├─ sudo/root ────────────────> local files, runtime, backups, tools
       │
-      └─ ticket Kerberos del admin
+      └─ administrator's Kerberos ticket
               │
               ├─ LDAP ────────────> CN=Policies,CN=System,...
               │
               └─ CIFS/SMB ────────> \\DC\SYSVOL\dominio\Policies\{GUID}
 ```
 
-El asistente se autoeleva mediante `sudo` cuando se inicia como usuario normal. Por tanto, ejecutar:
+The assistant elevates itself through `sudo` when launched as a regular user. Therefore, running:
 
 ```bash
 ./debian-ad-assistant.sh --gpo
 ```
 
-es válido; no es necesario anteponer `sudo` manualmente mientras `sudo` esté disponible y el usuario local tenga permiso para utilizarlo. El control plane muestra y conserva el invocador original, pero las operaciones locales se ejecutan como root.
+is valid; you do not need to prepend `sudo` manually as long as it is available and the local user may use it. The control plane displays and retains the original invoking user, but local operations run as root.
 
-**Root no sustituye al administrador de Active Directory.** `samba-tool gpo create` utiliza las credenciales Kerberos del operador para acceder tanto a LDAP como a SYSVOL. Un proceso root puede seguir recibiendo un rechazo de LDAP o SMB.
+**Root does not replace Active Directory administrator privileges.** `samba-tool gpo create` uses the operator's Kerberos credentials to access both LDAP and SYSVOL. A root process can still be denied by LDAP or SMB.
 
 ### GPO mutation preflight
 
-Antes de una mutación GPO, el asistente ejecuta automáticamente un preflight y reutiliza el resultado durante unos minutos dentro de la misma ejecución. También puede lanzarse manualmente desde:
+Before a GPO change, the assistant automatically runs a preflight and reuses its result for a few minutes within the same execution. It can also be run manually from:
 
 ```text
 Group Policy Control
   -> [11] GPO mutation preflight
 ```
 
-El preflight:
+The preflight:
 
-1. confirma que el proceso efectivo es root;
-2. destruye el ccache privado anterior y solicita un **TGT Kerberos fresco** del administrador seleccionado;
-3. verifica la identidad exacta del principal;
-4. comprueba la membresía administrativa registrada en el directorio;
-5. solicita tickets para `ldap/<DC_FQDN>` y `cifs/<DC_FQDN>` cuando `kvno` está disponible;
-6. comprueba lectura GPO por LDAP;
-7. ejecuta `samba-tool ntacl sysvolcheck`;
-8. accede a SYSVOL mediante `smbclient` usando **el mismo ccache**;
-9. crea y elimina un directorio temporal `.DAD-GPO-PROBE-*` bajo `SYSVOL/<dominio>/Policies` para comprobar escritura SMB real;
-10. ejecuta `gpo aclcheck` como diagnóstico de consistencia de las GPO existentes;
-11. captura el DS ACL de `CN=Policies,CN=System,<baseDN>` y el NT ACL del directorio `Policies`.
+1. confirms the effective process is running as root;
+2. destroys the previous private credential cache and obtains a **fresh Kerberos TGT** for the selected administrator;
+3. verifies the exact principal identity;
+4. checks administrative group membership recorded in the directory;
+5. requests tickets for `ldap/<DC_FQDN>` and `cifs/<DC_FQDN>` when `kvno` is available;
+6. verifies GPO read access through LDAP;
+7. runs `samba-tool ntacl sysvolcheck`;
+8. accesses SYSVOL with `smbclient` using **the same credential cache**;
+9. creates and removes a temporary `.DAD-GPO-PROBE-*` directory under `SYSVOL/<domain>/Policies` to verify actual SMB write access;
+10. runs `gpo aclcheck` to diagnose consistency across existing GPOs;
+11. captures the DS ACL for `CN=Policies,CN=System,<baseDN>` and the NT ACL for the `Policies` directory.
 
-La prueba de escritura se ejecuta únicamente dentro de una ruta de mutación/diagnóstico GPO y elimina inmediatamente el directorio temporal. Si la limpieza falla, el asistente muestra la ruta exacta para revisión manual.
+The write test runs only within a GPO change/diagnostic path and immediately removes the temporary directory. If cleanup fails, the assistant displays the exact path for manual review.
 
-La evidencia queda bajo:
+Evidence is stored under:
 
 ```text
 /var/lib/debian-ad-assistant/runs/<run>/gpo-diagnostics/
 ```
 
-Archivos relevantes pueden incluir:
+Relevant files may include:
 
 ```text
 execution-context.txt
@@ -810,7 +810,7 @@ sysvol-smb-write.txt
 gpo-aclcheck.txt
 policies-container-dsacl.txt
 policies-filesystem-acl.txt
-gpo-create-<nombre>.txt
+gpo-create-<name>.txt
 ```
 
 ### Por qué una membresía correcta puede seguir fallando
