@@ -234,3 +234,19 @@
   }
   #report a { color: inherit !important; text-decoration: none !important; }
 }
+/* Report delivery improvements: compact navigation and stable table pagination. */
+@media print{
+  #report .report-toc{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2.5mm 6mm;padding:3mm 0 4mm}
+  #report .report-toc a{display:block;padding:2mm 0;border-bottom:.2mm solid #d8e1e7;font-size:9pt;overflow-wrap:anywhere}
+  #report .report-summary-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3mm;margin:3mm 0 6mm}
+  #report .report-summary-metrics>div{border:.2mm solid #d5e0e7;border-radius:2mm;padding:3.5mm}
+  #report .report-summary-metrics strong{display:block;font-size:16pt;color:var(--report-heading,#15394a)}
+  #report .report-summary-metrics span{font-size:8.3pt}
+  #report .report-section h2{break-after:avoid-page!important}
+  #report .report-section>h3{break-after:avoid-page!important}
+  #report .report-table{break-before:avoid-page}
+  #report .report-table td,#report .report-table th{hyphens:none!important;overflow-wrap:break-word!important;word-break:normal!important}
+  #report .report-table tr{break-inside:avoid-page!important}
+  #report .report-action{break-inside:avoid-page}
+  #report .report-toc a{color:inherit!important}
+}
