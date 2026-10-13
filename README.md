@@ -165,7 +165,7 @@ Antes de ejecutar un script con privilegios, revísalo y comprueba el modo que v
 
 Para **documentar una auditoría**, utiliza Audit Workbench siguiendo su [guía](./audit-workbench/README.md). Para **auditar u operar AD**, empieza por el modo de lectura del asistente correspondiente.
 
-### 2. Empezar por auditoría
+### 3. Empezar por auditoría
 
 Samba AD / Linux:
 
