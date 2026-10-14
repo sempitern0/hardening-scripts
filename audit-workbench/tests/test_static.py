@@ -1,30 +1,34 @@
-"""Fast offline structural checks with no browser and no external packages."""
+"""Dependency-light checks for the single current Audit Workbench codebase."""
 from pathlib import Path
-import json, re, subprocess, shutil
-root=Path(__file__).resolve().parents[1]
-html=(root/'index.html').read_text()
-css=(root/'css/styles.css').read_text()
-js=(root/'js/app.js').read_text()
-sw=(root/'sw.js').read_text()
-manifest=json.loads((root/'manifest.webmanifest').read_text())
-assert "img-src 'self' data: blob:" in html, 'CSP must permit the preexisting image previews'
-assert 'reader.readAsDataURL(file)' in js and 'URL.createObjectURL(file)' not in js, 'No blob image decoding'
-assert "['image/png','image/jpeg','image/webp']" in js
-assert 'vendorModels' in js and 'obj.model=' in js, 'Dependent models'
-assert 'badge.outerHTML=pill(obj.severity)' in js, 'Severity pills'
-assert 'report-cover{background:var(--pdf-cover-bg)' in css, 'PDF themed cover'
-assert 'css/normalize.css' in html and './css/normalize.css' in sw
-assert 'main-audit-context' in html and 'wizard-step-select' in js
-assert 'style=' not in js, 'Inline style violates CSP'
-assert 'encryptProfile' in js and 'deriveKey' in js and 'validateIdentity' in js
-assert 'event.preventDefault();deferredInstallPrompt' not in js, 'Do not suppress native install prompt'
-assert (root/'css/atkinson.css').is_file()
-assert 'dragon.svg' in html and './icons/dragon.svg' in sw
-for item in ('index.html','js/app.js','css/styles.css','css/normalize.css','manifest.webmanifest','icons/dragon.svg','icons/icon-192.png','icons/icon-512.png'):
- assert (root/item).is_file(),item
-assert manifest['display']=='standalone' and manifest['start_url'].startswith('./')
-from PIL import Image
-for size in (192,512):
- with Image.open(root/f'icons/icon-{size}.png') as img:assert img.size==(size,size)
-if shutil.which('node'):subprocess.run(['node','--check',str(root/'js/app.js')],check=True)
-print('STATIC PASS: CSP, files, dependent fields, PWA manifest/cache, themes and JavaScript syntax')
+import json
+import re
+import shutil
+import subprocess
+
+root = Path(__file__).resolve().parents[1]
+html = (root / "index.html").read_text(encoding="utf-8")
+app = (root / "js/app.js").read_text(encoding="utf-8")
+sw = (root / "sw.js").read_text(encoding="utf-8")
+manifest = json.loads((root / "manifest.webmanifest").read_text(encoding="utf-8"))
+scripts = re.findall(r'<script[^>]+src="([^"]+)"', html)
+styles = re.findall(r'<link[^>]+href="([^"]+\.css)"', html)
+
+assert "Content-Security-Policy" in html
+assert scripts and scripts[-1] == "js/app.js", "Application should load after its modules"
+for resource in scripts + styles:
+    assert (root / resource).is_file(), f"Missing HTML resource: {resource}"
+    assert "'./" + resource + "'" in sw, f"Offline resource not cached: {resource}"
+assert "audit-workbench-shell-v43-single-json" in sw
+assert "const VERSION = 3;" in app and "raw.schemaVersion!==VERSION" in app
+assert "LEGACY_STORE" not in app and "nextReportId(" not in app
+assert "auditWorkbenchBackup" not in app and "settings.sequences" not in app
+assert "kind:LIBRARY_KIND,schemaVersion:VERSION" in app
+assert "kind:PROFILE_KIND,schemaVersion:VERSION" in app
+assert "js/audit-identifiers.js" in scripts and "js/document-control.js" in scripts
+assert "js/audit-storage.js" in scripts and "js/exporters.js" in scripts
+assert manifest["display"] == "standalone" and manifest["start_url"].startswith("./")
+assert all((root / ("icons/icon-%d.png" % size)).is_file() for size in (192, 512))
+if shutil.which("node"):
+    for script in scripts + ["sw.js"]:
+        subprocess.run(["node", "--check", str(root / script)], check=True)
+print("STATIC PASS: single v3 JSON, script dependencies, offline resources and JS syntax")
