@@ -543,6 +543,11 @@
     let control;
     if(type==='textarea')control=`<textarea id="${id}" ${attrs} maxlength="20000">${html(value)}</textarea>`;
     else if(type==='select')control=`<select id="${id}" ${attrs}>${choices.map(x=>`<option value="${html(x)}"${x===value?' selected':''}>${html(x)}</option>`).join('')}</select>`;
+    else if(block==='networks'&&['gateway','dns','firewall'].includes(name)){
+      const known=assist.suggestions(state,block,name);
+      const listId='suggest-'+block+'-'+index+'-'+name;
+      control=`<input id="${id}" type="text" ${attrs} list="${listId}" value="${html(value)}" maxlength="20000" autocomplete="off"><datalist id="${listId}">${known.map(x=>`<option value="${html(x)}"></option>`).join('')}</datalist>`;
+    }
     else if(type==='picker' && ['os','cpu','ram','storage','site','name'].includes(name) && (name!=='name'||block==='software')){
       const options=name==='os'?(osCatalog?.ALL||choices):assist.suggestions(state,block,name,choices);
       const listId='suggest-'+block+'-'+(index===undefined?'main':index)+'-'+name;
