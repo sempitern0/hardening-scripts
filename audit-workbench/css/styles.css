@@ -2359,3 +2359,5 @@ button:focus-visible {
 .report-delivery-option{display:grid;gap:.45rem;border:1px solid var(--line);border-radius:12px;padding:1rem;flex:1 1 260px}.report-delivery-option p{margin:.1rem 0 .6rem}.report-delivery-option .button{width:100%}
 
 .field-assist{display:grid;gap:.35rem;margin-top:.55rem;padding:.6rem;border:1px solid var(--line);border-radius:8px}.field-assist label{font-size:.85rem}.field-assist small{color:var(--muted)}
+
+.identifier-readonly{background:var(--paper);opacity:.85;cursor:default;border-style:dashed}.identifier-hint{font-size:.76rem;color:var(--muted);display:block;margin-top:.3rem}
