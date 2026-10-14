@@ -987,11 +987,11 @@
   }
   function renderDelivery(){
     const audit=reviewState('final');
-    return `<span class="eyebrow">ENTREGA / REPORTING</span><h1 class="page-title">Informe final</h1><p class="lead">Resumen para dirección, plan de remediación y anexo técnico verificable.</p>
+    return `<span class="eyebrow">ENTREGA / REPORTING</span><h1 class="page-title">Informes de auditoría</h1><p class="lead">Dos entregables distintos, generados desde el mismo expediente y revisión documental.</p>
       <div class="notice ${audit.ready?'':'warn'}">${audit.ready?'Revisión básica superada.':'Pendientes '+audit.blockers.length+' datos imprescindibles: el documento se emitirá como BORRADOR si decides continuar.'} ${audit.warnings.length} avisos adicionales. <button class="button quiet small" data-go="quality">Revisar calidad →</button></div>
       <section class="card"><div class="card-head"><div><h2>Conclusiones y cierre</h2><p class="subtle">Explica los riesgos en lenguaje comprensible y las decisiones necesarias.</p></div></div><div class="fields">${finalFields.map(f=>renderField(state.final,'final',f)).join('')}</div></section>
       <section class="card"><h2>Plan de remediación generado</h2><p class="subtle">Se utilizarán los hallazgos ya documentados. Para completar una acción, edita su ficha.</p>${renderPlanSummary(audit.plan)}<button type="button" class="button quiet" data-go="findings">Revisar responsables, fechas y verificación</button></section>
-      ${documentPanel()}<section class="card"><h2>Preparar entrega</h2><p class="subtle">El PDF contiene el informe y el plan de remediación; el JSON permite continuar la auditoría.</p><div class="action-row"><button class="button accent" id="delivery-pdf">Generar borrador PDF ↗</button><button class="button accent" id="delivery-pdf-final">Informe definitivo PDF ↗</button><button class="button quiet" id="retest-pdf">Informe de reevaluación PDF ↗</button><button class="button quiet" id="delivery-json">Descargar expediente JSON ↓</button><button class="button quiet" data-go="backups">Copias / Excel / CSV</button><button class="button danger" id="delivery-reset">Nuevo expediente</button><button class="button quiet" id="native-share-json">Compartir JSON (opcional)</button><button class="button quiet" id="open-email">Preparar correo (sin adjuntos)</button></div><p id="delivery-export-status" class="export-inline-status" role="status" aria-live="polite">La copia JSON se guarda mediante una descarga del navegador, no dentro de la carpeta de la PWA.</p></section>`;
+      ${documentPanel()}<section class="card"><h2>Preparar entrega</h2><p class="subtle">Elige el destinatario y el estado del documento. Ambos PDFs comparten los hallazgos, la referencia y la revisión. El JSON permite continuar la auditoría.</p><div class="action-row"><div class="report-delivery-option"><strong>Ejecutivo · Dirección</strong><p class="subtle">Impacto, riesgos y decisiones. Sin inventarios ni capturas técnicas.</p><button class="button quiet" id="delivery-executive-draft">Borrador ejecutivo PDF ↗</button><button class="button accent" id="delivery-executive-final">Ejecutivo definitivo PDF ↗</button></div><div class="report-delivery-option"><strong>Técnico · Sistemas y seguridad</strong><p class="subtle">Métodos, controles, inventarios, evidencias y remediación detallada.</p><button class="button quiet" id="delivery-technical-draft">Borrador técnico PDF ↗</button><button class="button accent" id="delivery-technical-final">Técnico definitivo PDF ↗</button></div><button class="button quiet" id="retest-pdf">Informe de reevaluación PDF ↗</button><button class="button quiet" id="delivery-json">Descargar expediente JSON ↓</button><button class="button quiet" data-go="backups">Copias / Excel / CSV</button><button class="button danger" id="delivery-reset">Nuevo expediente</button><button class="button quiet" id="native-share-json">Compartir JSON (opcional)</button><button class="button quiet" id="open-email">Preparar correo (sin adjuntos)</button></div><p id="delivery-export-status" class="export-inline-status" role="status" aria-live="polite">La copia JSON se guarda mediante una descarga del navegador, no dentro de la carpeta de la PWA.</p></section>`;
   }
 
   function render(){
@@ -1027,7 +1027,7 @@
     if(state.documentControl?.status!=='confirmed')return;
     for(const element of workspace.querySelectorAll('input,select,textarea,button')){
       if(element.closest('.document-control')||element.dataset.go||element.dataset.glossaryTerm||element.dataset.glossaryBack||element.dataset.qualitySection||element.id==='delivery-pdf'||element.id==='delivery-json')continue;
-      if(element.id==='delivery-pdf-final')continue;
+      if(['delivery-executive-final','delivery-executive-draft','delivery-technical-final','delivery-technical-draft'].includes(element.id))continue;
       if(element.matches('input,select,textarea')||element.dataset.add||element.dataset.remove||element.dataset.applyTemplate||element.dataset.clearImage||element.dataset.saveRetest)element.disabled=true;
     }
   }
@@ -1178,7 +1178,7 @@
   workspace.addEventListener('click',async e=>{
     const b=e.target.closest('button');if(!b)return;
     if(state.documentControl?.status==='confirmed'&&!['records','backups','connections','online','settings','glossary'].includes(page)){
-      const safe=['document-pdf','delivery-pdf','delivery-pdf-final','delivery-json','amend-begin','retest-pdf','open-email','native-share-json'];
+      const safe=['document-pdf','delivery-executive-final','delivery-executive-draft','delivery-technical-final','delivery-technical-draft','delivery-json','amend-begin','retest-pdf','open-email','native-share-json'];
       if(!b.dataset.go&&!b.dataset.qualitySection&&!b.dataset.glossaryTerm&&!b.dataset.glossaryBack&&!safe.includes(b.id)){
         alert('Expediente confirmado: abre una rectificación excepcional para modificarlo.');return;
       }
@@ -1381,8 +1381,10 @@
       try{const checked=quality.review(state,relations,{mode:'final'});if(checked.blockers.length||invalidFields().length)throw Error('Resuelve los impedimentos antes de confirmar.');await docControl.finalizeAmendment(state);persist(true);await flush();render();}catch(error){alert('No se pudo cerrar la rectificación: '+error.message);}return;
     }
     if(state.documentControl?.status==='confirmed'&&(b.dataset.add!==undefined||b.dataset.remove!==undefined||b.dataset.applyTemplate!==undefined||b.dataset.clearImage!==undefined||b.dataset.saveRetest!==undefined)){alert('Expediente confirmado. Abre una rectificación justificada.');return;}
-    if(b.id==='delivery-pdf'){printReport('draft');return}
-    if(b.id==='delivery-pdf-final'){printReport('final');return}
+    if(b.id==='delivery-executive-draft'){void printReport('draft','executive');return}
+    if(b.id==='delivery-executive-final'){void printReport('final','executive');return}
+    if(b.id==='delivery-technical-draft'){void printReport('draft','technical');return}
+    if(b.id==='delivery-technical-final'){void printReport('final','technical');return}
     if(b.id==='delivery-json'){exportJson();return}
     if(b.id==='delivery-reset'){await createAudit();return}
   });
@@ -1539,7 +1541,7 @@
   byId('btn-import').addEventListener('click',()=>byId('input-import').click());
   byId('input-import').addEventListener('change',async e=>{if(e.target.files?.[0])await importJson(e.target.files[0]);e.target.value=''});
   byId('btn-export').addEventListener('click',()=>exportJson());
-  byId('btn-pdf').addEventListener('click',printReport);
+  byId('btn-pdf').addEventListener('click',()=>{move('delivery');});
   const table = (fields,row) => `<table class="report-table"><tbody>${fields.map(([name,label])=>`<tr><th class="report-field-label">${html(label)}</th><td>${para(row[name])}</td></tr>`).join('')}</tbody></table>`;
   const section = (num,title,content) => `<section class="report-section"><h2>${num}. ${html(title)}</h2>${content}</section>`;
   function reportRows(k){const rows=state[k];return rows.length?rows.map((row,i)=>`<h3>${i+1}. ${html(row.title||row.name||row.id||'Registro')}</h3>${table(groups[k].fields,row)}${k==='evidence'?`<p class="report-note"><strong>Integridad y vínculos:</strong> ${html(row.fileSha256?'SHA-256 original: '+row.fileSha256:'Archivo original sin huella calculada')} ${html(row.fileName?' · Archivo: '+row.fileName:'')} · ${html(relations.CATEGORIES.map(kind=>{const names=relations.normalizeLinks(row.links)[kind].map(key=>state[kind].find(x=>x._key===key)).filter(Boolean).map(x=>relations.itemLabel(x,kind));return names.length?relationLabels[kind]+': '+names.join(', '):''}).filter(Boolean).join(' · ')||'Sin relaciones explícitas')}</p>`:''}${k==='evidence'&&row.image?`<figure><img class="report-evidence" alt="Evidencia ${html(row.id)}" src="${row.image}"><figcaption class="report-note">${html(row.id||'Evidencia')}: ${html(row.title||'Captura adjunta')}</figcaption></figure>`:''}`).join(''):'<p class="report-empty">Sin registros incluidos en esta categoría.</p>'}
@@ -1659,8 +1661,9 @@
     if(!state.findings.some(f=>retest.normalize(f.retests).length)&&!confirm('No hay verificaciones posteriores registradas. El informe mostrará todos los hallazgos como sin reevaluar. ¿Continuar?'))return;
     printMode='retest';buildRetestReport();window.print();
   }
-  async function printReport(mode='draft'){
+  async function printReport(mode='draft',profile='executive'){
     printMode='audit';
+    reportProfile=profile==='technical'?'technical':'executive';
     reportDeliveryMode=mode==='final'?'final':'draft';
     const review=reviewState(reportDeliveryMode),invalid=invalidFields();
     if(reportDeliveryMode==='final'&&state.documentControl?.status!=='confirmed'){alert('Confirma primero el expediente desde Informe final.');move('delivery');return;}
