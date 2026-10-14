@@ -1,6 +1,6 @@
 /* Audit Workbench: versioned, offline-first app shell. No audit data is stored in CacheStorage. */
 'use strict';
-const CACHE_NAME='audit-workbench-shell-v38-offline-resilience';
+const CACHE_NAME='audit-workbench-shell-v39-report-profiles';
 const CACHE_PREFIX='audit-workbench-shell-';
 const OPTIONAL_FONTS = ['Regular','Bold','Italic','BoldItalic'].map(weight => `./fonts/AtkinsonHyperlegible-${weight}.woff2`);
 const CORE = [
