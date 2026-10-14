@@ -1,11 +1,18 @@
 /* Audit Workbench service worker: immutable local shell only. No audit data is cached. */
 'use strict';
-const CACHE_NAME = 'audit-workbench-shell-v36-document-control';
+const CACHE_NAME = 'audit-workbench-shell-v37-controlled-updates';
 const OPTIONAL_FONTS = ['Regular','Bold','Italic','BoldItalic'].map(weight => `./fonts/AtkinsonHyperlegible-${weight}.woff2`);
 const CORE = [
   './', './index.html', './css/styles.css', './js/app.js', './js/audit-storage.js',
-  './css/normalize.css', './css/team.css', './css/contrast.css', './css/relations.css', './js/audit-relations.js', './css/templates.css', './css/quality.css', './js/audit-quality.js', './css/retest.css', './js/audit-retest.js', './css/comparison.css', './js/audit-comparison.js', './js/control-templates.js', './css/print.css', './js/exporters.js', './js/hardware-catalog.js', './js/os-catalog.js', './js/glossary.js', './js/inventory-import.js', './js/input-guidance.js', './js/secure-transfer.js', './js/secure-transfer-ui.js', './js/document-control.js', './css/glossary.css', './css/atkinson.css', './manifest.webmanifest', './icons/os-windows.svg', './icons/os-linux.svg', './icons/os-macos.svg', './icons/dragon.svg', './icons/icon-192.png', './icons/icon-512.png'
+  './css/normalize.css', './css/team.css', './css/contrast.css', './css/relations.css', './js/audit-relations.js', './css/templates.css', './css/quality.css', './js/audit-quality.js', './css/retest.css', './js/audit-retest.js', './css/comparison.css', './js/audit-comparison.js', './js/control-templates.js', './css/print.css', './js/exporters.js', './js/hardware-catalog.js', './js/os-catalog.js', './js/glossary.js', './js/inventory-import.js', './js/input-guidance.js', './js/secure-transfer.js', './js/secure-transfer-ui.js', './js/document-control.js', './js/pwa-updates.js', './css/glossary.css', './css/atkinson.css', './manifest.webmanifest', './icons/os-windows.svg', './icons/os-linux.svg', './icons/os-macos.svg', './icons/dragon.svg', './icons/icon-192.png', './icons/icon-512.png'
 ];
+self.addEventListener('message', event => {
+  if(event.data?.type!=='AUDIT_WORKBENCH_APPLY_UPDATE')return;
+  event.waitUntil((async()=>{
+    try{await self.skipWaiting();event.ports?.[0]?.postMessage({ok:true});}
+    catch(_error){event.ports?.[0]?.postMessage({ok:false,reason:'No se pudo activar la actualización.'});}
+  })());
+});
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE_NAME).then(async cache => {
     await cache.addAll(CORE);
