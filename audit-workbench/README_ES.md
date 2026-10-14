@@ -138,3 +138,11 @@ audit-workbench/
 ```
 
 Audit Workbench forma parte de **sysadmin**, un conjunto de herramientas de administración de sistemas. Funciona de manera independiente de los asistentes de Active Directory de la raíz: su papel es registrar y analizar auditorías, no ejecutar tareas de administración o hardening sobre equipos remotos.
+
+## Confirmación documental y rectificaciones excepcionales
+
+Audit Workbench diferencia entre **borrador**, **confirmado** y **rectificación en curso**. El borrador puede editarse y revisarse sin presentarse como aprobado. El preflight definitivo comprueba además responsable auditor, autorización, resumen ejecutivo, identificadores duplicados, referencias de evidencia, validación responsable y otras reglas de coherencia existentes.
+
+En **Informe final**, identifica a la persona responsable y confirma el expediente después de revisar los avisos. La confirmación registra una huella SHA-256 local y una revisión, y deshabilita la edición ordinaria. Para modificar una auditoría confirmada, utiliza **Abrir rectificación excepcional**, identifica al responsable y justifica el motivo. Tras editar, supera las validaciones definitivas y pulsa **Validar cambios y cerrar rectificación**; el historial local registra revisión, motivo, rutas de campos modificados y huellas SHA-256 anterior y posterior. El PDF definitivo exige que el contenido coincida con la huella confirmada. Los expedientes antiguos permanecen como borradores hasta confirmación expresa.
+
+**Alcance de la garantía:** es una protección local del flujo de trabajo, no una firma digital, sello de tiempo confiable, registro inmutable ni firma electrónica regulada. Quien controle el almacenamiento del navegador o un JSON exportado puede modificar o sustituir el historial. Conserva cada versión JSON/PDF aprobada en un repositorio externo con acceso controlado, retención independiente y copias de seguridad. Las correcciones de informes ya entregados deben comunicarse como nueva revisión, no reemplazarse silenciosamente.
