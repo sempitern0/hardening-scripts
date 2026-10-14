@@ -755,7 +755,7 @@
         <label for="intake-block">Destino en el inventario</label>
         <select id="intake-block"><option value="assets" ${block==='assets'?'selected':''}>Hardware</option><option value="networks" ${block==='networks'?'selected':''}>Redes</option><option value="software" ${block==='software'?'selected':''}>Software</option></select>
         <label for="intake-file">Archivo de captura</label><input id="intake-file" type="file" accept=".json,.csv,application/json,text/csv">
-        <p class="subtle">Recopilación local opcional: <code>collect-local.sh --output captura.json</code> o <code>collect-local.ps1 -Output captura.json</code>. Ejecuta únicamente en equipos propios o autorizados.</p>
+        <p class="subtle">Descubrimiento desde un portátil conectado a la LAN autorizada: <code>python3 discovery/discover.py doctor</code> para preparar herramientas y <code>python3 discovery/discover.py scan --cidr 192.168.10.0/24 --authorized --output captura-lan.json</code> para crear el JSON. Importa el mismo archivo en Hardware y en Redes; no se instalan agentes en equipos remotos. Consulta <code>discovery/README_ES.md</code> para Windows, Linux y macOS.</p><p class="subtle">Recopilación local opcional: <code>collect-local.sh --output captura.json</code> o <code>collect-local.ps1 -Output captura.json</code>. Ejecuta únicamente en equipos propios o autorizados.</p>
         <p id="intake-status" role="status" aria-live="polite">${html(intakeError)}</p></section>
         ${intakePreview?renderIntakePreview():''}`;
   }

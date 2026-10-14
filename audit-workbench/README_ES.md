@@ -6,7 +6,7 @@
 
 **Herramienta de auditoría, inventario y documentación técnica offline-first** para inventariar activos, evaluar controles, documentar hallazgos y evidencias, planificar correcciones y preparar informes para clientes.
 
-Funciona en el navegador, sin servicios externos obligatorios. No escanea redes ni modifica equipos.
+La PWA funciona en el navegador y no ejecuta escaneos. El **motor opcional de descubrimiento externo** se ejecuta en el equipo del auditor, sin instalar agentes en los dispositivos del cliente ni modificar sus configuraciones.
 
 ## Comenzar
 
@@ -60,6 +60,10 @@ La opción **Descargar expediente JSON** solicita una descarga local y muestra u
 5. **Hallazgos y evidencias:** registra lo observado, vincula activos y controles, documenta consecuencias, acciones recomendadas y criterios de cierre. Conserva los originales de evidencias y sus huellas SHA-256.
 6. **Calidad y entrega:** revisa avisos, prioridades y plan de remediación antes de generar el PDF. Si faltan datos esenciales, el informe se identifica como borrador.
 7. **Seguimiento:** registra las correcciones verificadas y emite un informe de reevaluación independiente, con evolución histórica y decisiones pendientes.
+
+### Descubrimiento remoto desde el dispositivo del auditor
+
+El nuevo [motor Discovery](discovery/README_ES.md) permite conectar un portátil a una red privada autorizada, comprobar las herramientas disponibles con `python3 discovery/discover.py doctor` y generar una captura importable con `python3 discovery/discover.py scan --cidr 192.168.10.0/24 --authorized --output captura-lan.json`. Prefiere Nmap y, si no está instalado, utiliza ping nativo de manera limitada. No necesita instalación en los activos auditados. La herramienta no confirma sistemas operativos, vulnerabilidades ni VLAN de forma remota; se revisa todo antes de importar.
 
 ### Captura asistida de inventario
 

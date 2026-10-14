@@ -6,7 +6,7 @@
 
 **Offline-first technical auditing, inventory, and documentation tool** for recording assets, evaluating controls, documenting findings and evidence, planning remediation, and preparing client reports.
 
-It runs in the browser without requiring external services. It does not scan networks or modify devices.
+The PWA runs in the browser without requiring external services. Network scans are performed only by the **optional, separately executed [Discovery engine](discovery/README_ES.md)** on an auditor-controlled device connected to an authorized LAN; the PWA itself does not scan or modify devices.
 
 ## Getting started
 

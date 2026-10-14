@@ -29,6 +29,10 @@ jobs:
         run: |
           set -euo pipefail
           for file in audit-workbench/tests/*.cjs; do node "$file"; done
+      - name: Run isolated discovery engine regression tests
+        run: python3 -m unittest discover -s audit-workbench/tests -p test_discovery.py -v
+      - name: Check Bash discovery launchers
+        run: bash -n audit-workbench/discovery/run.sh audit-workbench/discovery/setup.sh
       - name: Check Bash launcher syntax
         run: bash -n audit-workbench/audit-workbench.sh
       - name: Verify installable resource references
