@@ -51,6 +51,10 @@ Delivery provides two modes: **Generate draft PDF**, always marked as unvalidate
 
 **Download audit record JSON** requests a local download and displays a status message; the browser decides where to save it according to its configuration. Verify that the file appears in Downloads. The top toolbar uses the same workflow and does not accidentally treat the `click` event as audit content. Draft reports show blockers from the final-report preflight, and the report avoids duplicating the final legal note.
 
+## Simpler PDF delivery
+
+**Reports → Generate PDF** now opens directly on the Executive and Technical report choices, each offering **Generate draft PDF** as the default action. Printing uses the browser's **Save as PDF** destination; no remote service is involved. The readiness panel explains what remains before final delivery, while the conclusion fields, document confirmation, historical controls and secondary exports are grouped in expandable sections. Final reports still require quality checks and confirmed document control. Drafts remain visibly marked as such.
+
 ## Recommended workflow
 
 1. **Settings:** register your consultancy and audit team; assign professionals to the audit record.

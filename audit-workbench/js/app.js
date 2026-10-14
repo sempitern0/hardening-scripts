@@ -975,46 +975,139 @@
     const dc=docControl.normalize(state.documentControl),confirmed=dc.status==='confirmed',amending=dc.status==='amending';
     return `<section class="card document-control"><h2>Control documental · ${confirmed?'Confirmado':amending?'Rectificación abierta':'Borrador'}</h2><p class="subtle">${confirmed?'Revisión '+dc.revision+' confirmada. Solo se permiten rectificaciones justificadas.':amending?'Modificaciones excepcionales pendientes de validación. El informe final queda suspendido.':'Completa las verificaciones y confirma el expediente antes de emitir la versión definitiva.'}</p>${dc.confirmed?`<p class="subtle">Última confirmación: ${html(dc.confirmed.at)} · Responsable: ${html(dc.confirmed.author)} · SHA-256: <code>${html(dc.confirmed.digest)}</code></p>`:''}${!confirmed&&!amending?`<div class="fields"><div class="field"><label for="document-author">Responsable de confirmación</label><input id="document-author" placeholder="Nombre y apellidos"></div></div><div class="action-row"><button type="button" class="button accent" id="document-confirm">Confirmar expediente</button></div>`:''}${confirmed?`<div class="fields"><div class="field"><label for="amend-author">Responsable de la rectificación</label><input id="amend-author" placeholder="Nombre y apellidos"></div><div class="field full"><label for="amend-reason">Motivo documentado de la rectificación</label><textarea id="amend-reason" placeholder="Qué debe corregirse y por qué" rows="3"></textarea></div></div><button class="button quiet" type="button" id="amend-begin">Abrir rectificación excepcional</button>`:''}${amending?`<button class="button accent" type="button" id="amend-finish">Validar cambios y cerrar rectificación</button>`:''}<p class="subtle">La huella SHA-256 permite detectar cambios accidentales, pero no constituye firma digital ni registro inalterable. Conserva externamente los PDFs y JSON entregados.</p>${dc.history.length?`<details><summary>Historial documental (${dc.history.length})</summary><ol>${dc.history.map(x=>`<li>Rev. ${x.revision} · ${html(x.at)} · ${html(x.author)} · ${x.type==='confirmation'?'Confirmación':'Rectificación'}${x.reason?' · '+html(x.reason):''}${x.changes?' · '+x.changes.length+' campos afectados':''}</li>`).join('')}</ol></details>`:''}</section>`;
   }
+
   function renderDelivery(){
-    const audit=reviewState('final');
-    return `<span class="eyebrow">ENTREGA / REPORTING</span><h1 class="page-title">Informes de auditoría</h1><p class="lead">Dos entregables distintos, generados desde el mismo expediente y revisión documental.</p>
-      <div class="notice ${audit.ready?'':'warn'}">${audit.ready?'Revisión básica superada.':'Pendientes '+audit.blockers.length+' datos imprescindibles: el documento se emitirá como BORRADOR si decides continuar.'} ${audit.warnings.length} avisos adicionales. <button class="button quiet small" data-go="quality">Revisar calidad →</button></div>
-      <section class="card"><div class="card-head"><div><h2>Conclusiones y cierre</h2><p class="subtle">Explica los riesgos en lenguaje comprensible y las decisiones necesarias.</p></div></div><div class="fields">${finalFields.map(f=>renderField(state.final,'final',f)).join('')}</div></section>
-      <section class="card"><h2>Plan de remediación generado</h2><p class="subtle">Se utilizarán los hallazgos ya documentados. Para completar una acción, edita su ficha.</p>${renderPlanSummary(audit.plan)}<button type="button" class="button quiet" data-go="findings">Revisar responsables, fechas y verificación</button></section>
-      ${documentPanel()}<section class="card report-delivery" id="delivery-options" aria-labelledby="delivery-options-title">
-        <h2 id="delivery-options-title" tabindex="-1">Seleccionar informe PDF</h2>
-        <p class="subtle">Selecciona el destinatario y el estado del documento. Los botones PDF abren el diálogo de impresión del navegador: elige «Guardar como PDF» para obtener el archivo. El expediente JSON conserva los datos editables.</p>
+    const audit=reviewState('final'),fieldProblems=invalidFields();
+    const dc=docControl.normalize(state.documentControl);
+    const unresolved=audit.blockers.length+fieldProblems.length;
+    const confirmed=dc.status==='confirmed',amending=dc.status==='amending';
+    const fullReady=unresolved===0&&confirmed;
+    const summaryReady=Boolean(String(state.final.executive||'').trim());
+    const signoffReady=Boolean(String(state.final.signoff||'').trim());
+    const statusLabel=unresolved?'Versión definitiva pendiente':amending?'Rectificación en curso':fullReady?'Informe definitivo preparado':'Listo para confirmar';
+    const statusMessage=unresolved
+      ?'Puedes generar un borrador ahora. Para la versión definitiva hay '+unresolved+' comprobaciones por resolver.'
+      :amending?'Termina la rectificación documental antes de emitir la versión definitiva.'
+      :confirmed?'La revisión documental está confirmada. Revisa los avisos antes de entregar.'
+      :'La revisión de calidad está completa. Confirma el expediente para habilitar el informe definitivo.';
+    return `<div class="report-workflow">
+      <span class="eyebrow">INFORMES / ENTREGA</span>
+      <h1 class="page-title">Generar informe PDF</h1>
+      <p class="lead">Elige para quién es el informe y genera un borrador en un clic. Si necesitas la versión definitiva, sigue la revisión guiada de abajo.</p>
+      <section class="card report-delivery" id="delivery-options" aria-labelledby="delivery-options-title">
+        <div class="report-stage-head">
+          <span class="report-stage-number" aria-hidden="true">01</span>
+          <div><h2 id="delivery-options-title" tabindex="-1">Elige el tipo de informe</h2>
+            <p>Los dos informes utilizan la información guardada en esta auditoría.</p></div>
+        </div>
         <div class="report-delivery-grid">
-          <div class="report-delivery-option" role="group" aria-labelledby="delivery-executive-label">
-            <strong id="delivery-executive-label">Informe ejecutivo · Dirección</strong>
-            <p class="subtle">Impacto, riesgos y decisiones. Sin inventarios ni capturas técnicas.</p>
-            <button type="button" class="button quiet" id="delivery-executive-draft">Imprimir borrador ejecutivo (PDF)</button>
-            <button type="button" class="button accent" id="delivery-executive-final">Imprimir informe ejecutivo definitivo (PDF)</button>
-          </div>
-          <div class="report-delivery-option" role="group" aria-labelledby="delivery-technical-label">
-            <strong id="delivery-technical-label">Informe técnico · Sistemas y seguridad</strong>
-            <p class="subtle">Métodos, controles, inventarios, evidencias y remediación detallada.</p>
-            <button type="button" class="button quiet" id="delivery-technical-draft">Imprimir borrador técnico (PDF)</button>
-            <button type="button" class="button accent" id="delivery-technical-final">Imprimir informe técnico definitivo (PDF)</button>
-          </div>
+          <article class="report-delivery-option report-delivery-primary" aria-labelledby="delivery-executive-label">
+            <div class="report-format-icon" aria-hidden="true">01</div>
+            <div class="report-format-copy"><span class="report-format-tag">Para dirección y responsables</span>
+              <h3 id="delivery-executive-label">Informe ejecutivo</h3>
+              <p>Conclusiones, riesgos relevantes y decisiones de mejora. Sin listados técnicos extensos.</p></div>
+            <div class="report-format-actions">
+              <button type="button" class="button accent" id="delivery-executive-draft">Generar borrador PDF</button>
+              <button type="button" class="button quiet" id="delivery-executive-final">Versión definitiva PDF</button>
+            </div>
+          </article>
+          <article class="report-delivery-option" aria-labelledby="delivery-technical-label">
+            <div class="report-format-icon" aria-hidden="true">02</div>
+            <div class="report-format-copy"><span class="report-format-tag">Para sistemas y seguridad</span>
+              <h3 id="delivery-technical-label">Informe técnico</h3>
+              <p>Metodología, inventario, controles, hallazgos, evidencias y plan de remediación.</p></div>
+            <div class="report-format-actions">
+              <button type="button" class="button accent" id="delivery-technical-draft">Generar borrador PDF</button>
+              <button type="button" class="button quiet" id="delivery-technical-final">Versión definitiva PDF</button>
+            </div>
+          </article>
         </div>
-        <div class="report-delivery-secondary">
-          <h3>Otros documentos y opciones de envío</h3>
-          <div class="action-row" role="group" aria-label="Otras exportaciones y opciones de envío">
-            <button type="button" class="button quiet" id="retest-pdf">Imprimir reevaluación (PDF)</button>
-            <button type="button" class="button quiet" id="delivery-json">Descargar expediente JSON ↓</button>
-            <button type="button" class="button quiet" data-go="backups">Copias / Excel / CSV</button>
-            <button type="button" class="button quiet" id="native-share-json">Compartir JSON (opcional)</button>
-            <button type="button" class="button quiet" id="open-email">Preparar correo (sin adjuntos)</button>
+        <p class="report-print-note">Al pulsar «Generar» se abre la impresión del navegador. Selecciona <strong>Guardar como PDF</strong>; no se envía ningún dato a un servidor.</p>
+        <p id="delivery-action-feedback" class="report-action-feedback" role="status" aria-live="polite"></p>
+      </section>
+      <section class="card report-readiness" aria-labelledby="report-readiness-title">
+        <div class="report-stage-head"><span class="report-stage-number" aria-hidden="true">02</span>
+          <div><h2 id="report-readiness-title">¿Está listo para entregar?</h2>
+            <p>El borrador está siempre disponible. La versión definitiva requiere confirmar la revisión.</p></div>
+        </div>
+        <div class="report-readiness-status">
+          <div class="report-readiness-indicator ${fullReady?'is-ready':unresolved?'needs-review':'needs-confirmation'}" aria-hidden="true"></div>
+          <div><strong>${statusLabel}</strong><p>${statusMessage}</p></div>
+        </div>
+        <div class="report-readiness-metrics" aria-label="Estado de la revisión">
+          <span><strong>${unresolved}</strong> imprescindibles</span>
+          <span><strong>${audit.warnings.length}</strong> avisos</span>
+          <span><strong>${state.findings.length}</strong> hallazgos</span>
+        </div>
+        ${audit.blockers.length?`<ul class="report-missing-list">${audit.blockers.slice(0,3).map(issue=>`<li>${html(issue.message)}</li>`).join('')}${audit.blockers.length>3?`<li>Y ${audit.blockers.length-3} comprobaciones más.</li>`:''}</ul>`:''}
+        ${fieldProblems.length?`<p class="report-inline-note">${fieldProblems.length} campos contienen valores que requieren corrección de formato.</p>`:''}
+        <div class="action-row report-review-actions">
+          <button type="button" class="button quiet" data-go="quality">${unresolved?'Ver y resolver pendientes':'Revisar avisos'}</button>
+          <button type="button" class="button quiet" data-delivery-open="summary">${summaryReady&&signoffReady?'Editar conclusiones':'Completar resumen y firma'}</button>
+          ${!unresolved&&!confirmed?'<button type="button" class="button accent" data-delivery-open="validation">Confirmar para informe definitivo</button>':''}
+          ${amending?'<button type="button" class="button quiet" data-delivery-open="validation">Ver rectificación abierta</button>':''}
+        </div>
+      </section>
+      <section class="card report-optional-section">
+        <div class="report-stage-head"><span class="report-stage-number" aria-hidden="true">03</span>
+          <div><h2>Ajustes y contenido del informe</h2><p>No necesitas rellenar todo para generar un borrador. Edita solo lo necesario.</p></div>
+        </div>
+        <details id="delivery-editor" class="report-expandable">
+          <summary><span><strong>Editar conclusiones y firma</strong><small>Resumen ejecutivo, próximos pasos, valoración y notas de cierre</small></span></summary>
+          <div class="report-expandable-body">
+            ${confirmed?'<p class="notice warn">Expediente confirmado: para modificar el contenido, abre primero una rectificación documental.</p>':''}
+            <div class="fields">${finalFields.map(f=>renderField(state.final,'final',f)).join('')}</div>
           </div>
-          <p id="delivery-export-status" class="export-inline-status" role="status" aria-live="polite">La copia JSON se guarda mediante una descarga del navegador, no dentro de la carpeta de la PWA.</p>
-        </div>
-        <div class="report-delivery-danger">
-          <h3>Gestión del expediente</h3>
-          <p class="subtle">Si ya has terminado esta auditoría, puedes iniciar otra de manera independiente.</p>
-          <button type="button" class="button danger" id="delivery-reset">Nuevo expediente</button>
-        </div>
-      </section>`;
+        </details>
+        <details id="delivery-validation" class="report-expandable" ${amending?'open':''}>
+          <summary><span><strong>Control y confirmación documental</strong><small>${confirmed?'Revisión '+dc.revision+' confirmada · historial y rectificaciones':amending?'Rectificación pendiente de validar':'Solo es necesario para emitir informes definitivos'}</small></span></summary>
+          <div class="report-expandable-body">${documentPanel()}</div>
+        </details>
+      </section>
+      <section class="card report-content-summary">
+        <h2>Qué incluirá el informe</h2>
+        <p class="subtle">Vista rápida de las actuaciones registradas. Los informes se generan desde los datos actuales del expediente.</p>
+        ${renderPlanSummary(audit.plan,3)}
+        <div class="action-row"><button type="button" class="button quiet" data-go="findings">Revisar hallazgos y acciones</button></div>
+      </section>
+      <section class="card report-extras">
+        <details class="report-expandable" id="delivery-extras">
+          <summary><span><strong>Otras exportaciones y herramientas</strong><small>Reevaluación, JSON, copias, envío y nuevo expediente</small></span></summary>
+          <div class="report-expandable-body">
+            <div class="report-delivery-secondary">
+              <h3>Exportaciones y envío</h3>
+              <div class="action-row" role="group" aria-label="Otras exportaciones y opciones de envío">
+                <button type="button" class="button quiet" id="retest-pdf">Imprimir reevaluación (PDF)</button>
+                <button type="button" class="button quiet" id="delivery-json">Descargar expediente JSON</button>
+                <button type="button" class="button quiet" data-go="backups">Copias / Excel / CSV</button>
+                <button type="button" class="button quiet" id="native-share-json">Compartir JSON (opcional)</button>
+                <button type="button" class="button quiet" id="open-email">Preparar correo (sin adjuntos)</button>
+              </div>
+              <p id="delivery-export-status" class="export-inline-status" role="status" aria-live="polite">El JSON se descarga desde el navegador; verifica que el archivo aparece en Descargas.</p>
+            </div>
+            <div class="report-delivery-danger"><h3>Gestión del expediente</h3>
+              <p class="subtle">Comienza otra auditoría sin mezclarla con este expediente.</p>
+              <button type="button" class="button danger" id="delivery-reset">Nuevo expediente</button>
+            </div>
+          </div>
+        </details>
+      </section>
+    </div>`;
+  }
+  function openDeliveryPanel(section){
+    const id=section==='validation'?'delivery-validation':'delivery-editor';
+    const details=byId(id);
+    if(!details)return;
+    details.open=true;
+    const focus=section==='validation'
+      ?details.querySelector('#document-author, #amend-author, #amend-finish')
+      :details.querySelector('[data-block="final"][data-field="executive"]');
+    const target=focus&&!focus.disabled?focus:details.querySelector('summary');
+    target?.focus({preventScroll:true});
+    target?.scrollIntoView({
+      block:'start',
+      behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'
+    });
   }
 
   function render(){
@@ -1218,9 +1311,13 @@
     const b=e.target.closest('button');if(!b)return;
     if(state.documentControl?.status==='confirmed'&&!['records','backups','connections','online','settings','glossary'].includes(page)){
       const safe=['document-pdf','delivery-executive-final','delivery-executive-draft','delivery-technical-final','delivery-technical-draft','delivery-json','amend-begin','retest-pdf','open-email','native-share-json'];
-      if(!b.dataset.go&&!b.dataset.qualitySection&&!b.dataset.glossaryTerm&&!b.dataset.glossaryBack&&!safe.includes(b.id)){
+      if(!b.dataset.go&&!b.dataset.qualitySection&&!b.dataset.glossaryTerm&&!b.dataset.glossaryBack&&!b.dataset.deliveryOpen&&!safe.includes(b.id)){
         alert('Expediente confirmado: abre una rectificación excepcional para modificarlo.');return;
       }
+    }
+    if(b.dataset.deliveryOpen){
+      openDeliveryPanel(b.dataset.deliveryOpen);
+      return;
     }
     if(b.dataset.intakeSelect){
       if(!intakePreview)return;
@@ -1303,6 +1400,7 @@
     if(b.dataset.qualitySection){
       const section=b.dataset.qualitySection, key=b.dataset.qualityKey;
       move(section);
+      if(section==='delivery'){openDeliveryPanel('summary');return;}
       if(key){const row=[...workspace.querySelectorAll('[data-entry-key]')].find(el=>el.dataset.entryKey===key);if(row){row.classList.add('quality-target');row.scrollIntoView({block:'center',behavior:'smooth'});row.focus({preventScroll:true})}}
       return;
     }
@@ -1411,7 +1509,7 @@
     if(b.dataset.remove){const k=b.dataset.remove,i=Number(b.dataset.index);if(confirm('¿Eliminar este registro y su contenido?')){state[k].splice(i,1);persist();render()}return}
     if(b.dataset.clearImage!==undefined){if(confirm('¿Eliminar la imagen incrustada?')){state.evidence[Number(b.dataset.clearImage)].image='';persist();render()}return}
     if(b.id==='document-confirm'){
-      try{await flush();const checked=quality.review(state,relations,{mode:'final'}),bad=invalidFields();if(checked.blockers.length||bad.length)throw Error('Hay '+(checked.blockers.length+bad.length)+' validaciones imprescindibles pendientes.');if(checked.warnings.length&&!confirm('Hay '+checked.warnings.length+' advertencias. ¿Confirmar tras revisarlas?'))return;if(!confirm('Se confirmará la versión actual. Para modificarla después será necesario abrir una rectificación justificada. ¿Continuar?'))return;await docControl.confirm(state,byId('document-author').value);persist(true);await flush();render();}catch(error){alert('No se ha confirmado: '+error.message);}return;
+      try{await flush();const checked=quality.review(state,relations,{mode:'final'}),bad=invalidFields();if(checked.blockers.length||bad.length)throw Error('Hay '+(checked.blockers.length+bad.length)+' validaciones imprescindibles pendientes.');if(checked.warnings.length&&!confirm('Hay '+checked.warnings.length+' advertencias. ¿Confirmar tras revisarlas?'))return;if(!confirm('Se confirmará la versión actual. Para modificarla después será necesario abrir una rectificación justificada. ¿Continuar?'))return;await docControl.confirm(state,byId('document-author').value);persist(true);await flush();render();goToPdfOptions();}catch(error){alert('No se ha confirmado: '+error.message);}return;
     }
     if(b.id==='amend-begin'){
       try{await flush();await docControl.beginAmendment(state,byId('amend-author').value,byId('amend-reason').value);persist();await flush();render();}catch(error){alert('No se pudo abrir la rectificación: '+error.message);}return;
@@ -1725,10 +1823,14 @@
     reportProfile=profile==='technical'?'technical':'executive';
     reportDeliveryMode=mode==='final'?'final':'draft';
     const review=reviewState(reportDeliveryMode),invalid=invalidFields();
-    if(reportDeliveryMode==='final'&&state.documentControl?.status!=='confirmed'){alert('Confirma primero el expediente desde Informe final.');move('delivery');return;}
     if(reportDeliveryMode==='final'&&(review.blockers.length||invalid.length)){
       alert('No se puede emitir un informe definitivo. Existen '+(review.blockers.length+invalid.length)+' problemas que requieren revisión. Consulta «Revisión de calidad» o genera un borrador.');
       move('quality');return;
+    }
+    if(reportDeliveryMode==='final'&&state.documentControl?.status!=='confirmed'){
+      byId('delivery-action-feedback').textContent='Para generar la versión definitiva, confirma primero el expediente en el apartado de control documental.';
+      openDeliveryPanel('validation');
+      return;
     }
     if(reportDeliveryMode==='final'&&review.warnings.length&&!confirm('El informe definitivo contiene '+review.warnings.length+' avisos documentales. Revisa su justificación antes de entregar. ¿Continuar?'))return;
     if(reportDeliveryMode==='final'){

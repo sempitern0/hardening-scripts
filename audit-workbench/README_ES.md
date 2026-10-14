@@ -68,6 +68,12 @@ La opción **Descargar expediente JSON** solicita una descarga local y muestra u
 
 El nuevo [motor Discovery](discovery/README_ES.md) permite conectar un portátil a una red privada autorizada, comprobar las herramientas disponibles con `python3 discovery/discover.py doctor` y generar una captura importable con `python3 discovery/discover.py scan --cidr 192.168.10.0/24 --authorized --output captura-lan.json`. Prefiere Nmap y, si no está instalado, utiliza ping nativo de manera limitada. No necesita instalación en los activos auditados. La herramienta no confirma sistemas operativos, vulnerabilidades ni VLAN de forma remota; se revisa todo antes de importar.
 
+### Informes PDF sin pasos innecesarios
+
+En **Informes → Generar informe PDF** aparecen primero dos opciones, **Ejecutivo** y **Técnico**, con un botón directo **Generar borrador PDF** para cada una. Los borradores funcionan incluso cuando faltan comprobaciones para la entrega final y se marcan como **BORRADOR**. El navegador abre su diálogo de impresión; selecciona **Guardar como PDF**. Ninguna de esas operaciones envía datos a servicios externos.
+
+Debajo se muestra un resumen de validaciones pendientes y accesos directos a la revisión de calidad. Solo para una **versión definitiva** es necesario completar los datos obligatorios, confirmar el expediente y aceptar o revisar los avisos. Las conclusiones, la firma, el control documental y las exportaciones secundarias permanecen en paneles desplegables, sin ocultar la generación de borradores.
+
 ### Captura asistida de inventario
 
 El indicador inferior del menú informa del estado de red declarado por el navegador (rojo: sin conexión; ámbar: red detectada, no verificada). Su botón de comprobación solo consulta el manifiesto de la propia PWA (verde cuando responde), sin transmitir datos del expediente; **no verifica acceso general a Internet**, y una respuesta servida por una caché o proxy tampoco acredita conectividad externa.

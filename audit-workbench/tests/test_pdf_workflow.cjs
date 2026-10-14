@@ -1,0 +1,26 @@
+'use strict';
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const root=path.join(__dirname,'..');
+const app=fs.readFileSync(path.join(root,'js/app.js'),'utf8');
+const css=fs.readFileSync(path.join(root,'css/workspace-ux.css'),'utf8');
+const begin=app.indexOf('  function renderDelivery(){');
+const end=app.indexOf('\n  function openDeliveryPanel(',begin);
+assert(begin>=0&&end>begin,'PDF workflow must render');
+const view=app.slice(begin,end);
+assert(view.indexOf('id="delivery-options"')<view.indexOf('id="delivery-editor"'),'PDF choices should precede editing');
+assert(view.indexOf('id="delivery-options"')<view.indexOf('documentPanel()'),'PDF should not require finding the controls first');
+assert(view.includes('id="delivery-validation"')&&view.includes('id="delivery-editor"'));
+assert(view.includes('id="delivery-options-title" tabindex="-1"'),'Accessible PDF target must stay');
+assert(view.includes('class="report-delivery-grid"'),'Distinct profile cards');
+assert(view.includes('class="report-delivery-danger"'),'Dangerous actions must be separated');
+for(const id of ['delivery-executive-draft','delivery-executive-final','delivery-technical-draft','delivery-technical-final','retest-pdf','delivery-json'])
+  assert(view.includes('id="'+id+'"'),'Missing report action '+id);
+assert(app.includes("if(b.dataset.deliveryOpen)"),'Expandable settings need keyboard-operable controls');
+assert(app.includes("if(section==='delivery'){openDeliveryPanel('summary');return;}"),'Quality links to delivery must reveal the required fields');
+assert(app.includes("if(reportDeliveryMode==='final'&&state.documentControl?.status!=='confirmed')"),'Final PDF must still require document confirmation');
+assert(app.includes("docControl.verify(state)"),'Final PDF must retain cryptographic integrity check');
+assert(app.includes("buildReport();window.print();"),'Browser print action remains available');
+assert(css.includes('#workspace .report-stage-head')&&css.includes('#workspace .report-expandable > summary'));
+console.log('PASS PDF workflow: first actions, collapsible editing, preflight and confirmation');

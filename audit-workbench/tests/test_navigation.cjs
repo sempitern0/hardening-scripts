@@ -12,5 +12,5 @@ for(const page of ['records','backups','settings','connections','glossary'])asse
 assert((html.match(/class="nav-icon"/g)||[]).length===5,'Expected five SVG icons');
 assert(!/<span class="nav-mark">/.test(html),'Global menu must not use font glyphs');
 assert(css.includes('#global-navigation button .nav-icon'),'SVG sizing must be defined');
-assert(sw.includes('audit-workbench-shell-v44-single-json'),'PWA cache must update');
+assert(sw.includes('audit-workbench-shell-v45-single-json'),'PWA cache must update');
 console.log('PASS glossary navigation, five sharp SVG icons and PWA cache');
