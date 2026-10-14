@@ -1548,7 +1548,15 @@
       if(input?.auditWorkbenchBackup===1){
         if(!Array.isArray(input.records)||input.records.length>250)throw Error('El backup es inválido o supera 250 auditorías.');
         const all=input.records.map(item=>validate(item.audit));
-        if(!confirm('Se restaurarán '+all.length+' auditorías como copias nuevas. No se sustituirán los expedientes existentes. ¿Continuar?'))return;
+        const existing=new Set(records.map(r=>String(r.audit?.meta?.reportId||'').trim().toUpperCase()).filter(Boolean));
+        const imported=new Set();
+        for(const item of all){
+          const ref=String(item.meta.reportId||'').trim().toUpperCase();
+          if(!ref||existing.has(ref)||imported.has(ref))
+            throw Error('La copia contiene referencias vacías o repetidas: '+(ref||'SIN REFERENCIA')+'. Revisa las auditorías antes de importarlas.');
+          imported.add(ref);
+        }
+        if(!confirm('Se restaurarán '+all.length+' auditorías conservando sus identificadores originales. No se sustituirán los expedientes existentes. ¿Continuar?'))return;
         await flush();
         for(const audit of all){const record=newRecord(audit);await enqueue(()=>repository.put(record));records.push(record)}
         if(all.length)setActive(records[records.length-1]);
