@@ -140,3 +140,11 @@ audit-workbench/
 ```
 
 Audit Workbench is part of **sysadmin**, a collection of system administration tools. It operates independently of the Active Directory assistants at the repository root: its purpose is to record and analyze audits, not to perform administration or hardening actions on remote systems.
+
+## Document confirmation and exceptional amendments
+
+Audit Workbench distinguishes **draft**, **confirmed**, and **amendment in progress**. Drafts can be edited and reviewed without claiming final approval. The final-report preflight additionally checks the responsible auditor, authorization, executive summary, duplicate identifiers, referenced evidence, sign-off, and other existing consistency checks.
+
+Under **Final report**, identify the responsible person and confirm the audited record after reviewing the warnings. Confirmation stores a local SHA-256 digest and a revision entry and disables ordinary editing. To correct a confirmed audit, select **Open exceptional amendment**, identify the responsible person and explain the reason. After editing, run the definitive checks and choose **Validate changes and close amendment**; the local journal records the revision, reason, changed field paths, and before/after SHA-256 digests. A PDF for final delivery requires the confirmed content to match its digest. Older records remain drafts until explicitly confirmed.
+
+**Scope of assurance:** this is a local workflow safeguard, not a digital signature, trusted timestamp, immutable log, or regulated e-signature. A person controlling browser storage or exported JSON can modify or replace the journal. Store each approved JSON/PDF version in an external, access-controlled repository with independent retention and backups. Changes to already delivered reports should be communicated as a new revision rather than silently replacing earlier documents.
