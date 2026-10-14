@@ -6,6 +6,7 @@
   const relations = globalThis.AuditRelations;
   const templates = globalThis.AuditControlTemplates;
   const quality = globalThis.AuditQuality;
+  const docControl = globalThis.AuditDocumentControl;
   const retest = globalThis.AuditRetest;
   const comparison = globalThis.AuditComparison;
   if (!storage) throw Error('No se ha cargado el módulo de almacenamiento offline.');
@@ -133,7 +134,7 @@
       ['sha256','SHA-256 del original (opcional)'],['notes','Detalle, custodia y observaciones','textarea']]}
   };
   const severity = ['Crítica','Alta','Media','Baja','Informativa'];
-  const fresh = () => ({schemaVersion:VERSION,meta:{classification:'Confidencial',type:'Auditoría de infraestructura',revision:'1.0',logo:'',reportAuto:'yes',auditTeam:[]},final:{disclaimer:'La evaluación refleja los sistemas y las evidencias examinados durante el período indicado. Las comprobaciones no ejecutadas y las exclusiones se detallan en el alcance.'},legal:legalDefaults(),assets:[],networks:[],software:[],cves:[],controls:[],findings:[],evidence:[],followupBaseline:null});
+  const fresh = () => ({schemaVersion:VERSION,documentControl:null,meta:{classification:'Confidencial',type:'Auditoría de infraestructura',revision:'1.0',logo:'',reportAuto:'yes',auditTeam:[]},final:{disclaimer:'La evaluación refleja los sistemas y las evidencias examinados durante el período indicado. Las comprobaciones no ejecutadas y las exclusiones se detallan en el alcance.'},legal:legalDefaults(),assets:[],networks:[],software:[],cves:[],controls:[],findings:[],evidence:[],followupBaseline:null});
   const str = v => typeof v === 'string' ? v.slice(0,20000) : '';
   const html = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const uid = () => globalThis.crypto && crypto.randomUUID ? crypto.randomUUID() : 'id-'+Date.now()+'-'+Math.random().toString(36).slice(2);
@@ -148,6 +149,7 @@
       if(!raw[block]||Array.isArray(raw[block])||typeof raw[block]!=='object'){if(block==='legal')continue;throw Error('Bloque incorrecto: '+block)}
       for(const [name] of fields)out[block][name]=typeof raw[block][name]==='string'?str(raw[block][name]):out[block][name];
     }
+    out.documentControl=docControl.normalize(raw.documentControl);
     out.meta.logo=safeLogo(raw.meta.logo);
     out.meta.reportAuto=raw.meta.reportAuto==='no'?'no':'yes';
     out.meta.auditTeam=normalizeAuditTeam(raw.meta.auditTeam);
@@ -472,7 +474,7 @@
     });
   }
   function structuredCloneSafe(value){return JSON.parse(JSON.stringify(value))}
-  function persist(){dirty=true;updateStatus('Cambios pendientes…');clearTimeout(saveTimer);saveTimer=setTimeout(()=>void saveCurrent(),250)}
+  function persist(){if(state.documentControl?.status==='confirmed'){updateStatus('⚠ Expediente confirmado: no se admiten cambios',true);return;}dirty=true;updateStatus('Cambios pendientes…');clearTimeout(saveTimer);saveTimer=setTimeout(()=>void saveCurrent(),250)}
   async function flush(){if(saveTimer){clearTimeout(saveTimer);saveTimer=null}await saveCurrent();await writeQueue;if(storageError)throw Error('El expediente no se pudo guardar. Exporta el JSON antes de cambiar de auditoría.')}
   async function initialLoad(){
     try{
@@ -979,13 +981,17 @@
           ${history.length?`<h4>Historial de verificaciones</h4><ol class="retest-history">${[...history].reverse().map(entry=>{const ev=retest.evidenceFor(entry,state);return `<li><strong>${html(entry.date)} · ${html(retest.RESULTS[entry.result])}</strong><div class="retest-meta">${html(entry.by)} · Estado previo: ${html(entry.previousStatus||'No registrado')}${entry.evidenceId||ev?' · Evidencia: '+html(entry.evidenceId||ev?.id||ev?.title):''}${entry.evidenceSha256?' · SHA-256 original: '+html(entry.evidenceSha256):''}</div><p>${html(entry.notes)}</p></li>`}).join('')}</ol>`:'<p class="subtle">Todavía no se ha documentado ninguna comprobación posterior.</p>'}
         </article>`;}).join(''):'<section class="card"><p class="subtle">No existen hallazgos. Registra primero las desviaciones detectadas durante la auditoría.</p></section>'}`;
   }
+  function documentPanel(){
+    const dc=docControl.normalize(state.documentControl),confirmed=dc.status==='confirmed',amending=dc.status==='amending';
+    return `<section class="card document-control"><h2>Control documental · ${confirmed?'Confirmado':amending?'Rectificación abierta':'Borrador'}</h2><p class="subtle">${confirmed?'Revisión '+dc.revision+' confirmada. Solo se permiten rectificaciones justificadas.':amending?'Modificaciones excepcionales pendientes de validación. El informe final queda suspendido.':'Completa las verificaciones y confirma el expediente antes de emitir la versión definitiva.'}</p>${dc.confirmed?`<p class="subtle">Última confirmación: ${html(dc.confirmed.at)} · Responsable: ${html(dc.confirmed.author)} · SHA-256: <code>${html(dc.confirmed.digest)}</code></p>`:''}${!confirmed&&!amending?`<div class="fields"><div class="field"><label for="document-author">Responsable de confirmación</label><input id="document-author" placeholder="Nombre y apellidos"></div></div><div class="action-row"><button type="button" class="button accent" id="document-confirm">Confirmar expediente</button></div>`:''}${confirmed?`<div class="fields"><div class="field"><label for="amend-author">Responsable de la rectificación</label><input id="amend-author" placeholder="Nombre y apellidos"></div><div class="field full"><label for="amend-reason">Motivo documentado de la rectificación</label><textarea id="amend-reason" placeholder="Qué debe corregirse y por qué" rows="3"></textarea></div></div><button class="button quiet" type="button" id="amend-begin">Abrir rectificación excepcional</button>`:''}${amending?`<button class="button accent" type="button" id="amend-finish">Validar cambios y cerrar rectificación</button>`:''}<p class="subtle">La huella SHA-256 permite detectar cambios accidentales, pero no constituye firma digital ni registro inalterable. Conserva externamente los PDFs y JSON entregados.</p>${dc.history.length?`<details><summary>Historial documental (${dc.history.length})</summary><ol>${dc.history.map(x=>`<li>Rev. ${x.revision} · ${html(x.at)} · ${html(x.author)} · ${x.type==='confirmation'?'Confirmación':'Rectificación'}${x.reason?' · '+html(x.reason):''}${x.changes?' · '+x.changes.length+' campos afectados':''}</li>`).join('')}</ol></details>`:''}</section>`;
+  }
   function renderDelivery(){
     const audit=reviewState('final');
     return `<span class="eyebrow">ENTREGA / REPORTING</span><h1 class="page-title">Informe final</h1><p class="lead">Resumen para dirección, plan de remediación y anexo técnico verificable.</p>
       <div class="notice ${audit.ready?'':'warn'}">${audit.ready?'Revisión básica superada.':'Pendientes '+audit.blockers.length+' datos imprescindibles: el documento se emitirá como BORRADOR si decides continuar.'} ${audit.warnings.length} avisos adicionales. <button class="button quiet small" data-go="quality">Revisar calidad →</button></div>
       <section class="card"><div class="card-head"><div><h2>Conclusiones y cierre</h2><p class="subtle">Explica los riesgos en lenguaje comprensible y las decisiones necesarias.</p></div></div><div class="fields">${finalFields.map(f=>renderField(state.final,'final',f)).join('')}</div></section>
       <section class="card"><h2>Plan de remediación generado</h2><p class="subtle">Se utilizarán los hallazgos ya documentados. Para completar una acción, edita su ficha.</p>${renderPlanSummary(audit.plan)}<button type="button" class="button quiet" data-go="findings">Revisar responsables, fechas y verificación</button></section>
-      <section class="card"><h2>Preparar entrega</h2><p class="subtle">El PDF contiene el informe y el plan de remediación; el JSON permite continuar la auditoría.</p><div class="action-row"><button class="button accent" id="delivery-pdf">Generar borrador PDF ↗</button><button class="button accent" id="delivery-pdf-final">Informe definitivo PDF ↗</button><button class="button quiet" id="retest-pdf">Informe de reevaluación PDF ↗</button><button class="button quiet" id="delivery-json">Descargar expediente JSON ↓</button><button class="button quiet" data-go="backups">Copias / Excel / CSV</button><button class="button danger" id="delivery-reset">Nuevo expediente</button><button class="button quiet" id="native-share-json">Compartir JSON (opcional)</button><button class="button quiet" id="open-email">Preparar correo (sin adjuntos)</button></div><p id="delivery-export-status" class="export-inline-status" role="status" aria-live="polite">La copia JSON se guarda mediante una descarga del navegador, no dentro de la carpeta de la PWA.</p></section>`;
+      ${documentPanel()}<section class="card"><h2>Preparar entrega</h2><p class="subtle">El PDF contiene el informe y el plan de remediación; el JSON permite continuar la auditoría.</p><div class="action-row"><button class="button accent" id="delivery-pdf">Generar borrador PDF ↗</button><button class="button accent" id="delivery-pdf-final">Informe definitivo PDF ↗</button><button class="button quiet" id="retest-pdf">Informe de reevaluación PDF ↗</button><button class="button quiet" id="delivery-json">Descargar expediente JSON ↓</button><button class="button quiet" data-go="backups">Copias / Excel / CSV</button><button class="button danger" id="delivery-reset">Nuevo expediente</button><button class="button quiet" id="native-share-json">Compartir JSON (opcional)</button><button class="button quiet" id="open-email">Preparar correo (sin adjuntos)</button></div><p id="delivery-export-status" class="export-inline-status" role="status" aria-live="polite">La copia JSON se guarda mediante una descarga del navegador, no dentro de la carpeta de la PWA.</p></section>`;
   }
 
   function render(){
@@ -1014,13 +1020,24 @@
     byId('wizard-step-select')?.addEventListener('change',event=>move(event.target.value));
     for(const target of workspace.querySelectorAll('.field [data-field]:not([data-preset])'))updateValidation(target);
   }
+  const originalRender=render;
+  render=function(){originalRender();applyDocumentLock();};
   function move(section){if(nav.some(n=>n[0]===section))lastAuditPage=section;if(section==='glossary'&&page!=='glossary')glossaryReturn={page:page==='records'?lastAuditPage:page,scrollY:window.scrollY};if(!['records','backups','online','settings','connections','glossary'].includes(section)&&!currentId){alert('Primero crea o abre una auditoría desde la biblioteca.');return}if(['records','backups','online','settings','connections','glossary'].includes(section)||section==='intake'||nav.some(n=>n[0]===section)){page=section;render();scrollTo(0,0)}}
+  function applyDocumentLock(){
+    if(state.documentControl?.status!=='confirmed')return;
+    for(const element of workspace.querySelectorAll('input,select,textarea,button')){
+      if(element.closest('.document-control')||element.dataset.go||element.dataset.glossaryTerm||element.dataset.glossaryBack||element.dataset.qualitySection||element.id==='delivery-pdf'||element.id==='delivery-json')continue;
+      if(element.id==='delivery-pdf-final')continue;
+      if(element.matches('input,select,textarea')||element.dataset.add||element.dataset.remove||element.dataset.applyTemplate||element.dataset.clearImage||element.dataset.saveRetest)element.disabled=true;
+    }
+  }
   function fieldTarget(target){const {block,field,index}=target.dataset;if(!block||!field)return null;if(block==='meta'||block==='final'||block==='legal')return state[block];if(groups[block]&&index!==undefined)return state[block][Number(index)];return null}
   const workspace=byId('workspace');
   byId('global-navigation').addEventListener('click',e=>{const b=e.target.closest('[data-go]');if(b)move(b.dataset.go)});
   byId('navigation').addEventListener('click',e=>{const b=e.target.closest('[data-go]');if(b)move(b.dataset.go)});
   workspace.addEventListener('focusin',event=>{if(event.target.dataset.block==='meta'&&event.target.dataset.field==='client')event.target.dataset.originalClient=event.target.value});
   workspace.addEventListener('input',e=>{
+    if(state.documentControl?.status==='confirmed'&&e.target.dataset.block&&e.target.dataset.block!=='settings'){render();return;}
     const t=e.target;
     if(t.id==='glossary-search'){filterGlossary(t.value);return;}
     if(t.dataset.memberField){
@@ -1042,6 +1059,7 @@
     const obj=fieldTarget(t);if(obj){obj[t.dataset.field]=t.value;if(t.dataset.block==='meta'&&t.dataset.field==='reportId')state.meta.reportAuto='no';if(t.dataset.block==='meta'&&['project','client','reportId'].includes(t.dataset.field)){byId('audit-context-title').textContent=state.meta.project||state.meta.client||'Auditoría sin título';byId('audit-context-ref').textContent=(state.meta.reportId||'SIN REFERENCIA')+' · '+(state.meta.client||'Cliente pendiente');byId('active-audit-label').textContent=(state.meta.reportId||'Sin referencia')+' · '+(state.meta.project||state.meta.client||'Sin título')}if(['title','name','id'].includes(t.dataset.field)){const heading=t.closest('.entry')?.querySelector('.entry-head strong');if(heading)heading.textContent=obj.title||obj.name||obj.id||'Registro'}persist();updateValidation(t)}
   });
   workspace.addEventListener('change',async e=>{
+    if(state.documentControl?.status==='confirmed'&&e.target.dataset.block&&e.target.dataset.block!=='settings'){render();return;}
     const t=e.target;
     if(t.id==='intake-file'&&t.files?.length){
       try{
@@ -1347,6 +1365,16 @@
     if(b.dataset.add){if(state[b.dataset.add].length>=LIMIT_ROWS)return alert('Límite de registros alcanzado.');const type=b.dataset.add;let row={_key:uid()};if(['assets','controls','findings','evidence'].includes(type))row.id=relations.nextCode(state[type],type);if(type==='findings')row={...row,severity:'Media',status:'Abierto'};if(type==='cves')row={...row,id:'',severity:'Sin evaluar',status:'Sin verificar'};if(type==='controls')row.status='Pendiente';if(type==='evidence')row.links=relations.normalizeLinks(null);state[type].push(row);persist();render();return}
     if(b.dataset.remove){const k=b.dataset.remove,i=Number(b.dataset.index);if(confirm('¿Eliminar este registro y su contenido?')){state[k].splice(i,1);persist();render()}return}
     if(b.dataset.clearImage!==undefined){if(confirm('¿Eliminar la imagen incrustada?')){state.evidence[Number(b.dataset.clearImage)].image='';persist();render()}return}
+    if(b.id==='document-confirm'){
+      try{await flush();const checked=quality.review(state,relations,{mode:'final'}),bad=invalidFields();if(checked.blockers.length||bad.length)throw Error('Hay '+(checked.blockers.length+bad.length)+' validaciones imprescindibles pendientes.');if(checked.warnings.length&&!confirm('Hay '+checked.warnings.length+' advertencias. ¿Confirmar tras revisarlas?'))return;if(!confirm('Se confirmará la versión actual. Para modificarla después será necesario abrir una rectificación justificada. ¿Continuar?'))return;await docControl.confirm(state,byId('document-author').value);persist();await flush();render();}catch(error){alert('No se ha confirmado: '+error.message);}return;
+    }
+    if(b.id==='amend-begin'){
+      try{await flush();await docControl.beginAmendment(state,byId('amend-author').value,byId('amend-reason').value);persist();await flush();render();}catch(error){alert('No se pudo abrir la rectificación: '+error.message);}return;
+    }
+    if(b.id==='amend-finish'){
+      try{const checked=quality.review(state,relations,{mode:'final'});if(checked.blockers.length||invalidFields().length)throw Error('Resuelve los impedimentos antes de confirmar.');await docControl.finalizeAmendment(state);persist();await flush();render();}catch(error){alert('No se pudo cerrar la rectificación: '+error.message);}return;
+    }
+    if(state.documentControl?.status==='confirmed'&&(b.dataset.add!==undefined||b.dataset.remove!==undefined||b.dataset.applyTemplate!==undefined||b.dataset.clearImage!==undefined||b.dataset.saveRetest!==undefined)){alert('Expediente confirmado. Abre una rectificación justificada.');return;}
     if(b.id==='delivery-pdf'){printReport('draft');return}
     if(b.id==='delivery-pdf-final'){printReport('final');return}
     if(b.id==='delivery-json'){exportJson();return}
@@ -1578,6 +1606,7 @@
     printMode='audit';
     reportDeliveryMode=mode==='final'?'final':'draft';
     const review=reviewState(reportDeliveryMode),invalid=invalidFields();
+    if(reportDeliveryMode==='final'&&state.documentControl?.status!=='confirmed'){alert('Confirma primero el expediente desde Informe final.');move('delivery');return;}
     if(reportDeliveryMode==='final'&&(review.blockers.length||invalid.length)){
       alert('No se puede emitir un informe definitivo. Existen '+(review.blockers.length+invalid.length)+' problemas que requieren revisión. Consulta «Revisión de calidad» o genera un borrador.');
       move('quality');return;
