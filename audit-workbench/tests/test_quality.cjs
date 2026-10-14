@@ -64,4 +64,9 @@ assert(appSource.includes('id="delivery-export-status"'),'Delivery page needs in
 assert(appSource.includes("const reviewed=reviewState('final')"),'Draft cover must describe blockers for final release');
 assert(!appSource.includes('<h3>Nota adicional del auditor</h3>'),'Duplicate legal appendix must not add an extra PDF page');
 assert(themeCss.includes('.export-feedback-toast'),'Missing download toast styles');
+const duplicated={...audit,assets:[{id:'ACT-001'},{id:'act-001'}]};
+assert(review(duplicated,relations,{mode:'final'}).blockers.some(issue=>issue.code==='ID_DUPLICADO'));
+assert(review(duplicated,relations).warnings.some(issue=>issue.code==='ID_DUPLICADO'));
+const missingAuthorization={...audit,meta:{...audit.meta,rules:''}};
+assert(review(missingAuthorization,relations,{mode:'final'}).blockers.some(issue=>issue.code==='AUTORIZACION'));
 console.log('PASS audit quality checks, no false conformity, evidence links, plan priority and closure');
