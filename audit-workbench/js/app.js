@@ -6,6 +6,7 @@
   const relations = globalThis.AuditRelations;
   const templates = globalThis.AuditControlTemplates;
   const quality = globalThis.AuditQuality;
+  const assist = globalThis.AuditFieldAssist;
   const docControl = globalThis.AuditDocumentControl;
   const retest = globalThis.AuditRetest;
   const comparison = globalThis.AuditComparison;
@@ -104,7 +105,7 @@
       ['dns','DNS / DHCP'],['purpose','Función / servicios','picker',presets.function],['firewall','Firewall / controles'],
       ['exposure','Accesibilidad y segmentación','picker',presets.exposure],['notes','Observaciones','textarea']]},
     software:{title:'Inventario de software y servicios',intro:'Aplicaciones instaladas, licencias, versiones, criticidad y mantenimiento.',fields:[
-      ['name','Software / servicio','picker',['Microsoft 365','Microsoft Office','Microsoft SQL Server','PostgreSQL','MySQL','MariaDB','Oracle Database','Apache HTTP Server','Nginx','IIS','Docker Engine','Kubernetes','Proxmox VE','VMware vCenter','Zabbix','Wazuh','Grafana','Prometheus','Elastic / OpenSearch','Suricata','pfSense','Fortinet FortiOS','Veeam Backup & Replication','Acronis Cyber Protect','Active Directory DS','Samba AD','Microsoft Entra ID','Microsoft Defender for Endpoint','CrowdStrike Falcon','Sophos Endpoint','Google Workspace','Nextcloud','GitLab','Jenkins','GitHub Actions','OpenVPN','WireGuard']],['version','Versión'],['vendor','Fabricante','picker',hardwareVendors],['asset','Activo asociado'],
+      ['name','Software / servicio','picker',['Microsoft 365','Microsoft Office','Microsoft SQL Server','PostgreSQL','MySQL','MariaDB','Oracle Database','Apache HTTP Server','Nginx','IIS','Docker Engine','Kubernetes','Proxmox VE','VMware vCenter','Zabbix','Wazuh','Grafana','Prometheus','Elastic / OpenSearch','Suricata','pfSense','Fortinet FortiOS','Veeam Backup & Replication','Acronis Cyber Protect','Active Directory DS','Samba AD','Microsoft Entra ID','Microsoft Defender for Endpoint','CrowdStrike Falcon','Sophos Endpoint','Google Workspace','Nextcloud','GitLab','Jenkins','GitHub Actions','OpenVPN','WireGuard']],['version','Versión'],['vendor','Fabricante','picker',hardwareVendors],['asset','Activo asociado','picker',[]],
       ['license','Licencia','picker',presets.license],['support','Soporte / EOL','picker',presets.support],['exposure','Exposición / función','picker',presets.exposure],['notes','Observaciones','textarea']]},
     cves:{title:'Catálogo de vulnerabilidades CVE',intro:'Asocia CVE verificados con activos y hallazgos. El expediente funciona offline; las consultas externas son opcionales y explícitas.',fields:[
       ['id','Identificador CVE (CVE-AAAA-NNNN)'],['title','Descripción breve'],['asset','Activo afectado','picker',[]],
@@ -543,16 +544,20 @@
     if(type==='textarea')control=`<textarea id="${id}" ${attrs} maxlength="20000">${html(value)}</textarea>`;
     else if(type==='select')control=`<select id="${id}" ${attrs}>${choices.map(x=>`<option value="${html(x)}"${x===value?' selected':''}>${html(x)}</option>`).join('')}</select>`;
     else if(type==='picker' && ['os','cpu','ram','storage','site','name'].includes(name) && (name!=='name'||block==='software')){
-      const options=name==='os'?(osCatalog?.ALL||choices):choices;
+      const options=name==='os'?(osCatalog?.ALL||choices):assist.suggestions(state,block,name,choices);
       const listId='suggest-'+block+'-'+(index===undefined?'main':index)+'-'+name;
       control=`<input id="${id}" ${attrs} list="${listId}" autocomplete="off" value="${html(value)}" maxlength="20000" placeholder="Escribe para buscar o introduce otro valor"><datalist id="${listId}">${options.map(x=>`<option value="${html(x)}"></option>`).join('')}</datalist>`;
     }
     else if(type==='picker'){
       // A native select is easier on touchscreens; unlisted values remain editable.
-      const options=name==='asset'?[...new Set(['Todo el alcance',...state.assets.map(a=>str(a.name)).filter(Boolean)])]:block==='assets'&&name==='model'?(vendorModels[obj.vendor]||[]):choices;
+      const options=name==='asset'?[...new Set(['Todo el alcance',...assist.assetChoices(state).map(a=>a.value)])]:block==='assets'&&name==='model'?(vendorModels[obj.vendor]||[]):assist.suggestions(state,block,name,choices);
       const custom=Boolean(value)&&!options.includes(value);
       control=`<select id="${id}" ${attrs} data-preset="true" aria-label="${html(label)}"><option value="">${block==='assets'&&name==='model'&&!obj.vendor?'Selecciona primero un fabricante…':'Seleccionar…'}</option>${options.map(x=>`<option value="${html(x)}"${x===value?' selected':''}>${html(x)}</option>`).join('')}<option value="__custom__"${custom?' selected':''}>Otro / escribir…</option></select><input ${attrs} data-custom="true" aria-label="${html(label)} personalizado" placeholder="Especifica el valor" value="${custom?html(value):''}" maxlength="20000" ${custom?'':'hidden'}>`;
     }else control=`<input id="${id}" type="${type==='date'?'date':type==='time'?'time':'text'}" ${attrs} value="${html(value)}" maxlength="20000"${key==='decimal'?' inputmode="decimal"':''}>`;
+    if(['controls','findings'].includes(block)&&name==='evidenceIds'){
+      const available=assist.candidates(state,'evidence',value);
+      if(available.length)control+=`<div class="field-assist"><label for="assist-${id}">Vincular evidencia existente</label><select id="assist-${id}" data-assist-ref="evidence" data-assist-block="${html(block)}" data-assist-index="${index}" aria-label="Selecciona una evidencia del expediente"><option value="">Seleccionar evidencia…</option>${available.map(ref=>`<option value="${html(ref.id)}">${html(ref.id+' · '+(ref.title||'Sin título'))}</option>`).join('')}</select><small>No crea ni verifica evidencias; solo reutiliza identificadores existentes.</small></div>`;
+    }
     const termId=glossary?.CONTEXT_HELP?.fields?.[block]?.[name];
     const term=termId?glossary.byId(termId):null;
     const help=term?`<button type="button" class="glossary-help" data-glossary-term="${html(term.id)}" data-glossary-field="${html(id)}" aria-label="Consultar ${html(term.title)} y volver a este campo"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5"></path><circle cx="12" cy="7.5" r=".85" fill="currentColor" stroke="none"></circle></svg></button>`:'';
@@ -1059,6 +1064,15 @@
     const obj=fieldTarget(t);if(obj){obj[t.dataset.field]=t.value;if(t.dataset.block==='meta'&&t.dataset.field==='reportId')state.meta.reportAuto='no';if(t.dataset.block==='meta'&&['project','client','reportId'].includes(t.dataset.field)){byId('audit-context-title').textContent=state.meta.project||state.meta.client||'Auditoría sin título';byId('audit-context-ref').textContent=(state.meta.reportId||'SIN REFERENCIA')+' · '+(state.meta.client||'Cliente pendiente');byId('active-audit-label').textContent=(state.meta.reportId||'Sin referencia')+' · '+(state.meta.project||state.meta.client||'Sin título')}if(['title','name','id'].includes(t.dataset.field)){const heading=t.closest('.entry')?.querySelector('.entry-head strong');if(heading)heading.textContent=obj.title||obj.name||obj.id||'Registro'}persist();updateValidation(t)}
   });
   workspace.addEventListener('change',async e=>{
+    if(e.target.dataset.assistRef==='evidence'){
+      if(state.documentControl?.status==='confirmed'){render();return;}
+      const target=e.target,block=target.dataset.assistBlock,index=Number(target.dataset.assistIndex);
+      if(!['controls','findings'].includes(block)||!Number.isSafeInteger(index))return;
+      const record=state[block]?.[index],evidence=state.evidence.find(x=>x.id===target.value);
+      if(!record||!evidence)return;
+      record.evidenceIds=assist.appendRef(record.evidenceIds,evidence.id);
+      persist();render();return;
+    }
     if(state.documentControl?.status==='confirmed'&&e.target.dataset.block&&e.target.dataset.block!=='settings'){render();return;}
     const t=e.target;
     if(t.id==='intake-file'&&t.files?.length){
