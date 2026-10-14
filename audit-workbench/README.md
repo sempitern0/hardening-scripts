@@ -160,3 +160,9 @@ When Audit Workbench is served from a stable HTTPS or localhost origin, it check
 The service worker installs a complete, versioned application shell before a release can activate. A failed install leaves the previously active version intact. Offline navigation falls back to the cached entry point; the current and one previous app-shell cache are retained as a limited recovery reserve. The new **Offline protection** panel checks missing essential resources, shows a best-effort storage quota estimate, offers a browser request for persistent storage, and can explicitly repair missing cached files when the original server is available. Repair does not download audit data or transmit records.
 
 Persistent storage is subject to browser policy and does not replace backups. The application does not promise 99.9% measured uptime, cannot recover data deleted by the user/OS, and cannot guarantee compatibility after a browser or device failure. Test the actual device by stopping the server and relaunching the installed PWA, and export JSON backups before updates.
+
+## Executive and technical PDF reports
+
+**The same audit record produces two distinct documents without adding fields or duplicating data.** Under **Reports**, choose **Executive** (risk, business impact, priority, ownership, and decisions) or **Technical** (documented methods, findings, control results, inventories, CVEs, linked evidence, and detailed remediation). Each has **Draft** and **Final** options and shares the same report reference, confirmed revision, and preflight requirements. The separate reassessment report remains available.
+
+The executive report does not embed technical screenshots or asset inventories. The technical report reproduces the information the auditor entered; it does not invent commands, proof of exploitation, or verification results. Both use browser printing to produce PDFs locally. The audit JSON format and wizard remain unchanged.
