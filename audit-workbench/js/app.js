@@ -474,7 +474,7 @@
     });
   }
   function structuredCloneSafe(value){return JSON.parse(JSON.stringify(value))}
-  function persist(){if(state.documentControl?.status==='confirmed'){updateStatus('⚠ Expediente confirmado: no se admiten cambios',true);return;}dirty=true;updateStatus('Cambios pendientes…');clearTimeout(saveTimer);saveTimer=setTimeout(()=>void saveCurrent(),250)}
+  function persist(force=false){if(!force&&state.documentControl?.status==='confirmed'){updateStatus('⚠ Expediente confirmado: no se admiten cambios',true);return;}dirty=true;updateStatus('Cambios pendientes…');clearTimeout(saveTimer);saveTimer=setTimeout(()=>void saveCurrent(),250)}
   async function flush(){if(saveTimer){clearTimeout(saveTimer);saveTimer=null}await saveCurrent();await writeQueue;if(storageError)throw Error('El expediente no se pudo guardar. Exporta el JSON antes de cambiar de auditoría.')}
   async function initialLoad(){
     try{
@@ -1366,13 +1366,13 @@
     if(b.dataset.remove){const k=b.dataset.remove,i=Number(b.dataset.index);if(confirm('¿Eliminar este registro y su contenido?')){state[k].splice(i,1);persist();render()}return}
     if(b.dataset.clearImage!==undefined){if(confirm('¿Eliminar la imagen incrustada?')){state.evidence[Number(b.dataset.clearImage)].image='';persist();render()}return}
     if(b.id==='document-confirm'){
-      try{await flush();const checked=quality.review(state,relations,{mode:'final'}),bad=invalidFields();if(checked.blockers.length||bad.length)throw Error('Hay '+(checked.blockers.length+bad.length)+' validaciones imprescindibles pendientes.');if(checked.warnings.length&&!confirm('Hay '+checked.warnings.length+' advertencias. ¿Confirmar tras revisarlas?'))return;if(!confirm('Se confirmará la versión actual. Para modificarla después será necesario abrir una rectificación justificada. ¿Continuar?'))return;await docControl.confirm(state,byId('document-author').value);persist();await flush();render();}catch(error){alert('No se ha confirmado: '+error.message);}return;
+      try{await flush();const checked=quality.review(state,relations,{mode:'final'}),bad=invalidFields();if(checked.blockers.length||bad.length)throw Error('Hay '+(checked.blockers.length+bad.length)+' validaciones imprescindibles pendientes.');if(checked.warnings.length&&!confirm('Hay '+checked.warnings.length+' advertencias. ¿Confirmar tras revisarlas?'))return;if(!confirm('Se confirmará la versión actual. Para modificarla después será necesario abrir una rectificación justificada. ¿Continuar?'))return;await docControl.confirm(state,byId('document-author').value);persist(true);await flush();render();}catch(error){alert('No se ha confirmado: '+error.message);}return;
     }
     if(b.id==='amend-begin'){
       try{await flush();await docControl.beginAmendment(state,byId('amend-author').value,byId('amend-reason').value);persist();await flush();render();}catch(error){alert('No se pudo abrir la rectificación: '+error.message);}return;
     }
     if(b.id==='amend-finish'){
-      try{const checked=quality.review(state,relations,{mode:'final'});if(checked.blockers.length||invalidFields().length)throw Error('Resuelve los impedimentos antes de confirmar.');await docControl.finalizeAmendment(state);persist();await flush();render();}catch(error){alert('No se pudo cerrar la rectificación: '+error.message);}return;
+      try{const checked=quality.review(state,relations,{mode:'final'});if(checked.blockers.length||invalidFields().length)throw Error('Resuelve los impedimentos antes de confirmar.');await docControl.finalizeAmendment(state);persist(true);await flush();render();}catch(error){alert('No se pudo cerrar la rectificación: '+error.message);}return;
     }
     if(state.documentControl?.status==='confirmed'&&(b.dataset.add!==undefined||b.dataset.remove!==undefined||b.dataset.applyTemplate!==undefined||b.dataset.clearImage!==undefined||b.dataset.saveRetest!==undefined)){alert('Expediente confirmado. Abre una rectificación justificada.');return;}
     if(b.id==='delivery-pdf'){printReport('draft');return}
@@ -1602,7 +1602,7 @@
     if(!state.findings.some(f=>retest.normalize(f.retests).length)&&!confirm('No hay verificaciones posteriores registradas. El informe mostrará todos los hallazgos como sin reevaluar. ¿Continuar?'))return;
     printMode='retest';buildRetestReport();window.print();
   }
-  function printReport(mode='draft'){
+  async function printReport(mode='draft'){
     printMode='audit';
     reportDeliveryMode=mode==='final'?'final':'draft';
     const review=reviewState(reportDeliveryMode),invalid=invalidFields();
@@ -1612,6 +1612,10 @@
       move('quality');return;
     }
     if(reportDeliveryMode==='final'&&review.warnings.length&&!confirm('El informe definitivo contiene '+review.warnings.length+' avisos documentales. Revisa su justificación antes de entregar. ¿Continuar?'))return;
+    if(reportDeliveryMode==='final'){
+      try{if(!await docControl.verify(state))throw Error('El contenido difiere de la confirmación. Revisa el expediente.');}
+      catch(error){alert('No se puede emitir un informe definitivo: '+error.message);return;}
+    }
     buildReport();window.print();
   }
 
