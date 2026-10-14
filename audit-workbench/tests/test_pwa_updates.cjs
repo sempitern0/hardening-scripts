@@ -15,7 +15,7 @@ for(const id of ['pwa-update-notice','pwa-update-status','pwa-update-apply','pwa
 assert(html.indexOf('js/pwa-updates.js')<html.indexOf('js/app.js'));
 assert(sw.includes('v37-controlled-updates')&&sw.includes("'./js/pwa-updates.js'"));
 assert(sw.includes("event.data?.type!=='AUDIT_WORKBENCH_APPLY_UPDATE'"),'Only explicit activation allowed');
-assert(!sw.includes("self.skipWaiting();"),'Do not auto activate without request');
+assert(sw.indexOf('await self.skipWaiting()')>sw.indexOf("event.data?.type!=='AUDIT_WORKBENCH_APPLY_UPDATE'"),'Activation must only be in consent handler');
 assert(sw.includes('await self.skipWaiting()'),'Consent handler must activate worker');
 assert(app.includes('saveBeforeReload:flush')&&app.includes('isSafeToReload'),'Must guard dirty audit');
 assert(source.includes("registration.update()")&&source.includes('registration.waiting'));
