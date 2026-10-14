@@ -13,10 +13,7 @@ ctx.location.protocol='file:';assert.equal(ctx.AuditPwaUpdates.supported(),false
 for(const id of ['pwa-update-notice','pwa-update-status','pwa-update-apply','pwa-update-later','pwa-update-check'])
  assert(html.includes('id="'+id+'"'),id+' missing');
 assert(html.indexOf('js/pwa-updates.js')<html.indexOf('js/app.js'));
-assert(sw.includes('v45-single-json')&&sw.includes("'./js/pwa-updates.js'"));
-assert(sw.includes("event.data?.type!=='AUDIT_WORKBENCH_APPLY_UPDATE'"),'Only explicit activation allowed');
-assert(sw.indexOf('await self.skipWaiting()')>sw.indexOf("event.data?.type!=='AUDIT_WORKBENCH_APPLY_UPDATE'"),'Activation must only be in consent handler');
-assert(sw.includes('await self.skipWaiting()'),'Consent handler must activate worker');
+require('./support/sw-contract.js').assertCached('js/pwa-updates.js');
 assert(app.includes('saveBeforeReload:flush')&&app.includes('isSafeToReload'),'Must guard dirty audit');
 assert(source.includes("registration.update()")&&source.includes('registration.waiting'));
 assert(source.includes("controllerchange")&&source.includes("location.reload()"));
@@ -25,3 +22,13 @@ assert(css.includes('.pwa-update-notice[hidden]'));
 for(const file of ['audit-workbench.sh','audit-workbench.ps1'])
  assert(fs.readFileSync(path.join(root,file),'utf8').includes('js/pwa-updates.js'),'installer missing '+file);
 console.log('PASS consent, pre-reload save, offline shell, packaging');
+
+(async()=>{
+ let activations=0, pending;
+ const {handlers}=require('./support/sw-contract.js').loadWorker({self:{skipWaiting:async()=>{activations++;}}});
+ handlers.message({data:{type:'UNKNOWN'},waitUntil:()=>{throw Error('Unknown message must be ignored');}});
+ assert.equal(activations,0);
+ handlers.message({data:{type:'AUDIT_WORKBENCH_APPLY_UPDATE'},waitUntil:promise=>{pending=promise;}});
+ await pending;
+ assert.equal(activations,1,'Only explicit apply message activates the waiting worker');
+})().catch(error=>{console.error(error);process.exitCode=1;});

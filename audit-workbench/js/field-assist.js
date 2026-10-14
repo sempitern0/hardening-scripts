@@ -81,7 +81,7 @@
     const ip=ipv4(m[1]),bits=Number(m[2]);
     if(ip===null||bits>32)return null;
     const mask=bits===0?0:(0xffffffff<<(32-bits))>>>0;
-    return {address:ip&mask,mask,bits};
+    return {address:(ip&mask)>>>0,mask,bits};
   }
   function inSubnet(ip,cidr){
     const address=ipv4(ip),prefix=subnet(cidr);

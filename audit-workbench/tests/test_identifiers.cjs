@@ -22,6 +22,6 @@ assert(script.includes('identifiers.collides(audit.meta.reportId,records)'));
 assert(!script.includes('state.meta.reportId=nextReportId(t.value)'));
 const html=fs.readFileSync(path.join(root,'index.html'),'utf8'),sw=fs.readFileSync(path.join(root,'sw.js'),'utf8');
 assert(html.includes('js/audit-identifiers.js')&&sw.includes("'./js/audit-identifiers.js'"));
-assert(sw.includes('v43-single-json'));
+require('./support/sw-contract.js').assertCached('js/audit-identifiers.js');
 for(const file of ['audit-workbench.sh','audit-workbench.ps1'])assert(fs.readFileSync(path.join(root,file),'utf8').includes('audit-identifiers.js'));
 console.log('PASS read-only local references, uniqueness, imports, duplication and offline packaging');
