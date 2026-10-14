@@ -52,9 +52,9 @@
     if(!notEmpty(meta.client)) add('blocker','CLIENTE','engagement','Indica la empresa u organización auditada.');
     if(!notEmpty(meta.project)) add('blocker','PROYECTO','engagement','Identifica el proyecto de auditoría.');
     if(!notEmpty(meta.scope)) add('blocker','ALCANCE','engagement','Describe qué activos, sedes y redes están autorizados para la revisión.');
-    if(!Array.isArray(meta.auditTeam)||!meta.auditTeam.some(x=>notEmpty(x?.name)))add('warning','AUDITORES','engagement','Asigna el profesional o equipo responsable del informe.');
+    if(!Array.isArray(meta.auditTeam)||!meta.auditTeam.some(x=>notEmpty(x?.name)))add(finalMode?'blocker':'warning','AUDITORES','engagement','Asigna el profesional o equipo responsable del informe.');
     if(!notEmpty(meta.limitations))add('warning','LIMITACIONES','engagement','Documenta las limitaciones reales de la evaluación, aunque sean «Ninguna».');
-    if(!notEmpty(meta.rules))add('warning','AUTORIZACION','engagement','Documenta la autorización y reglas de compromiso acordadas.');
+    if(!notEmpty(meta.rules))add(finalMode?'blocker':'warning','AUTORIZACION','engagement','Documenta la autorización y reglas de compromiso acordadas.');
     for(const error of periodProblems(meta))add('blocker',error.code,'engagement',error.message);
     if((meta.start||meta.end)&&(!meta.startTime||!meta.endTime))
       add('warning','HORAS_NO_DOCUMENTADAS','engagement','Completa las horas de inicio y fin si se conocen; los expedientes antiguos pueden conservar solo la fecha.');
@@ -66,6 +66,15 @@
     for (const c of controls){
       if(c.status==='No conforme'&&!findings.some(f=>f.originControlKey&&f.originControlKey===c._key)){
         add('blocker','CONTROL_NO_CONFORME','controls',`${clean(c.id)||clean(c.name)||'Control'} no es conforme y no tiene hallazgo de seguimiento.`,clean(c._key));
+      }
+    }
+    for(const category of ['assets','controls','findings','evidence']){
+      const seen=new Set();
+      for(const row of audit?.[category]||[]){
+        const code=clean(row.id).toUpperCase();
+        if(!code)continue;
+        if(seen.has(code))add(finalMode?'blocker':'warning','ID_DUPLICADO',category,`Identificador duplicado en ${category}: ${code}.`,clean(row._key));
+        seen.add(code);
       }
     }
     const evidenceIds=new Set(evidence.map(e=>clean(e.id).toUpperCase()).filter(Boolean));
@@ -97,7 +106,7 @@
       if(last?.result==='verified' && !last.evidenceKey)add('warning','VERIFICACION_SIN_EVIDENCIA','followup',`${name}: hay corrección verificada sin evidencia adicional vinculada.`,key);
       if(f.status==='Riesgo aceptado'&&!notEmpty(f.residual))add('warning','ACEPTACION_SIN_JUSTIFICAR','findings',`${name}: documenta justificación, responsable y condiciones de aceptación del riesgo.`,key);
     }
-    if(!notEmpty(audit?.final?.executive))add('warning','SIN_RESUMEN','delivery','Completa el resumen ejecutivo para dirección.');
+    if(!notEmpty(audit?.final?.executive))add(finalMode?'blocker':'warning','SIN_RESUMEN','delivery','Completa el resumen ejecutivo para dirección.');
     if(!notEmpty(audit?.final?.signoff))add(finalMode?'blocker':'warning','SIN_VALIDACION','delivery','Identifica quién revisa o autoriza la entrega.');
     for(const msg of relations?.referenceProblems?.(audit)||[])add(finalMode?'blocker':'warning','REFERENCIA_INCORRECTA','evidence',String(msg).slice(0,300));
     return {issues, blockers:issues.filter(i=>i.severity==='blocker'),warnings:issues.filter(i=>i.severity==='warning'), ready:!issues.some(i=>i.severity==='blocker'), plan:plan(audit)};
