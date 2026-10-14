@@ -78,7 +78,7 @@
             </select>
           </label>
           <button type="button" id="open-library" class="button quiet">Mis auditorías</button>
-          <span id="pdf-theme" hidden></span><button id="pwa-update-check" type="button" class="button quiet small">Buscar actualización</button><span id="pwa-update-status" class="pwa-update-status" role="status" aria-live="polite"></span><span class="save-status" id="save-status" role="status">Preparando expediente</span>
+          <span id="pdf-theme" hidden></span><button id="pwa-update-check" type="button" class="button quiet small">Buscar actualización</button><span id="pwa-update-status" class="pwa-update-status" role="status" aria-live="polite"></span><section class="offline-health" aria-label="Disponibilidad offline"><strong>Protección del trabajo offline</strong><p id="offline-health-status" role="status" aria-live="polite">Pendiente de comprobación</p><div class="action-row"><button class="button quiet small" id="offline-health-check" type="button">Comprobar</button><button class="button quiet small" id="offline-health-persist" type="button">Proteger almacenamiento</button><button class="button quiet small" id="offline-health-repair" type="button" disabled>Reparar caché</button></div></section><span class="save-status" id="save-status" role="status">Preparando expediente</span>
           <button type="button" id="btn-import" class="button quiet">Importar</button>
           <button type="button" id="btn-export" class="button quiet">Guardar JSON</button>
           <button type="button" id="btn-pdf" class="button accent">Generar PDF ↗</button>
@@ -106,6 +106,7 @@
   <script src="js/secure-transfer-ui.js" defer></script>
   <script src="js/document-control.js" defer></script>
   <script src="js/pwa-updates.js" defer></script>
+  <script src="js/offline-health.js" defer></script>
   <script src="js/app.js" defer></script>
 </body>
 </html>
