@@ -1177,6 +1177,12 @@
   });
   workspace.addEventListener('click',async e=>{
     const b=e.target.closest('button');if(!b)return;
+    if(state.documentControl?.status==='confirmed'&&!['records','backups','connections','online','settings','glossary'].includes(page)){
+      const safe=['document-pdf','delivery-pdf','delivery-pdf-final','delivery-json','amend-begin','retest-pdf','open-email','native-share-json'];
+      if(!b.dataset.go&&!b.dataset.qualitySection&&!b.dataset.glossaryTerm&&!b.dataset.glossaryBack&&!safe.includes(b.id)){
+        alert('Expediente confirmado: abre una rectificación excepcional para modificarlo.');return;
+      }
+    }
     if(b.dataset.intakeSelect){
       if(!intakePreview)return;
       const choices=intake.reconcile(intakePreview,state[intakePreview.block]);
@@ -1544,6 +1550,8 @@
     const count=Object.fromEntries(severity.map(s=>[s,state.findings.filter(x=>x.severity===s).length]));
     const meta=state.meta,ending=state.final;
     const cover=`<div class="report-cover"><div class="sup">SYSADMIN / SECURITY · AUDIT REPORT <span class="report-theme-name">${html(selectedPalette)}</span></div>${meta.logo?`<img class="report-logo" src="${meta.logo}" alt="Logo corporativo">`:''}<h1>Informe de auditoría<br>informática</h1><h2>${html(meta.project||'Infraestructura, sistemas y ciberseguridad')}</h2><p class="classify">${html(meta.classification||'Confidencial')}</p><div class="cover-meta"><div><span class="report-number">CLIENTE</span><h3>${html(meta.client||'No indicado')}</h3><p>${html(meta.contact||'')}</p></div><div><span class="report-number">ENTREGA</span><h3>${html(today)}</h3><p>Ref. ${html(meta.reportId||'Sin referencia')} · Rev. ${html(meta.revision||'1.0')}</p><p>${html(auditorNames(meta)||'Equipo auditor pendiente de asignar')}</p><p>${html(settings.company||'')}</p><p>${html(settings.taxId||'')}</p></div></div></div>`;
+    const documentState=docControl.normalize(state.documentControl);
+    const documentNote=documentState.status==='confirmed'?`<div class="report-note"><strong>Control documental:</strong> Revisión ${documentState.revision} · Confirmada ${html(documentState.confirmed?.at||'')} · Responsable ${html(documentState.confirmed?.author||'')} · SHA-256 ${html(documentState.confirmed?.digest||'')}</div>`:`<div class="report-note">Control documental: ${documentState.status==='amending'?'RECTIFICACIÓN ABIERTA':'BORRADOR SIN CONFIRMAR'}</div>`;
     const legal=section(1,'Confidencialidad, alcance legal y custodia',`<p class="report-note">Cláusulas modelo que deben adaptarse al contrato específico y validarse antes de la entrega. RGPD (UE) 2016/679 y LOPDGDD 3/2018, según resulte aplicable.</p>${legalFields.map(([key,label])=>`<h3>${html(label)}</h3><p>${para(state.legal[key])}</p>`).join('')}`);
     const teamTable=meta.auditTeam?.length?`<table class="report-table"><thead><tr><th>Profesional</th><th>Documento</th><th>Función</th><th>Contacto</th></tr></thead><tbody>${meta.auditTeam.map(m=>`<tr><td>${html(m.name)}</td><td>${html(m.documentId?(m.idType||'DNI')+' · '+m.documentId:'No documentado')}</td><td>${html(m.role||'No indicada')}</td><td>${html(m.email||'No indicado')}</td></tr>`).join('')}</tbody></table>`:`<p>${html(auditorNames(meta)||'No se han asignado profesionales.')}</p>`;
     const identity=section(2,'Identificación, alcance y metodología',table(metaFields,meta)+`<h3>Equipo responsable de la auditoría</h3>${teamTable}`);
@@ -1567,7 +1575,7 @@
       [7,section(7,'Vulnerabilidades CVE registradas',reportRows('cves'))],[8,controls],
       [10,section(10,'Registro de evidencias',reportRows('evidence'))],[12,closing],[1,legal]
     ];
-    byId('report').innerHTML=cover.replace('<div class="report-cover">','<div class="report-cover">'+draftMarker)+toc+
+    byId('report').innerHTML=cover.replace('<div class="report-cover">','<div class="report-cover">'+draftMarker)+documentNote+toc+
       chapters.map(([num,part],index)=>part.replace('class="report-section"','class="report-section" id="report-section-'+num+'"').replace(/(<h2>)\d+\. /,(_,tag)=>tag+(index+1)+'. ')).join('');
   }
   function buildRetestReport(){
