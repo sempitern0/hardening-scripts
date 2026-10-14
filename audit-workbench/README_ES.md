@@ -63,6 +63,9 @@ La opción **Descargar expediente JSON** solicita una descarga local y muestra u
 
 ### Descubrimiento remoto desde el dispositivo del auditor
 
+**Asistente guiado sin servidor web adicional:** desde la instalación, abre `discovery/iniciar.cmd` en Windows o ejecuta `bash discovery/run.sh` en Linux/macOS. Elige una red autorizada de las sugeridas o introduce su CIDR, selecciona Nmap o ping y confirma escribiendo `AUTORIZO`. La captura se genera como un JSON nuevo para la importación manual en la PWA. Puedes consultar los pasos en [Discovery](discovery/README_ES.md).
+
+
 El nuevo [motor Discovery](discovery/README_ES.md) permite conectar un portátil a una red privada autorizada, comprobar las herramientas disponibles con `python3 discovery/discover.py doctor` y generar una captura importable con `python3 discovery/discover.py scan --cidr 192.168.10.0/24 --authorized --output captura-lan.json`. Prefiere Nmap y, si no está instalado, utiliza ping nativo de manera limitada. No necesita instalación en los activos auditados. La herramienta no confirma sistemas operativos, vulnerabilidades ni VLAN de forma remota; se revisa todo antes de importar.
 
 ### Captura asistida de inventario

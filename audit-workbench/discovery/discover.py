@@ -168,6 +168,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='Audit Workbench: descubrimiento remoto acotado, sin agentes y de solo lectura.')
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('doctor', help='Comprueba dependencias y muestra instalación sugerida, sin red.')
+    commands.add_parser('wizard', help='Asistente interactivo de descubrimiento sin servicios locales.')
     scan = commands.add_parser('scan', help='Descubre hosts de una red autorizada y exporta JSON.')
     scan.add_argument('--cidr', required=True, help='Subred IPv4 RFC1918 autorizada, por ejemplo 192.168.10.0/24')
     scan.add_argument('--output', required=True, help='Archivo JSON NUEVO (no sobrescribe).')
@@ -178,6 +179,9 @@ def main(argv=None):
     if args.command == 'doctor':
         print(json.dumps(doctor(), indent=2, ensure_ascii=False))
         return 0
+    if args.command == 'wizard':
+        from wizard import run_wizard
+        return run_wizard(doctor, scope_network, main)
     try:
         if not args.authorized:
             raise ValueError('Debes confirmar el alcance con --authorized (autorización previa del titular).')

@@ -31,6 +31,8 @@ jobs:
           for file in audit-workbench/tests/*.cjs; do node "$file"; done
       - name: Run isolated discovery engine regression tests
         run: python3 -m unittest discover -s audit-workbench/tests -p test_discovery.py -v
+      - name: Test interactive discovery assistant (offline)
+        run: python3 -m unittest discover -s audit-workbench/tests -p test_discovery_wizard.py -v
       - name: Check Bash discovery launchers
         run: bash -n audit-workbench/discovery/run.sh audit-workbench/discovery/setup.sh
       - name: Check Bash launcher syntax

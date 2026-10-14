@@ -2,6 +2,18 @@
 
 El motor funciona **desde un dispositivo externo conectado a la red del cliente**, sin instalar agentes en cada activo. No se integra como un escáner dentro del navegador: la PWA importa su JSON local.
 
+## Inicio rápido, sin servicios ni cambios de permisos
+
+El asistente guía al operador para elegir el alcance, el motor disponible y el archivo de salida. Detecta interfaces **sin tráfico de descubrimiento**, propone subredes locales compatibles y **nunca comienza a escanear automáticamente**. Es necesario escribir `AUTORIZO` después de revisar el CIDR.
+
+- **Windows:** doble clic en `discovery/iniciar.cmd` desde la instalación, o `.\\discovery\\run.ps1` desde PowerShell.
+- **Linux/macOS:** `bash discovery/run.sh`.
+- También puedes ejecutar `python3 discovery/discover.py wizard` directamente.
+
+Al finalizar, abre **Hardware → Captura asistida** en la PWA, importa la captura JSON y valida los equipos. Vuelve a importar **el mismo JSON** en **Redes → Captura asistida** para revisar el segmento. Los registros nunca se insertan automáticamente.
+
+Si la herramienta no detecta interfaces compatibles (o tienes varias subredes), introduce manualmente el CIDR aprobado. No hace falta modificar políticas del navegador, ejecutar servidores locales, desactivar firewalls ni elevar privilegios para abrir el asistente.
+
 ## Preparar el equipo auditor
 
 - Windows: PowerShell 5.1+; ejecuta `./discovery/setup.ps1` para diagnosticar. Instala herramientas opcionales con `./discovery/setup.ps1 -InstallTools` (winget). Reinicia la consola para actualizar PATH.
