@@ -25,6 +25,7 @@
   <link rel="stylesheet" href="css/retest.css">
   <link rel="stylesheet" href="css/comparison.css">
   <link rel="stylesheet" href="css/glossary.css">
+  <link rel="stylesheet" href="css/workspace-ux.css" media="screen">
 </head>
 <body>
   <div class="app" id="app">
@@ -81,7 +82,7 @@
           <span id="pdf-theme" hidden></span><button id="pwa-update-check" type="button" class="button quiet small">Buscar actualización</button><span id="pwa-update-status" class="pwa-update-status" role="status" aria-live="polite"></span><section class="offline-health" aria-label="Disponibilidad offline"><strong>Protección del trabajo offline</strong><p id="offline-health-status" role="status" aria-live="polite">Pendiente de comprobación</p><div class="action-row"><button class="button quiet small" id="offline-health-check" type="button">Comprobar</button><button class="button quiet small" id="offline-health-persist" type="button">Proteger almacenamiento</button><button class="button quiet small" id="offline-health-repair" type="button" disabled>Reparar caché</button></div></section><span class="save-status" id="save-status" role="status">Preparando expediente</span>
           <button type="button" id="btn-import" class="button quiet">Importar</button>
           <button type="button" id="btn-export" class="button quiet">Guardar JSON</button>
-          <button type="button" id="btn-pdf" class="button accent">Generar PDF ↗</button>
+          <button type="button" id="btn-pdf" class="button accent" aria-label="Ir a las opciones para generar PDF">Opciones PDF ↓</button>
           <input type="file" id="input-import" accept=".json,application/json" hidden>
         </div>
       </header>

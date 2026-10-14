@@ -1,0 +1,94 @@
+/* Screen-only rhythm and accessible PDF navigation.
+   Keep printed reports independent from the workbench UI. */
+.topbar .actions { gap: .7rem .85rem; }
+.topbar .actions > .button { min-height: 44px; }
+.topbar .actions > .offline-health {
+  order: 2;
+  flex: 1 1 100%;
+  margin: .3rem 0 0;
+  padding: .8rem 1rem;
+}
+.topbar .offline-health p { margin: .35rem 0; }
+.topbar .offline-health .action-row { gap: .65rem .8rem; }
+.topbar .pwa-update-status:empty { display: none; }
+
+#workspace .action-row { gap: .8rem 1rem; align-items: center; }
+#workspace .action-row > .button { min-height: 44px; }
+#workspace .card > .action-row { margin-block: 1rem .35rem; }
+#workspace .card > .button {
+  margin-block: .7rem .5rem;
+  margin-inline-end: .65rem;
+}
+#workspace .card > :is(.fields, .entry, .notice, .remediation-list) + .button {
+  margin-block-start: 1rem;
+}
+#workspace .notice .button {
+  margin: .35rem .25rem .25rem .6rem;
+  vertical-align: middle;
+}
+#workspace .page-title:focus,
+#workspace #delivery-options-title:focus {
+  outline: 3px solid var(--brand);
+  outline-offset: 5px;
+  border-radius: 3px;
+}
+
+#workspace .report-delivery { scroll-margin-block-start: 1.5rem; }
+#workspace #delivery-options-title { scroll-margin-block-start: 1.75rem; }
+#workspace .report-delivery-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.1rem;
+  margin-block: 1.35rem 0;
+}
+#workspace .report-delivery-option {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  align-content: start;
+  gap: .8rem;
+  padding: 1.2rem;
+}
+#workspace .report-delivery-option strong {
+  font-size: 1rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+#workspace .report-delivery-option p {
+  margin: 0;
+  line-height: 1.55;
+}
+#workspace .report-delivery-option .button {
+  width: 100%;
+  min-height: 48px;
+  white-space: normal;
+  text-align: center;
+}
+#workspace .report-delivery-secondary {
+  margin-top: 1.5rem;
+  padding-top: 1.35rem;
+  border-top: 1px solid var(--line);
+}
+#workspace .report-delivery-secondary h3,
+#workspace .report-delivery-danger h3 { margin-bottom: .65rem; }
+#workspace .report-delivery-danger {
+  margin-top: 1.5rem;
+  padding: 1rem 1.2rem;
+  background: var(--canvas);
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+}
+#workspace .report-delivery-danger p { margin: 0 0 .85rem; }
+#workspace .report-delivery-secondary .action-row { margin-top: 1rem; }
+
+@media (max-width: 820px) {
+  #workspace .report-delivery-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+  #workspace .report-delivery-secondary .action-row > .button,
+  #workspace .report-delivery-danger .button { width: 100%; }
+  #workspace .report-delivery-option { padding: 1rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .topbar .button, #workspace .button { transition: none; }
+}

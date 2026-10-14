@@ -14,7 +14,7 @@ try:
   page.goto('http://127.0.0.1:%d/'%server.server_port)
   page.locator('[data-new]').first.wait_for(timeout=15000)
   page.evaluate("navigator.serviceWorker.ready")
-  page.wait_for_function("async () => (await caches.keys()).some(k=>k.includes('shell-v43-single-json'))",timeout=10000)
+  page.wait_for_function("async () => (await caches.keys()).some(k=>k.includes('shell-v44-single-json'))",timeout=10000)
   context.set_offline(True)
   page.reload(wait_until='domcontentloaded',timeout=15000)
   page.locator('[data-new]').first.wait_for(timeout=10000)
