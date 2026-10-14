@@ -3426,6 +3426,193 @@
         "lookFor": "Avisos recientes para correlacionar con telemetría EDR y almacenamiento."
       }
     ]
+  },
+  {
+    "id": "term-136",
+    "symptom": "Redes de invitados, IoT y gestión comparten acceso con servidores corporativos.",
+    "verify": "Dibuja zonas y flujos aprobados; revisa reglas del firewall por origen/destino y registra excepciones IPv4/IPv6.",
+    "interpret": "VLAN diferentes no implican filtrado; prueba únicamente destinos autorizados y documenta denegaciones.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "ip -br address; ip route show; ip -6 route show",
+        "lookFor": "Interfaces y rutas IPv4/IPv6 del host; las ACL deben revisarse también en firewall/switch."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-NetIPConfiguration; Get-NetRoute | Sort-Object DestinationPrefix",
+        "lookFor": "Interfaz, gateway y prefijos efectivos del equipo, no políticas remotas."
+      },
+      {
+        "platform": "macOS",
+        "command": "networksetup -listallhardwareports; netstat -rn",
+        "lookFor": "Interfaces físicas y tablas de rutas en el host."
+      }
+    ]
+  },
+  {
+    "id": "term-137",
+    "symptom": "El SSID de personal usa PSK común o se desconoce el perfil de cifrado.",
+    "verify": "Contrasta configuración del controlador con clientes administrados: WPA3-Enterprise, EAP-TLS, PMF, validación RADIUS y aislamiento.",
+    "interpret": "El sistema cliente no demuestra por sí solo la política completa del AP ni el registro AAA.",
+    "commands": [
+      {
+        "platform": "Windows · CMD",
+        "command": "netsh wlan show interfaces",
+        "lookFor": "SSID, autenticación y cifrado observados por Windows en la interfaz activa."
+      },
+      {
+        "platform": "Linux",
+        "command": "nmcli -f ACTIVE,SSID,SECURITY device wifi list",
+        "lookFor": "Seguridad anunciada por AP; confirmar desde controlador y sesión conectada."
+      },
+      {
+        "platform": "macOS",
+        "command": "system_profiler SPAirPortDataType",
+        "lookFor": "Modo de seguridad y adaptadores visibles; consulta políticas en MDM/controlador."
+      }
+    ]
+  },
+  {
+    "id": "term-138",
+    "symptom": "Clientes aceptan certificados RADIUS desconocidos o fallan por expiración.",
+    "verify": "Inspecciona perfiles EAP-TLS, CA permitida, servidor esperado y cadena de certificados, sin extraer claves privadas.",
+    "interpret": "Un certificado presente no confirma que el supplicant valide la identidad del servidor.",
+    "commands": [
+      {
+        "platform": "PowerShell",
+        "command": "Get-ChildItem Cert:\\LocalMachine\\My | Select-Object Subject,NotAfter,Thumbprint",
+        "lookFor": "Certificados de máquina y caducidad; revisar políticas WLAN en el gestor corporativo."
+      },
+      {
+        "platform": "Linux",
+        "command": "nmcli -f GENERAL.CONNECTION,802-1X connection show",
+        "lookFor": "Propiedades EAP/802.1X disponibles; no compartir secretos ni claves."
+      },
+      {
+        "platform": "macOS",
+        "command": "profiles show -type configuration",
+        "lookFor": "Perfiles de configuración instalados; salida puede contener datos sensibles."
+      }
+    ]
+  },
+  {
+    "id": "term-139",
+    "symptom": "La red anuncia WPA3 pero los clientes siguen operando con políticas heredadas.",
+    "verify": "Consulta el controlador/AP para PMF requerido y revisa por cliente el modo negociado.",
+    "interpret": "Una red WPA3 debe requerir PMF; un SSID mixto puede funcionar con parámetros distintos según cliente.",
+    "commands": [
+      {
+        "platform": "Windows · CMD",
+        "command": "netsh wlan show interfaces",
+        "lookFor": "Autenticación y tipo de cifrado; PMF efectivo requiere consola/AP o herramienta especializada."
+      },
+      {
+        "platform": "Linux",
+        "command": "nmcli -f IN-USE,SSID,SECURITY device wifi list",
+        "lookFor": "Opciones anunciadas por los puntos de acceso, no toda la negociación PMF."
+      }
+    ]
+  },
+  {
+    "id": "term-140",
+    "symptom": "Un invitado o dispositivo IoT alcanza servicios internos no previstos.",
+    "verify": "Revisa listas de acceso y reglas de firewall entre zonas; desde clientes autorizados comprueba destinos aprobados.",
+    "interpret": "Poder resolver un nombre no demuestra acceso al servicio; la prueba debe ser TCP/UDP según el servicio y con permiso.",
+    "commands": [
+      {
+        "platform": "PowerShell",
+        "command": "Test-NetConnection -ComputerName servidor.autorizado.invalid -Port 443",
+        "lookFor": "Resultado TCP desde una red concreta; sustituir destino por uno autorizado."
+      },
+      {
+        "platform": "Linux",
+        "command": "ip route get 192.0.2.10",
+        "lookFor": "Ruta prevista al destino de prueba; esta consulta no prueba la ACL."
+      },
+      {
+        "platform": "macOS",
+        "command": "route -n get 192.0.2.10",
+        "lookFor": "Gateway/interfaz elegidos para un destino de documentación."
+      }
+    ]
+  },
+  {
+    "id": "term-141",
+    "symptom": "Puertos de acceso sin inventario o incidentes de DHCP no autorizado, bucles o suplantación ARP.",
+    "verify": "Comprueba configuración del switch: puertos no usados, 802.1X, snooping, DAI, BPDU Guard y política de uplinks.",
+    "interpret": "La presencia de estas funciones no certifica que estén correctamente aplicadas; las salidas de CLI dependen del fabricante.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "ip -d link show; ip neigh show",
+        "lookFor": "VLAN e información ARP local; no muestra configuración del switch."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-NetAdapter | Format-Table Name,Status,LinkSpeed; Get-NetNeighbor",
+        "lookFor": "Enlaces y vecinos del host; las protecciones L2 se validan en el switch."
+      },
+      {
+        "platform": "macOS",
+        "command": "ifconfig; arp -an",
+        "lookFor": "Interfaz y vecinos del host; confirmar controles en infraestructura."
+      }
+    ]
+  },
+  {
+    "id": "term-142",
+    "symptom": "Switch o AP administrable desde VLAN de usuarios o con protocolos en claro.",
+    "verify": "Documenta redes de gestión, ACL, protocolos habilitados, roles AAA, firmware, NTP, logging y backup restaurable.",
+    "interpret": "No atribuyas seguridad a una VLAN de gestión sin comprobar desde dónde se puede acceder.",
+    "commands": [
+      {
+        "platform": "PowerShell",
+        "command": "Test-NetConnection -ComputerName gestion.autorizada.invalid -Port 443",
+        "lookFor": "Prueba únicamente una consola de gestión autorizada."
+      },
+      {
+        "platform": "Linux",
+        "command": "ssh -G admin@gestion.autorizada.invalid | grep -E '^(hostname|port|user) '",
+        "lookFor": "Opciones de cliente SSH; no establece conexión con el equipo remoto."
+      }
+    ]
+  },
+  {
+    "id": "term-143",
+    "symptom": "Un único dispositivo antiguo obliga a activar WPA/TKIP o WPS en toda la empresa.",
+    "verify": "Inventaría capacidades por dispositivo y planifica segmento transitorio con ACL y fecha de retirada.",
+    "interpret": "Un SSID aislado y temporal puede contener el riesgo; no hay seguridad equivalente con WEP/TKIP.",
+    "commands": [
+      {
+        "platform": "Windows · CMD",
+        "command": "netsh wlan show drivers",
+        "lookFor": "Tipos de radio/autenticación soportados por el driver; contrasta con fabricante."
+      },
+      {
+        "platform": "Linux",
+        "command": "nmcli device wifi list",
+        "lookFor": "SSID y opciones de seguridad anunciadas por AP cercanos."
+      }
+    ]
+  },
+  {
+    "id": "term-144",
+    "symptom": "Enlace entre equipos críticos atraviesa un medio no confiable.",
+    "verify": "Comprueba soporte y política MACsec/MKA de ambos extremos, negociación y procedimiento de recuperación.",
+    "interpret": "MACsec solo protege los saltos configurados; no demuestra cifrado en todo el trayecto.",
+    "commands": [
+      {
+        "platform": "Linux",
+        "command": "ip -d link show type macsec",
+        "lookFor": "Interfaces MACsec locales cuando el kernel y la configuración las exponen."
+      },
+      {
+        "platform": "PowerShell",
+        "command": "Get-NetAdapter | Format-Table Name,InterfaceDescription,Status",
+        "lookFor": "Inventario de interfaces; el soporte MACsec se verifica con el fabricante o controlador."
+      }
+    ]
   }
 ].map(({id,...guide})=>[id,Object.freeze(guide)])));
  const MAC_COMMANDS=[{"id":"term-25","platform":"macOS","command":"scutil --dns","lookFor":"Resolutores DNS efectivos por interfaz y orden de búsqueda."},{"id":"term-28","platform":"macOS","command":"lsof -nP -iTCP -sTCP:LISTEN","lookFor":"Procesos y puertos TCP en escucha (privilegios según proceso)."},{"id":"term-29","platform":"macOS","command":"curl -Iv https://servidor.autorizado.invalid","lookFor":"Validación TLS y respuesta de cabeceras del host aprobado."},{"id":"term-30","platform":"macOS","command":"security find-certificate -a -p /Library/Keychains/System.keychain","lookFor":"Certificados públicos del llavero del sistema; no extrae claves privadas."},{"id":"term-40","platform":"macOS","command":"fdesetup status","lookFor":"Estado FileVault del volumen de arranque; puede requerir permisos."},{"id":"term-15","platform":"macOS","command":"shasum -a 256 '/ruta/evidencia.bin'","lookFor":"SHA-256 reproducible de evidencia."},{"id":"term-72","platform":"macOS","command":"shasum -a 256 '/ruta/evidencia.bin'","lookFor":"Comprueba integridad en una copia preservada."},{"id":"term-100","platform":"macOS","command":"systemsetup -getusingnetworktime; systemsetup -getnetworktimeserver","lookFor":"Estado/configuración NTP; ciertos datos requieren privilegios."},{"id":"term-36","platform":"macOS","command":"lsof -nP -iTCP -sTCP:LISTEN","lookFor":"Servicios en escucha."},{"id":"term-21","platform":"macOS","command":"ifconfig; netstat -rn -f inet","lookFor":"Direcciones/prefijos y rutas IPv4."},{"id":"term-19","platform":"macOS","command":"scutil --nwi; netstat -rn -f inet","lookFor":"Contexto de interfaces y rutas para VPN."},{"id":"term-34","platform":"macOS","command":"softwareupdate --list","lookFor":"Actualizaciones ofrecidas al host; no instala actualizaciones."},{"id":"term-99","platform":"macOS","command":"log show --last 1h --style compact --predicate 'messageType == error'","lookFor":"Errores recientes; filtra sin guardar datos personales innecesarios."},{"id":"term-101","platform":"macOS","command":"log show --last 1h --style compact --predicate 'process == \"sshd\"'","lookFor":"Eventos recientes del servicio SSH cuando existan."},{"id":"term-26","platform":"macOS","command":"ipconfig getpacket en0","lookFor":"Parámetros DHCP de en0; comprobar interfaz activa."},{"id":"term-31","platform":"macOS","command":"system_profiler SPAirPortDataType","lookFor":"Seguridad y configuración Wi-Fi visible desde el cliente."},{"id":"term-42","platform":"macOS","command":"systemextensionsctl list","lookFor":"Extensiones de sistema presentes; verificar estado EDR en consola del fabricante."},{"id":"term-39","platform":"macOS","command":"system_profiler SPiBridgeDataType","lookFor":"Componentes de seguridad disponibles según hardware Apple (no implica TPM)."}];
@@ -3446,8 +3633,8 @@
       "cidr": "term-3",
       "vlan": "term-2",
       "dns": "term-25",
-      "firewall": "term-14",
-      "exposure": "term-1"
+      "firewall": "term-141",
+      "exposure": "term-136"
     },
     "software": {
       "support": "term-9",
