@@ -158,3 +158,9 @@ Cuando Audit Workbench se sirve desde un origen HTTPS o localhost estable, compr
 El Service Worker instala una copia completa y versionada de los recursos esenciales antes de poder activar una nueva versión. Si falla la instalación, se mantiene la versión activa anterior. La navegación offline recurre a la página inicial almacenada; se conservan la caché actual y una anterior como reserva limitada. El panel **Protección del trabajo offline** comprueba recursos esenciales ausentes, muestra una estimación del espacio, permite solicitar almacenamiento persistente al navegador y reparar explícitamente archivos de caché faltantes cuando el servidor original está disponible. La reparación no envía expedientes ni descarga datos de auditoría.
 
 La persistencia depende del navegador y no sustituye las copias de seguridad. No se puede garantizar un 99,9 % de disponibilidad sin mediciones, ni recuperar datos eliminados por el sistema o usuario. Prueba el arranque de la PWA instalada tras detener el servidor y exporta backups JSON antes de actualizar.
+
+## Informes ejecutivo y técnico
+
+**El mismo expediente genera dos documentos diferenciados sin añadir campos ni duplicar datos.** En **Informes**, elige **Ejecutivo** (riesgos, impacto para la organización, prioridades, responsables y decisiones) o **Técnico** (métodos documentados, hallazgos, controles, inventarios, CVE, evidencias vinculadas y remediación detallada). Cada uno dispone de **Borrador** y **Definitivo** y comparte referencia, revisión confirmada y requisitos de validación. Se mantiene el informe independiente de reevaluación.
+
+El ejecutivo no incluye capturas técnicas ni inventarios completos. El técnico muestra únicamente lo que el auditor ha registrado: no inventa comandos, pruebas de explotación ni verificaciones. Ambos se imprimen localmente como PDF desde el navegador. No cambian los formularios ni el formato JSON del expediente.
