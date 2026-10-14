@@ -2349,3 +2349,7 @@ button:focus-visible {
 @media print{.export-feedback-toast{display:none!important}}
 
 .document-control{display:grid;gap:1rem}.document-control code{overflow-wrap:anywhere}.document-control details{border-top:1px solid var(--line);padding-top:.8rem}.document-control ol{padding-left:1.4rem;max-height:16rem;overflow:auto}.document-control .fields{margin-top:.3rem}
+
+.pwa-update-notice{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin:1rem;padding:1rem;border:1px solid var(--line);border-radius:12px;background:var(--paper);box-shadow:0 4px 20px #0001}
+.pwa-update-notice[hidden]{display:none}.pwa-update-copy{min-width:0}.pwa-update-copy strong{display:block}.pwa-update-copy p{margin:.35rem 0 0;color:var(--muted);font-size:.9rem}.pwa-update-actions{display:flex;flex-wrap:wrap;gap:.5rem;flex:none}.pwa-update-status{font-size:.75rem;color:var(--muted);max-width:17rem}
+@media(max-width:700px){.pwa-update-notice{flex-direction:column;align-items:stretch}.pwa-update-actions .button{flex:1 1 auto}}@media print{.pwa-update-notice,.pwa-update-status,#pwa-update-check{display:none!important}}
