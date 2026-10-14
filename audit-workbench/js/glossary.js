@@ -7,22 +7,36 @@
     "title": "Segmentación de red",
     "category": "Redes",
     "description": "Una red segmentada separa equipos y servicios en zonas con reglas de comunicación explícitas.",
-    "check": "Identifica VLAN/subredes, revisa ACL y firewall entre zonas y prueba solamente flujos autorizados.",
-    "why": "Limita comunicaciones innecesarias y dificulta el movimiento lateral.",
+    "check": "Documenta zonas, propietarios y flujos reales, incluidos IPv6 y servicios de administración. Verifica ACL/firewall entre VLAN con pruebas autorizadas; usa denegación por defecto y conserva excepciones justificadas.",
+    "why": "Una VLAN separa el dominio L2, no garantiza aislamiento inter-VLAN ni confianza del endpoint. El control real se valida en el encaminamiento, políticas e identidad.",
     "aliases": [
       "red segmentada",
       "segmentar red",
       "aislamiento de red"
     ],
-    "example": "Ejemplo: una VLAN de invitados no puede iniciar conexiones a la red de servidores."
+    "example": "Ejemplo: una VLAN de invitados no puede iniciar conexiones a la red de servidores.",
+    "references": [
+      {
+        "label": "NIST SP 800-215 · Redes empresariales seguras",
+        "url": "https://csrc.nist.gov/pubs/sp/800/215/final"
+      },
+      {
+        "label": "NIST SP 800-207 · Arquitectura Zero Trust",
+        "url": "https://csrc.nist.gov/pubs/sp/800/207/final"
+      },
+      {
+        "label": "CISA · Hardening de infraestructura de comunicaciones",
+        "url": "https://www.cisa.gov/resources-tools/resources/enhanced-visibility-and-hardening-guidance-communications-infrastructure"
+      }
+    ]
   },
   {
     "id": "term-2",
     "title": "VLAN",
     "category": "Redes",
     "description": "Red lógica de capa 2 identificada habitualmente con una etiqueta IEEE 802.1Q.",
-    "check": "Comprueba puertos de acceso/trunk, VLAN nativa y políticas inter-VLAN.",
-    "why": "Una VLAN por sí sola no garantiza aislamiento: deben existir reglas inter-VLAN.",
+    "check": "Comprueba puertos access/trunk, VLAN nativa, listas permitidas y DTP/modos dinámicos según fabricante. Verifica ACL entre zonas; en cambios sobre uplinks usa ventana y recuperación por consola.",
+    "why": "El etiquetado IEEE 802.1Q no cifra datos ni impone por sí solo reglas L3/L4; trunks abiertos y VLAN de gestión compartida amplían el riesgo.",
     "aliases": [
       "Virtual Local Area Network"
     ],
@@ -30,8 +44,12 @@
     "fullName": "Virtual Local Area Network",
     "references": [
       {
-        "label": "Estándares IEEE 802.1Q (consulta la norma vigente)",
+        "label": "IEEE · Estándares 802.1Q",
         "url": "https://standards.ieee.org/"
+      },
+      {
+        "label": "CISA · Hardening de infraestructura de comunicaciones",
+        "url": "https://www.cisa.gov/resources-tools/resources/enhanced-visibility-and-hardening-guidance-communications-infrastructure"
       }
     ]
   },
@@ -374,13 +392,23 @@
     "title": "802.1X / NAC",
     "category": "Redes",
     "description": "Control de acceso a red que autentica dispositivos o usuarios antes de autorizar conectividad.",
-    "check": "Valida autenticación, perfiles de invitados y puertos excepcionados.",
-    "why": "Ayuda a limitar equipos no autorizados en la red.",
+    "check": "Revisa autenticación 802.1X (preferentemente EAP-TLS en equipos gestionados), certificados/RADIUS, VLAN por rol y comportamiento en fallo. Aísla dispositivos sin supplicant; MAB no equivale a autenticar un certificado.",
+    "why": "NAC limita conexiones no autorizadas y permite cuarentena, pero requiere excepciones controladas, disponibilidad RADIUS y registro de accesos.",
     "aliases": [
       "network access control",
       "control de acceso a red"
     ],
-    "example": ""
+    "example": "",
+    "references": [
+      {
+        "label": "ASD · Medidas defensivas para redes y NAC",
+        "url": "https://www.cyber.gov.au/publication/mitigations-for-network-defence"
+      },
+      {
+        "label": "NIST SP 800-215 · Redes empresariales seguras",
+        "url": "https://csrc.nist.gov/pubs/sp/800/215/final"
+      }
+    ]
   },
   {
     "id": "term-25",
@@ -496,27 +524,51 @@
     "id": "term-31",
     "title": "WPA2 / WPA3",
     "category": "Redes",
-    "description": "Mecanismos de seguridad para autenticar y proteger redes Wi-Fi.",
-    "check": "Comprueba modo empresarial/personal, credenciales y aislamiento de invitados.",
-    "why": "Reduce accesos inalámbricos no autorizados.",
+    "description": "WPA3-Enterprise y WPA2-Enterprise/AES son perfiles WLAN gestionados; no equivalen a WPA3-Personal/PSK ni a la red abierta de invitados.",
+    "check": "En 2026 prioriza WPA3-Enterprise con 802.1X/EAP-TLS, PMF y validación estricta de RADIUS. Audita cifrado real, WPS, legados WEP/WPA/TKIP, actualización de AP y separación de invitados. Reserva 192-bit a entornos con compatibilidad y requisitos apropiados.",
+    "why": "Evita claves compartidas y reduce ataques a autenticación y gestión. La selección de WPA3 por sí sola no sustituye PKI segura ni segmentación.",
     "aliases": [
       "wifi",
-      "wifi seguro"
+      "wifi seguro",
+      "wpa3",
+      "WPA3 Enterprise",
+      "WPA2 Enterprise",
+      "wireless LAN security"
     ],
-    "example": ""
+    "example": "",
+    "references": [
+      {
+        "label": "ASD ISM · Seguridad de redes, revisión septiembre 2026",
+        "url": "https://www.cyber.gov.au/ism/2026-09/guidelines-for-networking"
+      },
+      {
+        "label": "NIST SP 800-153 · Seguridad WLAN",
+        "url": "https://csrc.nist.gov/pubs/sp/800/153/final"
+      }
+    ]
   },
   {
     "id": "term-32",
     "title": "Red de invitados",
     "category": "Redes",
     "description": "Segmento aislado para dispositivos que no deben acceder a recursos corporativos.",
-    "check": "Prueba el aislamiento respecto a servidores, administración y otras VLAN.",
-    "why": "Un invitado no debe acceder por defecto a datos internos.",
+    "check": "Desde un cliente invitado autorizado, verifica aislamiento frente a servidores, gestión, impresoras sensibles y otros clientes. Prueba política IPv4/IPv6 y DNS, no solo que exista otra VLAN.",
+    "why": "Un portal cautivo y un SSID independiente no demuestran aislamiento. El acceso a Internet de visitantes debe separarse de recursos internos.",
     "aliases": [
       "guest wifi",
       "Wi-Fi invitados"
     ],
-    "example": ""
+    "example": "",
+    "references": [
+      {
+        "label": "CISA · Segmentación de redes de invitados",
+        "url": "https://www.cisa.gov/sites/default/files/2024-10/Implementation%20Guidance%20-%20Segmenting%20Traffic%20and%20Telemetry%20From%20Agency%20Guest%20Networks%20and%20Security%20Appliances.pdf"
+      },
+      {
+        "label": "NIST SP 800-215 · Redes empresariales seguras",
+        "url": "https://csrc.nist.gov/pubs/sp/800/215/final"
+      }
+    ]
   },
   {
     "id": "term-33",
@@ -1882,8 +1934,8 @@
     "title": "RADIUS",
     "category": "Identidad",
     "description": "Protocolo de autenticación, autorización y contabilidad para acceso de red.",
-    "check": "Verifica integridad de clientes NAS, políticas y registro de autenticaciones.",
-    "why": "El uso de RADIUS no garantiza por sí mismo MFA ni segmentación.",
+    "check": "Verifica clientes NAS autorizados, política AAA, EAP y certificados del servidor, registro de accesos, redundancia y revocación; protege credenciales RADIUS según el transporte y soporte.",
+    "why": "RADIUS es una función de AAA y no garantiza por sí mismo autenticación fuerte, validación de certificados, segmentación ni seguridad de su transporte.",
     "aliases": [
       "Remote Authentication Dial-In User Service"
     ],
@@ -1891,8 +1943,12 @@
     "fullName": "Remote Authentication Dial-In User Service",
     "references": [
       {
-        "label": "Referencia oficial",
+        "label": "IETF RFC 2865 · RADIUS",
         "url": "https://www.rfc-editor.org/rfc/rfc2865"
+      },
+      {
+        "label": "ASD · Medidas defensivas para redes y NAC",
+        "url": "https://www.cyber.gov.au/publication/mitigations-for-network-defence"
       }
     ]
   },
@@ -1901,8 +1957,8 @@
     "title": "802.1X",
     "category": "Redes",
     "description": "Control de acceso a redes basado en puerto; involucra supplicant, authenticator y autenticador backend.",
-    "check": "Comprueba modo de autenticación, VLAN asignada y excepciones en los switches.",
-    "why": "Diferencia 802.1X del protocolo EAP y de un producto NAC.",
+    "check": "En Ethernet/Wi-Fi, verifica identidad del supplicant, autenticador/switch/AP y backend RADIUS; valida método EAP, estado de puerto, VLAN asignada y fallos/reautenticaciones. Documenta MAB y excepciones IoT por separado.",
+    "why": "El 802.1X es control de acceso basado en puerto y funciona con políticas y métodos EAP; no sustituye por sí mismo protección contra movimiento lateral.",
     "aliases": [
       "IEEE 802.1X Port-Based Network Access Control"
     ],
@@ -1910,8 +1966,12 @@
     "fullName": "IEEE 802.1X Port-Based Network Access Control",
     "references": [
       {
-        "label": "Referencia oficial",
+        "label": "IEEE · Port-Based Network Access Control",
         "url": "https://standards.ieee.org/"
+      },
+      {
+        "label": "ASD · Medidas defensivas para redes y NAC",
+        "url": "https://www.cyber.gov.au/publication/mitigations-for-network-defence"
       }
     ]
   },
@@ -2140,6 +2200,252 @@
       {
         "label": "Referencia oficial",
         "url": "https://owasp.org/"
+      }
+    ]
+  },
+  {
+    "id": "term-136",
+    "title": "Diseño seguro de red empresarial (2026)",
+    "category": "Redes",
+    "description": "Modelo base para redes Ethernet y Wi-Fi: inventario de activos y flujos, zonas separadas por función y sensibilidad, identidad de dispositivo/usuario, reglas mínimas de comunicación, monitorización y recuperación.",
+    "check": "Prioridad 1: identificar Internet, usuarios, servidores, administración, invitados, IoT e infraestructura crítica; documentar VLAN/subredes, flujos permitidos y propietario. Prioridad 2: filtrar entre zonas con ACL/firewall (denegar por defecto), registrar decisiones y probar flujos autorizados. Prioridad 3: mantener firmware, cuentas, respaldos, tiempo y monitorización. Revisar IPv4 e IPv6.",
+    "why": "El acceso a una LAN o SSID no constituye confianza. Una VLAN separa dominios de capa 2, pero requiere políticas efectivas entre zonas para reducir movimiento lateral.",
+    "aliases": [
+      "arquitectura de red segura",
+      "red empresarial",
+      "baseline de red 2026",
+      "ethernet corporativa",
+      "wifi empresarial"
+    ],
+    "example": "Ejemplo: invitados solo a Internet; empleados a aplicaciones autorizadas; IoT a servicios necesarios; gestión desde estaciones administrativas designadas.",
+    "references": [
+      {
+        "label": "NIST SP 800-215 · Redes empresariales seguras",
+        "url": "https://csrc.nist.gov/pubs/sp/800/215/final"
+      },
+      {
+        "label": "NIST SP 800-207 · Arquitectura Zero Trust",
+        "url": "https://csrc.nist.gov/pubs/sp/800/207/final"
+      },
+      {
+        "label": "CISA · Hardening de infraestructura de comunicaciones",
+        "url": "https://www.cisa.gov/resources-tools/resources/enhanced-visibility-and-hardening-guidance-communications-infrastructure"
+      }
+    ]
+  },
+  {
+    "id": "term-137",
+    "title": "Wi-Fi corporativa: WPA3-Enterprise",
+    "category": "Redes",
+    "description": "Acceso WLAN gestionado por identidad mediante WPA3-Enterprise y 802.1X/RADIUS; EAP-TLS con certificados permite autenticar clientes sin depender de una clave Wi-Fi compartida.",
+    "check": "Para nuevos despliegues, priorizar WPA3-Enterprise; usar WPA2-Enterprise con AES-CCMP únicamente donde sea necesario por compatibilidad y documentar su retirada. Validar certificados y nombre del servidor RADIUS, identidad del equipo/usuario, revocación, roaming, PMF, firmware y aislamiento entre SSID. Evaluar 192 bits si se exige y toda la infraestructura es compatible.",
+    "why": "Una PSK común deja sin trazabilidad por usuario y obliga a rotar una clave compartida ante bajas o filtraciones. WPA3 no sustituye segmentación ni controles de dispositivo.",
+    "aliases": [
+      "WPA3-Enterprise",
+      "WPA2-Enterprise",
+      "wifi oficina",
+      "wifi corporativo",
+      "WLAN 802.1X"
+    ],
+    "example": "Ejemplo: empleados con certificados administrados en SSID corporativo; los dispositivos no gestionados usan invitados con política limitada.",
+    "references": [
+      {
+        "label": "ASD ISM · Seguridad de redes, revisión septiembre 2026",
+        "url": "https://www.cyber.gov.au/ism/2026-09/guidelines-for-networking"
+      },
+      {
+        "label": "NIST SP 800-153 · Seguridad WLAN",
+        "url": "https://csrc.nist.gov/pubs/sp/800/153/final"
+      }
+    ]
+  },
+  {
+    "id": "term-138",
+    "title": "EAP-TLS, certificados y RADIUS para acceso de red",
+    "category": "Redes",
+    "description": "Autenticación 802.1X basada en certificados cliente y confianza explícita en el servidor de autenticación; aplicable a Ethernet y Wi-Fi con infraestructura PKI/RADIUS.",
+    "check": "Inventariar emisores y plantillas, vigencia, renovación y revocación. Fijar CA y nombre esperado de servidor RADIUS en perfiles administrados; verificar políticas por identidad y dispositivo, y registrar rechazos sin publicar claves. Ensayar expiración, revocación y caída del RADIUS antes de extender el despliegue.",
+    "why": "Aceptar cualquier certificado de servidor facilita AP falsos/evil twin y robo de credenciales. EAP-TLS requiere gestionar el ciclo de vida de los certificados, no solo instalar uno.",
+    "aliases": [
+      "EAP-TLS",
+      "PKI WiFi",
+      "certificados Wi-Fi",
+      "servidor RADIUS",
+      "EAP extensible"
+    ],
+    "example": "Ejemplo: el cliente solo acepta el certificado de autenticación de su RADIUS empresarial y dispone de un certificado propio emitido y revocable.",
+    "references": [
+      {
+        "label": "ASD ISM · Seguridad de redes, revisión septiembre 2026",
+        "url": "https://www.cyber.gov.au/ism/2026-09/guidelines-for-networking"
+      },
+      {
+        "label": "ASD · Medidas defensivas para redes y NAC",
+        "url": "https://www.cyber.gov.au/publication/mitigations-for-network-defence"
+      }
+    ]
+  },
+  {
+    "id": "term-139",
+    "title": "PMF / protección de tramas de gestión (802.11w)",
+    "category": "Redes",
+    "description": "Protected Management Frames protege determinadas tramas Wi-Fi de gestión frente a falsificación y se utiliza con WPA3, dentro de las capacidades de clientes y AP.",
+    "check": "Comprobar que PMF está requerido en SSID WPA3 y evaluar compatible/obligatorio en redes WPA2 según clientes. Verificar funcionamiento real con el controlador/AP y clientes compatibles; documentar excepciones y plan de retirada de equipos antiguos.",
+    "why": "PMF reduce ciertos ataques a tramas de gestión, pero no evita interferencias de radio, todas las formas de denegación de servicio ni sustituye autenticación o cifrado.",
+    "aliases": [
+      "Protected Management Frames",
+      "802.11w",
+      "PMF required",
+      "MFP",
+      "protection management frames"
+    ],
+    "example": "Ejemplo: SSID WPA3-Enterprise con PMF requerido; la WLAN heredada permanece aislada mientras se actualizan los clientes.",
+    "references": [
+      {
+        "label": "ASD ISM · Seguridad de redes, revisión septiembre 2026",
+        "url": "https://www.cyber.gov.au/ism/2026-09/guidelines-for-networking"
+      },
+      {
+        "label": "NIST SP 800-153 · Seguridad WLAN",
+        "url": "https://csrc.nist.gov/pubs/sp/800/153/final"
+      }
+    ]
+  },
+  {
+    "id": "term-140",
+    "title": "Wi-Fi de invitados, BYOD e IoT",
+    "category": "Redes",
+    "description": "Políticas de acceso diferenciadas para visitantes, dispositivos personales y equipos IoT que no cumplen el mismo nivel de gestión que los endpoints corporativos.",
+    "check": "SSID o perfiles separados; VLAN/ACL con salida mínima necesaria, aislamiento entre clientes cuando proceda, sin rutas libres a servidores, impresoras, controlador Wi-Fi o gestión. Probar DNS, DHCP, IPv6, multicast y las excepciones documentadas; revisar portales cautivos y caducidad de accesos.",
+    "why": "Un portal cautivo no equivale a cifrado ni autenticación corporativa; una VLAN sin ACL puede seguir teniendo acceso al interior.",
+    "aliases": [
+      "guest WiFi",
+      "BYOD",
+      "IoT segmentation",
+      "red visitantes",
+      "red invitados segura"
+    ],
+    "example": "Ejemplo: invitados a Internet sin acceso RFC1918/ULA corporativo; sensores IoT solo a su broker y DNS/NTP autorizados.",
+    "references": [
+      {
+        "label": "CISA · Segmentación de redes de invitados",
+        "url": "https://www.cisa.gov/sites/default/files/2024-10/Implementation%20Guidance%20-%20Segmenting%20Traffic%20and%20Telemetry%20From%20Agency%20Guest%20Networks%20and%20Security%20Appliances.pdf"
+      },
+      {
+        "label": "NIST SP 800-215 · Redes empresariales seguras",
+        "url": "https://csrc.nist.gov/pubs/sp/800/215/final"
+      },
+      {
+        "label": "NIST SP 800-207 · Arquitectura Zero Trust",
+        "url": "https://csrc.nist.gov/pubs/sp/800/207/final"
+      }
+    ]
+  },
+  {
+    "id": "term-141",
+    "title": "Ethernet: protección de switches de acceso (capa 2)",
+    "category": "Redes",
+    "description": "Controles para reducir conexiones no autorizadas y suplantaciones en redes cableadas: 802.1X/NAC, puertos de acceso fijos, protección STP y servicios de confianza.",
+    "check": "Deshabilitar puertos sin uso; usar access VLAN explícita y trunks solo donde proceda, limitar VLAN nativa y lista de VLAN permitidas. Evaluar DHCP snooping, Dynamic ARP Inspection, IP Source Guard, BPDU Guard y storm control en equipos compatibles; configurar puertos de confianza de forma precisa y validar enlaces a switches, AP, teléfonos y servicios legítimos.",
+    "why": "Un ajuste L2 aplicado sin topología puede interrumpir teléfonos IP, DHCP, virtualización o uplinks. Exigir plan de cambio, consola de recuperación y rollback antes de activar protecciones.",
+    "aliases": [
+      "switch hardening",
+      "DHCP snooping",
+      "DAI",
+      "ARP inspection",
+      "BPDU Guard",
+      "port security",
+      "wired lan hardening"
+    ],
+    "example": "Ejemplo: acceso de empleado con 802.1X y VLAN asignada; uplinks documentados; DHCP snooping confía solo en los enlaces hacia servidores DHCP autorizados.",
+    "references": [
+      {
+        "label": "CISA · Hardening de infraestructura de comunicaciones",
+        "url": "https://www.cisa.gov/resources-tools/resources/enhanced-visibility-and-hardening-guidance-communications-infrastructure"
+      },
+      {
+        "label": "ASD · Medidas defensivas para redes y NAC",
+        "url": "https://www.cyber.gov.au/publication/mitigations-for-network-defence"
+      }
+    ]
+  },
+  {
+    "id": "term-142",
+    "title": "Administración segura de switches, routers y AP",
+    "category": "Redes",
+    "description": "Separación del plano de administración del tráfico de usuarios: redes o canales OOB de gestión, credenciales nominales, protocolos cifrados, registros y copias de configuración.",
+    "check": "Acceso administrativo solo desde hosts/redes autorizados, MFA en el plano de gestión cuando exista; SSH/HTTPS y SNMPv3 con cifrado, no Telnet/HTTP/SNMPv1-v2c. Limitar servicios, mantener firmware soportado, NTP, syslog externo, AAA y respaldos restaurables. Probar acceso de emergencia y ciclo de parches.",
+    "why": "La red de gestión es un objetivo de alto valor: su compromiso permite alterar DNS, VLAN, firmware o registro de eventos; una VLAN de gestión sin ACL no basta.",
+    "aliases": [
+      "OOB",
+      "out of band management",
+      "management VLAN",
+      "SNMPv3",
+      "SSH switch",
+      "AAA TACACS"
+    ],
+    "example": "Ejemplo: controladores Wi-Fi y switches solo administrables mediante estaciones privilegiadas dentro de una red de gestión segregada.",
+    "references": [
+      {
+        "label": "CISA · Hardening de infraestructura de comunicaciones",
+        "url": "https://www.cisa.gov/resources-tools/resources/enhanced-visibility-and-hardening-guidance-communications-infrastructure"
+      },
+      {
+        "label": "NIST SP 800-215 · Redes empresariales seguras",
+        "url": "https://csrc.nist.gov/pubs/sp/800/215/final"
+      }
+    ]
+  },
+  {
+    "id": "term-143",
+    "title": "Migración de Wi-Fi heredada y excepciones",
+    "category": "Redes",
+    "description": "Estrategia temporal para retirar WEP, WPA original, TKIP, WPS y autenticación compartida sin provocar cortes imprevistos en equipos antiguos.",
+    "check": "Inventariar clientes por capacidad WPA3/PMF y dependencia; eliminar WEP/WPA/TKIP/WPS; priorizar WLAN corporativa WPA3-Enterprise. Si necesita WPA2-Enterprise/AES o SSID temporal, aislarlo, restringir sus accesos y fijar fecha de sustitución. Revisar si los modos de transición degradan el nivel de seguridad efectivo.",
+    "why": "No se debe rebajar toda la WLAN empresarial para mantener un único terminal obsoleto. WPA3-Enterprise 192-bit es un perfil de alta garantía, no un requisito universal automático.",
+    "aliases": [
+      "WEP",
+      "TKIP",
+      "WPS",
+      "WPA2 transición",
+      "WPA3 transition",
+      "wifi legado",
+      "SSID temporal"
+    ],
+    "example": "Ejemplo: lector industrial solo WPA2/AES en segmento restringido y con fecha de renovación; Wi-Fi de personal permanece en WPA3-Enterprise.",
+    "references": [
+      {
+        "label": "ASD ISM · Seguridad de redes, revisión septiembre 2026",
+        "url": "https://www.cyber.gov.au/ism/2026-09/guidelines-for-networking"
+      },
+      {
+        "label": "NIST SP 800-153 · Seguridad WLAN",
+        "url": "https://csrc.nist.gov/pubs/sp/800/153/final"
+      }
+    ]
+  },
+  {
+    "id": "term-144",
+    "title": "MACsec / IEEE 802.1AE en enlaces Ethernet",
+    "category": "Redes",
+    "description": "Cifrado e integridad de capa 2 para enlaces cableados compatibles, útil en uplinks o tramos de alta sensibilidad cuando se requiere proteger frente a interceptación en el medio.",
+    "check": "Determinar si los equipos soportan MACsec y gestión segura de claves/MKA; documentar enlaces cubiertos, cifrados negociados, redundancia, latencia y plan de recuperación. Verificar establecimiento y reautenticación sin asumir protección extremo a extremo.",
+    "why": "MACsec protege el enlace donde se configura; no sustituye TLS, segmentación, ACL, control de acceso 802.1X ni cifrado de otras rutas.",
+    "aliases": [
+      "802.1AE",
+      "MAC Security",
+      "ethernet cifrado",
+      "cifrado de enlace"
+    ],
+    "example": "Ejemplo: un uplink sensible entre switches compatibles utiliza MACsec y control de gestión separado.",
+    "references": [
+      {
+        "label": "ASD ISM · Seguridad de redes, revisión septiembre 2026",
+        "url": "https://www.cyber.gov.au/ism/2026-09/guidelines-for-networking"
+      },
+      {
+        "label": "NIST SP 800-215 · Redes empresariales seguras",
+        "url": "https://csrc.nist.gov/pubs/sp/800/215/final"
       }
     ]
   }
