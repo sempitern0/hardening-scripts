@@ -1,0 +1,18 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const root=path.resolve(__dirname,'..');
+const js=fs.readFileSync(path.join(root,'js/app.js'),'utf8'),css=fs.readFileSync(path.join(root,'css/print.css'),'utf8');
+const start=js.indexOf('const chapters=(reportProfile==='),end=js.indexOf('    const toc=section',start);
+assert(start>0&&end>start,'Two profile chapter arrays missing');
+const composition=js.slice(start,end);
+const exec=composition.slice(composition.indexOf(']:[')+3);
+const tech=composition.slice(composition.indexOf('?[')+2,composition.indexOf(']:['));
+for(const label of ['Resumen ejecutivo','Riesgos para la organización','Prioridades y decisiones'])assert(exec.includes(label),label);
+for(const label of ['Inventario de hardware','Infraestructura de redes','Controles y verificaciones','Registro de evidencias'])assert(tech.includes(label),label);
+for(const label of ['Inventario de hardware','Registro de evidencias','Software y servicios'])assert(!exec.includes(label),'Executive must exclude '+label);
+for(const id of ['delivery-executive-draft','delivery-executive-final','delivery-technical-draft','delivery-technical-final'])assert(js.includes('id="'+id+'"')&&js.includes("b.id==='"+id+"'"));
+assert(js.includes("reportProfile=profile==='technical'?'technical':'executive'"));
+assert(js.includes("if(reportDeliveryMode==='final'")&&js.includes('docControl.verify(state)'));
+assert(js.includes('byId(\'report\').dataset.reportType=reportProfile'));
+assert(css.includes('[data-report-type="executive"]'));
+console.log('PASS executive and technical report compositions');
