@@ -1647,7 +1647,5 @@
     deferredInstallPrompt=null;
     if(page==='online')render();
   });
-  if('serviceWorker' in navigator && ['https:','http:'].includes(location.protocol) && (location.protocol==='https:'||['localhost','127.0.0.1'].includes(location.hostname))){
-    window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js',{scope:'./'}).catch(error=>console.warn('PWA no disponible:',error)));
-  }
+  globalThis.AuditPwaUpdates?.init({saveBeforeReload:flush,isSafeToReload:()=>!dirty&&!storageError&&!saveTimer});
 })();
