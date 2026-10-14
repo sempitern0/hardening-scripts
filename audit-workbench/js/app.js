@@ -207,27 +207,21 @@
     company:'',taxType:'NIF entidad / CIF',taxId:'',email:'',phone:'',address:'',postal:'',
     prefix:'AUD',logo:'',members:[]
   });
-  function loadSettings(){
-    try{
-      const raw=JSON.parse(localStorage.getItem(SETTINGS_KEY)||'{}');
-      if(!raw||typeof raw!=='object'||Array.isArray(raw))return DEFAULT_SETTINGS();
-      const cfg=DEFAULT_SETTINGS();
-      for(const key of ['company','taxType','taxId','email','phone','address','postal','prefix'])if(typeof raw[key]==='string')cfg[key]=str(raw[key]);
-      cfg.prefix=/^[A-Z0-9-]{2,12}$/.test(cfg.prefix)?cfg.prefix:'AUD';
-      cfg.logo=safeLogo(raw.logo);
-      cfg.members=normalizeAuditTeam(raw.members);
-      return cfg;
-    }catch{return DEFAULT_SETTINGS()}
-  }
-  function loadSettingsFromImport(raw){
+  function normalizeSettings(raw){
     if(!raw||typeof raw!=='object'||Array.isArray(raw))throw Error('Configuración no válida');
-    const result=DEFAULT_SETTINGS();
-    for(const key of ['company','taxType','taxId','email','phone','address','postal','prefix'])if(typeof raw[key]==='string')result[key]=str(raw[key]);
-    result.logo=safeLogo(raw.logo);
-    result.members=normalizeAuditTeam(raw.members);
-    if(!/^[A-Z0-9-]{2,12}$/.test(result.prefix))result.prefix='AUD';
-    return result;
+    const settings=DEFAULT_SETTINGS();
+    for(const key of ['company','taxType','taxId','email','phone','address','postal','prefix'])
+      if(typeof raw[key]==='string')settings[key]=str(raw[key]);
+    if(!/^[A-Z0-9-]{2,12}$/.test(settings.prefix))settings.prefix='AUD';
+    settings.logo=safeLogo(raw.logo);
+    settings.members=normalizeAuditTeam(raw.members);
+    return settings;
   }
+  function loadSettings(){
+    try{return normalizeSettings(JSON.parse(localStorage.getItem(SETTINGS_KEY)||'{}'))}
+    catch{return DEFAULT_SETTINGS()}
+  }
+  const loadSettingsFromImport=normalizeSettings;
   let settings=loadSettings();
   function saveSettings(){
     try{localStorage.setItem(SETTINGS_KEY,JSON.stringify(settings));return true}
