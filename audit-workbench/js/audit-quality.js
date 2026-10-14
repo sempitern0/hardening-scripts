@@ -80,7 +80,7 @@
     const evidenceIds=new Set(evidence.map(e=>clean(e.id).toUpperCase()).filter(Boolean));
     const evidenceKeys=new Set(evidence.map(e=>clean(e._key)).filter(Boolean));
     for(const finding of findings){
-      for(const ref of [...new Set(clean(finding.evidenceIds).split(/[\\s,;]+/).filter(Boolean))]){
+      for(const ref of [...new Set(clean(finding.evidenceIds).split(/[\s,;]+/).filter(Boolean))]){
         if(!evidenceIds.has(ref.toUpperCase())&&!evidenceKeys.has(ref)){
           add(finalMode?'blocker':'warning','EVIDENCIA_REFERENCIADA_INEXISTENTE','evidence',
             `${clean(finding.id)||clean(finding.title)||'Hallazgo'}: referencia ${ref} sin registro de evidencia.`,clean(finding._key));
