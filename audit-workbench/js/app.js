@@ -4,6 +4,7 @@
   const VERSION = 3;
   const storage = globalThis.AuditStorage;
   const relations = globalThis.AuditRelations;
+  const identifiers = globalThis.AuditIdentifiers;
   const templates = globalThis.AuditControlTemplates;
   const quality = globalThis.AuditQuality;
   const assist = globalThis.AuditFieldAssist;
@@ -496,10 +497,15 @@
     }catch(error){console.error('No se pudo inicializar la persistencia',error);storageError=true;currentId=uid();updateStatus('⚠ Sin almacenamiento · exporta JSON',true)}
     render();
   }
-  async function createAudit(audit=fresh()){
+  async function createAudit(audit=fresh(),options={}) {
     try{
       await flush();
-      if(!audit.meta.reportId){audit.meta.reportId=nextReportId(audit.meta.client);audit.meta.reportAuto='yes'}
+      if(options.copy||!audit.meta.reportId){
+        audit.meta.reportId=identifiers.generate(records,settings.prefix||'AUD');
+        audit.meta.reportAuto='yes';
+      }
+      if(identifiers.collides(audit.meta.reportId,records))
+        throw Error('Ya existe una auditoría con esa referencia. No se puede crear otra con el mismo identificador.');
       // Auditors are selected explicitly per audit; never assign the company name as an individual.
       if(!audit.meta.logo)audit.meta.logo=settings.logo;
       const record=newRecord(audit);await enqueue(()=>repository.put(record));records.push(record);setActive(record);move('engagement')}
@@ -524,7 +530,8 @@
   async function duplicateAudit(id){
     const original=records.find(r=>r.id===id);if(!original)return;
     const copy=structuredCloneSafe(original.audit);copy.meta.project=(copy.meta.project||'Auditoría')+' · Copia';
-    await createAudit(copy);
+    copy.documentControl=null;
+    await createAudit(copy,{copy:true});
   }
   function downloadBlob(filename,blob){
     const url=URL.createObjectURL(blob);
@@ -541,7 +548,10 @@
     const value=str(obj[name]),id='f-'+block+'-'+(index===undefined?'main':index)+'-'+name;
     const key=/^(vlan|cvss|serial)$/.test(name)?'decimal':'text';
     let control;
-    if(type==='textarea')control=`<textarea id="${id}" ${attrs} maxlength="20000">${html(value)}</textarea>`;
+    if(identifiers.isLockedField(block,name)){
+      control=`<input id="${id}" type="text" value="${html(value)}" readonly aria-readonly="true" class="identifier-readonly" title="Código generado por la aplicación; no editable" autocomplete="off"><small class="identifier-hint">Identificador asignado automáticamente · solo lectura</small>`;
+    }
+    else if(type==='textarea')control=`<textarea id="${id}" ${attrs} maxlength="20000">${html(value)}</textarea>`;
     else if(type==='select')control=`<select id="${id}" ${attrs}>${choices.map(x=>`<option value="${html(x)}"${x===value?' selected':''}>${html(x)}</option>`).join('')}</select>`;
     else if(block==='networks'&&['gateway','dns','firewall'].includes(name)){
       const known=assist.suggestions(state,block,name);
@@ -1065,6 +1075,7 @@
       byId('record-list').innerHTML=recordsMarkup(matches);return;
     }
     if(t.dataset.preset)return;
+    if(identifiers.isLockedField(t.dataset.block,t.dataset.field))return;
     if(t.dataset.block==='settings'){settings[t.dataset.field]=t.value;updateValidation(t);saveSettings();return}
     const obj=fieldTarget(t);if(obj){obj[t.dataset.field]=t.value;if(t.dataset.block==='meta'&&t.dataset.field==='reportId')state.meta.reportAuto='no';if(t.dataset.block==='meta'&&['project','client','reportId'].includes(t.dataset.field)){byId('audit-context-title').textContent=state.meta.project||state.meta.client||'Auditoría sin título';byId('audit-context-ref').textContent=(state.meta.reportId||'SIN REFERENCIA')+' · '+(state.meta.client||'Cliente pendiente');byId('active-audit-label').textContent=(state.meta.reportId||'Sin referencia')+' · '+(state.meta.project||state.meta.client||'Sin título')}if(['title','name','id'].includes(t.dataset.field)){const heading=t.closest('.entry')?.querySelector('.entry-head strong');if(heading)heading.textContent=obj.title||obj.name||obj.id||'Registro'}persist();updateValidation(t)}
   });
@@ -1157,18 +1168,10 @@
       saveSettings();updateValidation(t);return;
     }
     const obj=fieldTarget(t);if(!obj)return;
-    if(t.dataset.block==='meta'&&t.dataset.field==='client'&&state.meta.reportAuto!=='no'){
-      const newClient=clientKey(t.value);
-      if(newClient!==clientKey(t.dataset.originalClient||'')){
-        state.meta.reportId=nextReportId(t.value);persist();
-        const idInput=byId('f-meta-main-reportId');if(idInput)idInput.value=state.meta.reportId;
-      }
-    }
-    if(t.dataset.block==='meta'&&t.dataset.field==='reportId'&&t.value!==state.meta.reportId){state.meta.reportAuto='no'}
-
     if(t.dataset.block==='meta'&&t.dataset.field==='client'){
       const context=byId('main-audit-context');context.textContent=(state.meta.reportId||'Sin referencia')+' · '+(t.value||'Cliente pendiente')+' · '+(state.meta.project||'Sin título');
     }
+    if(identifiers.isLockedField(t.dataset.block,t.dataset.field))return;
     if(t.dataset.preset){
       const custom=t.closest('.field').querySelector('[data-custom]');
       const isOther=t.value==='__custom__';custom.hidden=!isOther;
