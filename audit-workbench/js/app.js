@@ -1,7 +1,9 @@
 /* Audit Workbench: offline-first audits, explicit network connectors, no telemetry. */
 'use strict';
 (() => {
-  const VERSION = 3;
+  const VERSION = 3; // Only supported audit JSON schema: no migrations from pre-release formats.
+  const LIBRARY_KIND = 'audit-workbench-library';
+  const PROFILE_KIND = 'audit-workbench-consultancy';
   const storage = globalThis.AuditStorage;
   const relations = globalThis.AuditRelations;
   const identifiers = globalThis.AuditIdentifiers;
@@ -19,7 +21,6 @@
   if (!comparison) throw Error('No se ha cargado el resumen comparativo offline.');
   const SETTINGS_KEY = 'sysadmin-tools:audit-workbench:settings:v1';
   const CONNECTION_KEY = 'sysadmin-tools:audit-workbench:encrypted-nextcloud:v1';
-  const LEGACY_STORE = 'sysadmin-tools:audit-workbench:v2';
   const ACTIVE_KEY = 'sysadmin-tools:audit-workbench:active:v3';
   const FALLBACK_KEY = 'sysadmin-tools:audit-workbench:records:v3';
   const PALETTE_KEY = 'sysadmin-tools:audit-workbench:palette:v1';
@@ -136,7 +137,7 @@
       ['sha256','SHA-256 del original (opcional)'],['notes','Detalle, custodia y observaciones','textarea']]}
   };
   const severity = ['Crítica','Alta','Media','Baja','Informativa'];
-  const fresh = () => ({schemaVersion:VERSION,documentControl:null,meta:{classification:'Confidencial',type:'Auditoría de infraestructura',revision:'1.0',logo:'',reportAuto:'yes',auditTeam:[]},final:{disclaimer:'La evaluación refleja los sistemas y las evidencias examinados durante el período indicado. Las comprobaciones no ejecutadas y las exclusiones se detallan en el alcance.'},legal:legalDefaults(),assets:[],networks:[],software:[],cves:[],controls:[],findings:[],evidence:[],followupBaseline:null});
+  const fresh = () => ({schemaVersion:VERSION,documentControl:null,meta:{classification:'Confidencial',type:'Auditoría de infraestructura',revision:'1.0',logo:'',auditTeam:[]},final:{disclaimer:'La evaluación refleja los sistemas y las evidencias examinados durante el período indicado. Las comprobaciones no ejecutadas y las exclusiones se detallan en el alcance.'},legal:legalDefaults(),assets:[],networks:[],software:[],cves:[],controls:[],findings:[],evidence:[],followupBaseline:null});
   const str = v => typeof v === 'string' ? v.slice(0,20000) : '';
   const html = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const uid = () => globalThis.crypto && crypto.randomUUID ? crypto.randomUUID() : 'id-'+Date.now()+'-'+Math.random().toString(36).slice(2);
@@ -148,16 +149,14 @@
     if(!raw || Array.isArray(raw) || typeof raw!=='object' || raw.schemaVersion!==VERSION)throw Error('Versión de expediente incompatible (esperada: 3).');
     const out=fresh();
     for(const [block,fields] of [['meta',metaFields],['final',finalFields],['legal',legalFields]]){
-      if(!raw[block]||Array.isArray(raw[block])||typeof raw[block]!=='object'){if(block==='legal')continue;throw Error('Bloque incorrecto: '+block)}
+      if(!raw[block]||Array.isArray(raw[block])||typeof raw[block]!=='object')throw Error('Bloque incorrecto: '+block);
       for(const [name] of fields)out[block][name]=typeof raw[block][name]==='string'?str(raw[block][name]):out[block][name];
     }
     out.documentControl=docControl.normalize(raw.documentControl);
     out.meta.logo=safeLogo(raw.meta.logo);
-    out.meta.reportAuto=raw.meta.reportAuto==='no'?'no':'yes';
     out.meta.auditTeam=normalizeAuditTeam(raw.meta.auditTeam);
     out.followupBaseline=comparison.normalizeBaseline(raw.followupBaseline);
     for(const [block,definition] of Object.entries(groups)){
-      if(block==='cves' && raw[block]===undefined)continue;
       if(!Array.isArray(raw[block])||raw[block].length>LIMIT_ROWS)throw Error('Datos no válidos en '+block);
       out[block]=raw[block].map(item=>{
         if(!item||typeof item!=='object'||Array.isArray(item))throw Error('Registro no válido en '+block);
@@ -206,7 +205,7 @@
   function auditorNames(meta){return meta.auditTeam?.length?meta.auditTeam.map(x=>x.name).join(', '):str(meta.auditor).trim()}
   const DEFAULT_SETTINGS = () => ({
     company:'',taxType:'NIF entidad / CIF',taxId:'',email:'',phone:'',address:'',postal:'',
-    prefix:'AUD',logo:'',sequences:{},members:[]
+    prefix:'AUD',logo:'',members:[]
   });
   function loadSettings(){
     try{
@@ -217,11 +216,6 @@
       cfg.prefix=/^[A-Z0-9-]{2,12}$/.test(cfg.prefix)?cfg.prefix:'AUD';
       cfg.logo=safeLogo(raw.logo);
       cfg.members=normalizeAuditTeam(raw.members);
-      if(raw.sequences&&typeof raw.sequences==='object'&&!Array.isArray(raw.sequences)){
-        for(const [key,value] of Object.entries(raw.sequences)){
-          if(key.length<160&&Number.isSafeInteger(value)&&value>=0&&value<1000000)cfg.sequences[key]=value;
-        }
-      }
       return cfg;
     }catch{return DEFAULT_SETTINGS()}
   }
@@ -232,23 +226,12 @@
     result.logo=safeLogo(raw.logo);
     result.members=normalizeAuditTeam(raw.members);
     if(!/^[A-Z0-9-]{2,12}$/.test(result.prefix))result.prefix='AUD';
-    if(raw.sequences&&typeof raw.sequences==='object'&&!Array.isArray(raw.sequences))for(const [key,num] of Object.entries(raw.sequences)){if(key.length<160&&Number.isSafeInteger(num)&&num>=0&&num<1000000)result.sequences[key]=num}
     return result;
   }
   let settings=loadSettings();
   function saveSettings(){
     try{localStorage.setItem(SETTINGS_KEY,JSON.stringify(settings));return true}
     catch(error){alert('No se pudo guardar la configuración local: '+error.message);return false}
-  }
-  function clientKey(client){return (client||'__pendiente__').trim().toLocaleLowerCase('es').slice(0,150)}
-  function nextReportId(client){
-    const key=clientKey(client),prefix=settings.prefix||'AUD';
-    const prior=records.filter(r=>r.id!==currentId&&clientKey(r.audit?.meta?.client)===key).map(r=>r.audit?.meta?.reportId||'');
-    const expression=new RegExp('^'+prefix+'-(\\d+)$','i');
-    const highest=prior.reduce((max,id)=>Math.max(max,Number(id.match(expression)?.[1]||0)),0);
-    const next=Math.max(settings.sequences[key]||0,highest)+1;
-    settings.sequences[key]=next;saveSettings();
-    return prefix+'-'+String(next).padStart(3,'0');
   }
   function normalizeId(v){return str(v).trim().toUpperCase().replace(/[.\s-]/g,'')}
   const DNI_LETTERS='TRWAGMYFPDXBNJZSQVHLCKE';
@@ -368,7 +351,7 @@
     });
   }
   function backupPayload(){
-    return {auditWorkbenchBackup:1,exportedAt:new Date().toISOString(),records:records.map(item=>({audit:item.id===currentId?state:item.audit}))};
+    return {kind:LIBRARY_KIND,schemaVersion:VERSION,exportedAt:new Date().toISOString(),records:records.map(item=>({audit:item.id===currentId?state:item.audit}))};
   }
   function backupFilename(){return 'audit-workbench-copia-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json'}
   async function backupToFolder({interactive=false}={}){
@@ -482,12 +465,6 @@
     try{
       await repository.init();
       records=(await repository.list()).filter(r=>r&&typeof r.id==='string'&&r.audit&&r.audit.schemaVersion===VERSION);
-      if(records.length===0){
-        // No empty report is created implicitly. A new audit is an explicit action.
-        let legacy=null;
-        try{const input=localStorage.getItem(LEGACY_STORE);if(input)legacy=validate(JSON.parse(input))}catch(error){console.warn('No se pudo recuperar un expediente heredado',error)}
-        if(legacy){const first=newRecord(legacy);await repository.put(first);records=[first]}
-      }
       if(records.length){
         let lastId='';try{lastId=localStorage.getItem(ACTIVE_KEY)||''}catch(_ignored){}
         const active=records.find(r=>r.id===lastId)||[...records].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0];
@@ -502,7 +479,6 @@
       await flush();
       if(options.copy||!audit.meta.reportId){
         audit.meta.reportId=identifiers.generate(records,settings.prefix||'AUD');
-        audit.meta.reportAuto='yes';
       }
       if(identifiers.collides(audit.meta.reportId,records))
         throw Error('Ya existe una auditoría con esa referencia. No se puede crear otra con el mismo identificador.');
@@ -833,7 +809,7 @@
       ${renderMemberDirectory()}
       <section class="card"><h2>Logotipo corporativo</h2><p class="subtle">Se copiará a cada expediente nuevo y al PDF. No se envía a ningún servidor.</p>
       <input type="file" id="settings-logo-upload" accept="image/jpeg,image/png,image/webp" aria-label="Logotipo de la consultora">${settings.logo?`<div class="logo-preview"><img src="${settings.logo}" alt="Logotipo configurado"><button type="button" class="button danger" id="settings-logo-remove">Eliminar logo</button></div>`:''}</section>
-      <section class="card"><h2>Numeración y copia de seguridad</h2><p class="subtle">La numeración se asigna por cliente al completar su nombre. Cada cliente tiene su propia secuencia; un código usado no vuelve a asignarse aunque borres el expediente. Puedes corregir manualmente un identificador concreto.</p>
+      <section class="card"><h2>Identificadores y copia de seguridad</h2><p class="subtle">La referencia se asigna una sola vez al crear cada auditoría, utilizando el prefijo configurado, la fecha y un identificador aleatorio. Es de solo lectura y no depende del nombre del cliente.</p>
       <div class="action-row"><button class="button accent" id="settings-export">Exportar perfil JSON</button><button class="button quiet" id="settings-import">Importar perfil JSON</button><input type="file" id="settings-import-file" accept=".json,application/json" hidden></div></section>`;
   }
   function renderWizardTop(){const i=nav.findIndex(n=>n[0]===page);return i<0?'':`<div class="wizard-top"><span>Fase ${i+1} / ${nav.length}</span><progress max="${nav.length}" value="${i+1}"></progress><span>${html(nav[i][2])}</span></div>`}
@@ -1077,7 +1053,7 @@
     if(t.dataset.preset)return;
     if(identifiers.isLockedField(t.dataset.block,t.dataset.field))return;
     if(t.dataset.block==='settings'){settings[t.dataset.field]=t.value;updateValidation(t);saveSettings();return}
-    const obj=fieldTarget(t);if(obj){obj[t.dataset.field]=t.value;if(t.dataset.block==='meta'&&t.dataset.field==='reportId')state.meta.reportAuto='no';if(t.dataset.block==='meta'&&['project','client','reportId'].includes(t.dataset.field)){byId('audit-context-title').textContent=state.meta.project||state.meta.client||'Auditoría sin título';byId('audit-context-ref').textContent=(state.meta.reportId||'SIN REFERENCIA')+' · '+(state.meta.client||'Cliente pendiente');byId('active-audit-label').textContent=(state.meta.reportId||'Sin referencia')+' · '+(state.meta.project||state.meta.client||'Sin título')}if(['title','name','id'].includes(t.dataset.field)){const heading=t.closest('.entry')?.querySelector('.entry-head strong');if(heading)heading.textContent=obj.title||obj.name||obj.id||'Registro'}persist();updateValidation(t)}
+    const obj=fieldTarget(t);if(obj){obj[t.dataset.field]=t.value;if(t.dataset.block==='meta'&&['project','client','reportId'].includes(t.dataset.field)){byId('audit-context-title').textContent=state.meta.project||state.meta.client||'Auditoría sin título';byId('audit-context-ref').textContent=(state.meta.reportId||'SIN REFERENCIA')+' · '+(state.meta.client||'Cliente pendiente');byId('active-audit-label').textContent=(state.meta.reportId||'Sin referencia')+' · '+(state.meta.project||state.meta.client||'Sin título')}if(['title','name','id'].includes(t.dataset.field)){const heading=t.closest('.entry')?.querySelector('.entry-head strong');if(heading)heading.textContent=obj.title||obj.name||obj.id||'Registro'}persist();updateValidation(t)}
   });
   workspace.addEventListener('change',async e=>{
     if(e.target.dataset.assistRef==='evidence'){
@@ -1130,7 +1106,7 @@
     }
     if(t.name==='channel'){connectionChannel=t.value;for(const key of ['nextcloud','upload','email','share'])byId('connection-'+key).hidden=(key==='upload'||key==='nextcloud'?connectionChannel!=='nextcloud':connectionChannel!==key);return}
     if(t.id==='settings-import-file'&&t.files?.length){
-      try{const raw=JSON.parse(await t.files[0].text());if(!['audit-workbench-consultancy-v1','audit-workbench-consultancy-v2'].includes(raw?.kind))throw Error('No es un perfil de consultora.');settings=loadSettingsFromImport(raw.settings);saveSettings();render()}
+      try{const raw=JSON.parse(await t.files[0].text());if(raw?.kind!==PROFILE_KIND||raw.schemaVersion!==VERSION)throw Error('Solo se admite el perfil JSON vigente (esquema '+VERSION+').');settings=loadSettingsFromImport(raw.settings);saveSettings();render()}
       catch(error){alert('Perfil no importado: '+error.message)}return;
     }
     if(t.id==='settings-logo-upload'&&t.files?.length){
@@ -1302,7 +1278,7 @@
       if(!confirm('¿Eliminar del directorio a '+(member.name||'este profesional')+'? Las auditorías en las que participó conservarán su ficha.'))return;
       settings.members=settings.members.filter(m=>m.id!==b.dataset.memberRemove);saveSettings();render();return;
     }
-    if(b.id==='settings-export'){download('perfil-consultora.json',JSON.stringify({kind:'audit-workbench-consultancy-v2',settings},null,2),'application/json;charset=utf-8');return}
+    if(b.id==='settings-export'){download('perfil-consultora.json',JSON.stringify({kind:PROFILE_KIND,schemaVersion:VERSION,settings},null,2),'application/json;charset=utf-8');return}
     if(b.id==='settings-import'){byId('settings-import-file').click();return}
     if(b.id==='settings-logo-remove'){if(confirm('¿Eliminar el logo global de la consultora?')){settings.logo='';saveSettings();render()}return}
     if(b.id==='dav-save'){
@@ -1545,7 +1521,8 @@
     try{
       if(file.size>40*1024*1024)throw Error('El archivo supera 40 MiB. Exporta los expedientes individualmente o separa los backups.');
       const input=JSON.parse(await file.text());
-      if(input?.auditWorkbenchBackup===1){
+      if(input?.kind===LIBRARY_KIND){
+        if(input.schemaVersion!==VERSION)throw Error('Solo se admite el formato JSON actual (esquema '+VERSION+').');
         if(!Array.isArray(input.records)||input.records.length>250)throw Error('El backup es inválido o supera 250 auditorías.');
         const all=input.records.map(item=>validate(item.audit));
         const existing=new Set(records.map(r=>String(r.audit?.meta?.reportId||'').trim().toUpperCase()).filter(Boolean));
