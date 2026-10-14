@@ -174,3 +174,9 @@ The offline **Technical dictionary → Networks** includes nine practical guides
 ## Contextual field assistance
 
 The wizard reuses **already entered** asset identifiers/names, sites, owners, and previously recorded gateway/DNS/firewall values as editable suggestions. Controls and findings can link an existing evidence ID through a selector instead of retyping it. Duplicate asset names are offered with their inventory IDs to reduce ambiguity. Quality review warns about repeated host IPs, repeated hostnames, duplicate network prefixes, and an IPv4 gateway outside its documented CIDR. These warnings are not automatic compliance judgments and do not prevent legitimate exceptions. Audit data is not sent outside the browser, existing values are never silently replaced, and JSON schema v3 is unchanged. Never treat a suggestion as a verified observation.
+
+## Automatically assigned read-only identifiers
+
+New audit records receive a stable reference at creation: `PREFIX-YYYYMMDD-<24 hexadecimal characters>`, generated locally using the browser cryptographic random-number generator. It never changes when the client name changes. References for assets (`ACT-...`), controls (`CTRL-...`), findings (`FND-...`) and evidence (`EVD-...`) are generated when each record is added and displayed read-only. Official CVE identifiers remain editable because they are externally assigned.
+
+The **Duplicate** action creates a new audit reference and returns the copy to draft status; restored JSON keeps historical references. Imports are rejected when an audit reference already exists in the local library, instead of renumbering a delivered document or overwriting an audit. Earlier identifiers are retained for compatibility, including historical ID formats. No migration of the JSON schema is required. Identifiers are not digital signatures or proof of an auditor's identity; across disconnected devices, use centralized custody to reconcile records.
