@@ -108,6 +108,8 @@
     }
     if(!notEmpty(audit?.final?.executive))add(finalMode?'blocker':'warning','SIN_RESUMEN','delivery','Completa el resumen ejecutivo para dirección.');
     if(!notEmpty(audit?.final?.signoff))add(finalMode?'blocker':'warning','SIN_VALIDACION','delivery','Identifica quién revisa o autoriza la entrega.');
+    for(const item of globalThis.AuditFieldAssist?.crossChecks(audit)||[])
+      add('warning',item.code,item.section,item.message,item.key);
     for(const msg of relations?.referenceProblems?.(audit)||[])add(finalMode?'blocker':'warning','REFERENCIA_INCORRECTA','evidence',String(msg).slice(0,300));
     return {issues, blockers:issues.filter(i=>i.severity==='blocker'),warnings:issues.filter(i=>i.severity==='warning'), ready:!issues.some(i=>i.severity==='blocker'), plan:plan(audit)};
   }
