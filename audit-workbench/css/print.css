@@ -250,3 +250,5 @@
   #report .report-action{break-inside:avoid-page}
   #report .report-toc a{color:inherit!important}
 }
+
+@media print{#report[data-report-type="executive"] .report-executive-finding{padding:3mm 0;margin:3mm 0 5mm;border-bottom:.25mm solid #d5e0e7;break-inside:avoid-page}#report .report-kind{margin:2mm 0 4mm}#report[data-report-type="executive"] .report-cover h1{font-size:32pt!important}}
