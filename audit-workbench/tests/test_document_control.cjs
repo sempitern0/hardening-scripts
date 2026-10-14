@@ -32,7 +32,7 @@ const dc=ctx.AuditDocumentControl;
  for(const name of ['audit-workbench.sh','audit-workbench.ps1','index.html','sw.js'])
  assert(fs.readFileSync(path.join(root,name),'utf8').includes('document-control.js'),name+' must include module');
  assert(html.indexOf('js/document-control.js')<html.indexOf('js/app.js'));
- assert(sw.includes('v36-document-control'));
+ require('./support/sw-contract.js').assertCached('js/document-control.js');
  assert(app.includes('persist(true)')&&app.includes('await docControl.verify(state)'));
  console.log('PASS document confirmation, detection, amendments, persistence and package');
 })().catch(error=>{console.error(error);process.exitCode=1});

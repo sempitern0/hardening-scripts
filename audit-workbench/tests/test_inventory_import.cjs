@@ -27,7 +27,7 @@ assert(html.indexOf('js/inventory-import.js')<html.indexOf('js/app.js'));
 assert(fs.existsSync(path.join(root,'collect-local.sh')));
 assert(fs.existsSync(path.join(root,'collect-local.ps1')));
 assert(fs.readFileSync(path.join(root,'collect-local.sh'),'utf8').includes("'networks':networks,'software':software"));
-assert(fs.readFileSync(path.join(root,'collect-local.ps1'),'utf8').includes('networks=$networks;software=$serviceRows'));
+assert(fs.readFileSync(path.join(root,'collect-local.ps1'),'utf8').includes('networks=$networks;software=(@($serviceRows)+@($packages))'));
 assert(bash.includes('collect-local.sh')&&bash.includes('collect-local.ps1'));
 assert(ps.includes("'collect-local.sh'")&&ps.includes("'collect-local.ps1'"));
 
@@ -36,5 +36,17 @@ assert(html.includes('id="network-panel"')&&html.includes('id="network-check"'),
 for(const status of ['offline','unverified','reachable','checking'])assert(styles.includes('data-state="'+status+'"'),'Missing connectivity status style '+status);
 assert(app.includes("window.addEventListener('online'")&&app.includes("window.addEventListener('offline'"),'Connectivity updates must react to browser events');
 assert(app.includes("cache:'no-store'")&&app.includes("credentials:'omit'"),'Connectivity check must not send credentials and must bypass cache');
-assert(sw.includes("request.cache === 'no-store'"),'Service worker must not serve cached response for connectivity checks');
+// Exercise the fetch handler: a connectivity probe must use the network only.
+{
+ let fetched, response;
+ const request={method:'GET',url:'https://audit.example/probe',cache:'no-store'};
+ const {handlers}=require('./support/sw-contract.js').loadWorker({
+  self:{location:{origin:'https://audit.example'}},
+  fetch:value=>{fetched=value;return Promise.resolve('network');},
+  caches:{open:()=>{throw Error('Probe must not touch CacheStorage');}}
+ });
+ handlers.fetch({request,respondWith:value=>{response=value;}});
+ assert.equal(fetched,request);
+ assert(response instanceof Promise);
+}
 console.log('PASS inventory intake parsing, duplicate detection, safety, and offline wiring');

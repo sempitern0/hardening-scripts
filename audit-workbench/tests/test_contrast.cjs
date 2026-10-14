@@ -14,5 +14,5 @@ assert(sheet.includes('#workspace #glossary-search'),'Glossary search must follo
 assert(sheet.includes('-webkit-appearance: textfield'),'Safari search controls need a compatible appearance');
 assert(!/unsafe-inline/.test(html),'No CSP loosening expected');
 assert(html.includes('css/contrast.css')&&sw.includes('./css/contrast.css'),'Styles must be cached offline');
-assert(sw.includes('audit-workbench-shell-v20-contrast'),'Cache should refresh after CSS change');
+require('./support/sw-contract.js').assertCached('css/contrast.css');
 console.log('PASS consistent input contrast, PWA cache and CSP');

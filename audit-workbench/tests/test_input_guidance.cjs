@@ -20,6 +20,6 @@ const bash=fs.readFileSync(path.join(root,'audit-workbench.sh'),'utf8');
 const ps=fs.readFileSync(path.join(root,'audit-workbench.ps1'),'utf8');
 for(const value of [html,sw,bash,ps])assert(value.includes('input-guidance.js'),'Module missing from distribution');
 assert(html.indexOf('js/input-guidance.js')<html.indexOf('js/app.js'));
-assert(sw.includes('v30-secure-distribution'));
+require('./support/sw-contract.js').assertCached('js/input-guidance.js');
 assert(fs.readFileSync(path.join(root,'css/styles.css'),'utf8').includes('.phone-widget'));
 console.log('PASS offline placeholders, international telephone formats and packaging');
