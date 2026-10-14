@@ -2,7 +2,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path'),crypto=require('node:crypto');
 const root=path.resolve(__dirname,'..'),context={crypto:crypto.webcrypto};context.globalThis=context;
 vm.runInNewContext(fs.readFileSync(path.join(root,'js/audit-identifiers.js'),'utf8'),context);
-const ids=context.AuditIdentifiers,date=new Date(2026,9,14);
+const ids=context.AuditIdentifiers,date=vm.runInNewContext('new Date(2026,9,14)',context);
 const a=ids.generate([],'AUD',{date});
 const b=ids.generate([{audit:{meta:{reportId:a}}}],'AUD',{date});
 assert.match(a,/^AUD-20261014-[A-F0-9]{24}$/);
