@@ -1543,14 +1543,14 @@
   const table = (fields,row) => `<table class="report-table"><tbody>${fields.map(([name,label])=>`<tr><th class="report-field-label">${html(label)}</th><td>${para(row[name])}</td></tr>`).join('')}</tbody></table>`;
   const section = (num,title,content) => `<section class="report-section"><h2>${num}. ${html(title)}</h2>${content}</section>`;
   function reportRows(k){const rows=state[k];return rows.length?rows.map((row,i)=>`<h3>${i+1}. ${html(row.title||row.name||row.id||'Registro')}</h3>${table(groups[k].fields,row)}${k==='evidence'?`<p class="report-note"><strong>Integridad y vínculos:</strong> ${html(row.fileSha256?'SHA-256 original: '+row.fileSha256:'Archivo original sin huella calculada')} ${html(row.fileName?' · Archivo: '+row.fileName:'')} · ${html(relations.CATEGORIES.map(kind=>{const names=relations.normalizeLinks(row.links)[kind].map(key=>state[kind].find(x=>x._key===key)).filter(Boolean).map(x=>relations.itemLabel(x,kind));return names.length?relationLabels[kind]+': '+names.join(', '):''}).filter(Boolean).join(' · ')||'Sin relaciones explícitas')}</p>`:''}${k==='evidence'&&row.image?`<figure><img class="report-evidence" alt="Evidencia ${html(row.id)}" src="${row.image}"><figcaption class="report-note">${html(row.id||'Evidencia')}: ${html(row.title||'Captura adjunta')}</figcaption></figure>`:''}`).join(''):'<p class="report-empty">Sin registros incluidos en esta categoría.</p>'}
-  let printMode='audit',reportDeliveryMode='draft';
+  let printMode='audit',reportDeliveryMode='draft',reportProfile='executive';
   function buildReport(){
     byId('report').dataset.palette=selectedPalette;
     const today=new Date().toLocaleDateString('es-ES');
     const count=Object.fromEntries(severity.map(s=>[s,state.findings.filter(x=>x.severity===s).length]));
     const meta=state.meta,ending=state.final;
     const reportDocument=docControl.normalize(state.documentControl);
-    const cover=`<div class="report-cover"><div class="sup">SYSADMIN / SECURITY · AUDIT REPORT <span class="report-theme-name">${html(selectedPalette)}</span></div>${meta.logo?`<img class="report-logo" src="${meta.logo}" alt="Logo corporativo">`:''}<h1>Informe de auditoría<br>informática</h1><h2>${html(meta.project||'Infraestructura, sistemas y ciberseguridad')}</h2><p class="classify">${html(meta.classification||'Confidencial')}</p><div class="cover-meta"><div><span class="report-number">CLIENTE</span><h3>${html(meta.client||'No indicado')}</h3><p>${html(meta.contact||'')}</p></div><div><span class="report-number">ENTREGA</span><h3>${html(today)}</h3><p>Ref. ${html(meta.reportId||'Sin referencia')} · Rev. ${html(reportDocument.status==='confirmed'?String(reportDocument.revision):meta.revision||'1.0')}</p><p>${html(auditorNames(meta)||'Equipo auditor pendiente de asignar')}</p><p>${html(settings.company||'')}</p><p>${html(settings.taxId||'')}</p></div></div></div>`;
+    const cover=`<div class="report-cover"><div class="sup">SYSADMIN / SECURITY · ${reportProfile==='technical'?'TECHNICAL REPORT':'EXECUTIVE REPORT'} <span class="report-theme-name">${html(selectedPalette)}</span></div>${meta.logo?`<img class="report-logo" src="${meta.logo}" alt="Logo corporativo">`:''}<h1>Informe ${reportProfile==='technical'?'técnico':'ejecutivo'}<br>de auditoría</h1><h2>${html(meta.project||'Infraestructura, sistemas y ciberseguridad')}</h2><p class="classify">${html(meta.classification||'Confidencial')}</p><div class="cover-meta"><div><span class="report-number">CLIENTE</span><h3>${html(meta.client||'No indicado')}</h3><p>${html(meta.contact||'')}</p></div><div><span class="report-number">ENTREGA</span><h3>${html(today)}</h3><p>Ref. ${html(meta.reportId||'Sin referencia')} · Rev. ${html(reportDocument.status==='confirmed'?String(reportDocument.revision):meta.revision||'1.0')}</p><p>${html(auditorNames(meta)||'Equipo auditor pendiente de asignar')}</p><p>${html(settings.company||'')}</p><p>${html(settings.taxId||'')}</p></div></div></div>`;
     const documentState=reportDocument;
     const documentNote=documentState.status==='confirmed'?`<div class="report-note"><strong>Control documental:</strong> Revisión ${documentState.revision} · Confirmada ${html(documentState.confirmed?.at||'')} · Responsable ${html(documentState.confirmed?.author||'')} · SHA-256 ${html(documentState.confirmed?.digest||'')}</div>`:`<div class="report-note">Control documental: ${documentState.status==='amending'?'RECTIFICACIÓN ABIERTA':'BORRADOR SIN CONFIRMAR'}</div>`;
     const legal=section(1,'Confidencialidad, alcance legal y custodia',`<p class="report-note">Cláusulas modelo que deben adaptarse al contrato específico y validarse antes de la entrega. RGPD (UE) 2016/679 y LOPDGDD 3/2018, según resulte aplicable.</p>${legalFields.map(([key,label])=>`<h3>${html(label)}</h3><p>${para(state.legal[key])}</p>`).join('')}`);
@@ -1564,20 +1564,68 @@
     const actionPlan=section(11,'Plan de remediación y comprobación',reviewed.plan.length?reviewed.plan.map(item=>`<div class="report-action"><h3>${html(item.id)} · ${html(item.title)} <span class="report-badge ${level(item.severity)}">${html(item.severity)}</span></h3><p><strong>Estado:</strong> ${html(item.status)} · <strong>Responsable:</strong> ${html(item.owner||'Pendiente de asignar')} · <strong>Fecha objetivo:</strong> ${html(item.deadline||'Por acordar')}</p><p><strong>Acción correctiva:</strong> ${para(item.recommendation||'Sin definir')}</p><p><strong>Criterio de verificación:</strong> ${para(item.verification||'Sin definir')}</p></div>`).join(''):'<p class="report-empty">No se registraron hallazgos que requieran remediación. Esta observación no implica ausencia de riesgos fuera del alcance revisado.</p>');
     const draftMarker=reportDeliveryMode==='final'&&reviewed.ready?'':`<aside class="report-draft"><strong>BORRADOR · NO VALIDADO PARA ENTREGA</strong><p>${reviewed.blockers.length} impedimentos para entregar y ${reviewed.warnings.length} advertencias. Documento de trabajo, no constituye informe definitivo.</p></aside>`;
     const closing=section(12,'Conclusiones y plan de acción',table(finalFields.filter(f=>f[0]!=='executive'&&f[0]!=='strengths'&&f[0]!=='weaknesses'&&f[0]!=='assessment'),ending)+`<div class="report-signature">Generado localmente con Audit Workbench. Validación y autorización de entrega: ${html(ending.signoff||'Pendiente de firma')}.</div>`);
-    const toc=section(0,'Contenido del informe',`<nav class="report-toc" aria-label="Índice del informe">${[
-      [3,'Resumen ejecutivo'],[2,'Identificación, alcance y metodología'],[9,'Hallazgos y ficha técnica'],
-      [11,'Plan de remediación'],[4,'Inventario de hardware'],[5,'Infraestructura de redes'],
-      [6,'Software y servicios'],[7,'Vulnerabilidades CVE'],[8,'Controles y verificaciones'],
-      [10,'Registro de evidencias'],[12,'Conclusiones y plan de acción'],[1,'Confidencialidad y custodia']
-    ].map(([number,title])=>`<a href="#report-section-${number}">${html(title)} <span aria-hidden="true">↗</span></a>`).join('')}</nav>`);
-    const chapters=[
-      [3,executive],[2,identity],[9,findings],[11,actionPlan],[4,section(4,'Inventario de hardware',reportRows('assets'))],
-      [5,section(5,'Infraestructura de redes',reportRows('networks'))],[6,section(6,'Software y servicios',reportRows('software'))],
-      [7,section(7,'Vulnerabilidades CVE registradas',reportRows('cves'))],[8,controls],
-      [10,section(10,'Registro de evidencias',reportRows('evidence'))],[12,closing],[1,legal]
-    ];
-    byId('report').innerHTML=cover.replace('<div class="report-cover">','<div class="report-cover">'+draftMarker)+documentNote+toc+
-      chapters.map(([num,part],index)=>part.replace('class="report-section"','class="report-section" id="report-section-'+num+'"').replace(/(<h2>)\d+\. /,(_,tag)=>tag+(index+1)+'. ')).join('');
+
+    // Shared audit data, distinct delivery profiles. The audit JSON stays unchanged.
+    const executiveScope=section(2,'Alcance y cobertura',table(
+      metaFields.filter(f=>['type','objectives','scope','exclusions','start','startTime','end','endTime','limitations'].includes(f[0])),meta
+    ));
+    const executiveFindings=section(9,'Riesgos para la organización',
+      state.findings.length?
+      `<div class="report-executive-findings">${reviewed.plan.map(item=>{
+        const f=state.findings.find(x=>x._key===item.key)||state.findings.find(x=>x.id===item.id)||{};
+        return `<article class="report-executive-finding">
+          <h3>${html(item.id)} · ${html(item.title)} <span class="report-badge ${level(item.severity)}">${html(item.severity)}</span></h3>
+          <p><strong>Estado:</strong> ${html(item.status)} · <strong>Ámbito:</strong> ${html(f.asset||'No indicado')}</p>
+          <p><strong>Consecuencia:</strong> ${para(f.risk||'No documentada por el auditor.')}</p>
+          <p><strong>Acción recomendada:</strong> ${para(item.recommendation||'Pendiente de definir.')}</p>
+          <p><strong>Responsable:</strong> ${html(item.owner||'Por asignar')} · <strong>Plazo:</strong> ${html(item.deadline||'Por acordar')}</p>
+        </article>`;
+      }).join('')}</div>
+      <p class="report-note">Los identificadores permiten cotejar cada conclusión con las pruebas registradas en el informe técnico de la misma revisión.</p>`
+      :'<p class="report-empty">No se registraron hallazgos; esto no implica ausencia de riesgos fuera del alcance evaluado.</p>');
+    const executiveActions=section(11,'Prioridades y decisiones',
+      `<p>${para(ending.roadmap)}</p><h3>Próximas actuaciones</h3><p>${para(ending.nextSteps)}</p>`+
+      (reviewed.plan.length?`<table class="report-table"><thead><tr><th>Hallazgo</th><th>Riesgo</th><th>Responsable</th><th>Fecha objetivo</th></tr></thead><tbody>${reviewed.plan.map(item=>
+        `<tr><td>${html(item.id)}</td><td>${html(item.severity)}</td><td>${html(item.owner||'Por asignar')}</td><td>${html(item.deadline||'Por acordar')}</td></tr>`).join('')}</tbody></table>`
+      :'<p class="report-empty">No hay acciones documentadas a partir de hallazgos.</p>'));
+    const executiveClosing=section(12,'Conclusión y validación',
+      `<p>${para(ending.nextSteps)}</p><div class="report-signature">Responsable del informe: ${html(ending.signoff||'Pendiente de validación')}.</div>`);
+    const executiveLegal=section(1,'Confidencialidad y límites de la evaluación',
+      `<p>${para(state.legal.confidentiality)}</p><h3>Limitaciones</h3><p>${para(state.legal.scopeNotice)}</p>`);
+    const technicalSummary=section(3,'Resumen técnico',
+      `<p>${para(ending.assessment)}</p>
+      <p><strong>Activos:</strong> ${summaryCounts.assets} · <strong>Controles con resultado:</strong> ${summaryCounts.verified}/${summaryCounts.controls} · <strong>Hallazgos:</strong> ${summaryCounts.findings}</p>
+      <p class="report-note">Este informe reproduce los métodos y resultados documentados. Audit Workbench no realiza pruebas de vulnerabilidades ni valida automáticamente la evidencia.</p>`);
+    const chapters=(reportProfile==='technical'?[
+      [3,'Resumen técnico',technicalSummary],
+      [2,'Identificación, alcance y metodología',identity],
+      [9,'Hallazgos y ficha técnica',findings],
+      [11,'Plan de remediación y comprobación',actionPlan],
+      [4,'Inventario de hardware',section(4,'Inventario de hardware',reportRows('assets'))],
+      [5,'Infraestructura de redes',section(5,'Infraestructura de redes',reportRows('networks'))],
+      [6,'Software y servicios',section(6,'Software y servicios',reportRows('software'))],
+      [7,'Vulnerabilidades CVE registradas',section(7,'Vulnerabilidades CVE registradas',reportRows('cves'))],
+      [8,'Controles y verificaciones',controls],
+      [10,'Registro de evidencias',section(10,'Registro de evidencias',reportRows('evidence'))],
+      [12,'Conclusiones y seguimiento',closing],
+      [1,'Confidencialidad, alcance legal y custodia',legal]
+    ]:[
+      [3,'Resumen ejecutivo',executive],
+      [2,'Alcance y cobertura',executiveScope],
+      [9,'Riesgos para la organización',executiveFindings],
+      [11,'Prioridades y decisiones',executiveActions],
+      [12,'Conclusión y validación',executiveClosing],
+      [1,'Confidencialidad y límites de la evaluación',executiveLegal]
+    ]);
+    const toc=section(0,'Contenido del informe',
+      `<nav class="report-toc" aria-label="Índice del informe">${chapters.map(([id,title])=>
+        `<a href="#report-section-${id}">${html(title)} <span aria-hidden="true">↗</span></a>`).join('')}</nav>`);
+    byId('report').dataset.reportType=reportProfile;
+    byId('report').innerHTML=cover.replace('<div class="report-cover">','<div class="report-cover">'+draftMarker)+
+      `<div class="report-note report-kind"><strong>${reportProfile==='technical'?'INFORME TÉCNICO':'INFORME EJECUTIVO'}</strong> · Ref. ${html(meta.reportId||'Sin referencia')} · Rev. ${html(reportDocument.status==='confirmed'?String(reportDocument.revision):meta.revision||'1.0')}</div>`+
+      documentNote+toc+chapters.map(([id,_title,part],index)=>
+        part.replace('class="report-section"','class="report-section" id="report-section-'+id+'"')
+        .replace(/(<h2>)\d+\. /,(_,tag)=>tag+(index+1)+'. ')).join('');
   }
   function buildRetestReport(){
     byId('report').dataset.palette=selectedPalette;
