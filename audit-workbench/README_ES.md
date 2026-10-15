@@ -272,3 +272,14 @@ firmas disponibles de profesionales ya asignados y conserva sus demás datos.
 Si el expediente está confirmado, abre una rectificación, incorpora las firmas y
 valida de nuevo antes de generar el definitivo. No se alteran informes confirmados
 automáticamente. La generación espera a las imágenes y avisa si alguna no carga.
+
+### Buscar y navegar por registros
+
+Hardware, Redes, Software, CVE, Controles, Hallazgos y Evidencias disponen de un
+buscador local y un selector de acceso rápido. Puedes combinar palabras del código,
+nombre, estado o contenido; la búsqueda ignora mayúsculas y tildes. El selector
+muestra los resultados coincidentes y lleva el foco al registro elegido.
+**Mostrar todos** elimina el filtro. Al añadir un registro, aparece primero y se
+limpia la búsqueda para que puedas rellenarlo inmediatamente. Los filtros son solo
+de pantalla: no eliminan datos ni limitan los informes o exportaciones. La búsqueda
+y la navegación también funcionan en expedientes confirmados.

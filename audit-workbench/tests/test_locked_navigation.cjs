@@ -3,8 +3,9 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
 const source=fs.readFileSync(__dirname+'/../js/app.js','utf8');
 const make=(id,tag,dataset={})=>({id,dataset,disabled:false,closest:()=>null,matches:()=>['input','select','textarea'].includes(tag)});
 const jump=make('wizard-step-select','select'),field=make('client','input'),next=make('next','button',{go:'delivery'}),auditor=make('auditor','input');
-const ctx={state:{documentControl:{status:'confirmed'}},workspace:{querySelectorAll:()=>[jump,field,next,auditor]}};
+const search=make('record-search','input'),recordJump=make('record-jump','select');
+const ctx={state:{documentControl:{status:'confirmed'}},workspace:{querySelectorAll:()=>[jump,field,next,auditor,search,recordJump]}};
 vm.createContext(ctx);vm.runInContext(source.slice(source.indexOf('  function applyDocumentLock(){'),source.indexOf('  function fieldTarget(')),ctx);
-ctx.applyDocumentLock();assert.equal(jump.disabled,false);assert.equal(next.disabled,false);assert.equal(field.disabled,true);assert.equal(auditor.disabled,true);
+ctx.applyDocumentLock();assert.equal(search.disabled,false);assert.equal(recordJump.disabled,false);assert.equal(jump.disabled,false);assert.equal(next.disabled,false);assert.equal(field.disabled,true);assert.equal(auditor.disabled,true);
 assert(source.includes('id="delivery-signatures"'));assert(source.includes('data-go="engagement">Revisar profesionales asignados'));
 console.log('PASS confirmed report keeps step navigation enabled and protects editable fields; signature actions visible in delivery');

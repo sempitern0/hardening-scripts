@@ -245,3 +245,13 @@
 @media(max-width:520px){
   #audit-import-dialog .audit-import-actions .button{flex:1 1 100%}
 }
+
+/* Local record navigation remains available while editing long inventories. */
+.record-navigator { position:sticky; top:.5rem; z-index:15; display:flex; flex-wrap:wrap; align-items:end; gap:.75rem; padding:1rem; margin:1rem 0; background:var(--paper,#fff); color:var(--ink,#172b3a); border:1px solid var(--line,#c6d3df); border-radius:.7rem; box-shadow:0 3px 12px #00000014; }
+.record-navigator > div { flex:1 1 14rem; min-width:0; }
+.record-navigator label { display:block; font-weight:700; margin-bottom:.35rem; }
+.record-navigator input,.record-navigator select { width:100%; min-height:44px; }
+.record-navigator > p { flex-basis:100%; margin:0; font-size:.85rem; }
+#workspace .entry[hidden],#record-search-empty[hidden] { display:none!important; }
+#workspace .entry { scroll-margin-block-start:14rem; }
+@media(max-width:600px) { .record-navigator { position:static; } #workspace .entry { scroll-margin-block-start:1rem; } }

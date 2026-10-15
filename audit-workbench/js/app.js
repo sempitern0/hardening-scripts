@@ -810,7 +810,45 @@
       +'<div class="inventory-baseline-content"><p class="subtle">Datos observados, no conformidades automáticas. Adjunta evidencias y utiliza Controles para registrar el resultado de cada verificación.</p>'
       +'<div class="fields">'+extended.map(field=>renderField(record,section,field,index)).join('')+'</div></div></details>';
   }
+  const recordQueries=new Map();
+  const recordQueryKey=()=>String(currentId)+'/'+page;
+  const searchText=value=>str(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase('es');
+  function recordMatches(record,block,query){
+    const text=searchText(groups[block].fields.map(([name])=>record[name]||'').join(' '));
+    return searchText(query).trim().split(/\s+/).filter(Boolean).every(term=>text.includes(term));
+  }
+  function recordLabel(record,index){return [record.id,record.title||record.name||'Registro '+(index+1)].filter(Boolean).join(' · ');}
+  function renderRecordNavigator(block){
+    return `<div class="record-navigator" aria-label="Buscar y navegar por registros">
+      <div><label for="record-search">Buscar en ${html(groups[block].title.toLocaleLowerCase('es'))}</label><input id="record-search" type="search" autocomplete="off" placeholder="Código, nombre, estado o texto…" value="${html(recordQueries.get(recordQueryKey())||'')}" aria-describedby="record-search-count"></div>
+      <div><label for="record-jump">Acceso rápido a un registro</label><select id="record-jump"><option value="">Selecciona un registro…</option></select></div>
+      <button type="button" class="button quiet small" id="record-search-clear">Mostrar todos</button>
+      <button type="button" class="button accent small" data-add="${block}">+ Añadir registro</button>
+      <p id="record-search-count" role="status" aria-live="polite"></p>
+    </div><p id="record-search-empty" class="empty" hidden>No hay registros que coincidan. Prueba otro término o pulsa «Mostrar todos».</p>`;
+  }
+  function refreshRecordNavigator(filter=true){
+    const search=byId('record-search'),jump=byId('record-jump');
+    if(!search||!jump||!groups[page])return;
+    const query=search.value;
+    recordQueries.set(recordQueryKey(),query);
+    const matches=state[page].map((record,index)=>({record,index})).filter(({record})=>recordMatches(record,page,query));
+    const keys=new Set(matches.map(({record})=>record._key));
+    const selected=jump.value;
+    jump.innerHTML='<option value="">Selecciona un registro…</option>'+matches.map(({record,index})=>`<option value="${html(record._key)}">${html(recordLabel(record,index))}</option>`).join('');
+    if(keys.has(selected))jump.value=selected;
+    if(filter){
+      for(const entry of workspace.querySelectorAll('.entry[data-entry-key]'))entry.hidden=!keys.has(entry.dataset.entryKey);
+      byId('record-search-empty').hidden=matches.length>0||state[page].length===0;
+      byId('record-search-count').textContent=matches.length+' de '+state[page].length+' registros. La búsqueda no modifica los informes ni las exportaciones.';
+    }
+  }
+  function clearRecordSearch(){
+    const search=byId('record-search');
+    if(search){search.value='';refreshRecordNavigator();}
+  }
   function focusAddedRecord(key){
+    clearRecordSearch();
     const entry=[...workspace.querySelectorAll('[data-entry-key]')].find(item=>item.dataset.entryKey===key);
     if(!entry)return;
     const editable=[...entry.querySelectorAll('input[data-field], select[data-field], textarea[data-field]')]
@@ -831,7 +869,7 @@
       <div class="finding-image-gallery">${linked.flatMap(e=>evidenceImages.list(e).map((photo,i)=>({photo,e,i}))).slice(0,12).map(({photo,e,i})=>`<figure><img src="${photo.image}" alt="Evidencia ${html(e.id)} · imagen ${i+1}" loading="lazy"><figcaption>${html(e.id)} · ${i+1}</figcaption></figure>`).join('')}</div>
       <p class="subtle">${linked.length} evidencias vinculadas. Puedes revisarlas en «Evidencias».</p></div>`;
   }
-  function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p>${['assets','networks','software'].includes(block)?'<button type="button" class="button quiet small" data-go="intake">Captura asistida / Importar inventario ↗</button>':''}${glossaryStageHint(block)}${block==='controls'?renderTemplateLibrary():''}<section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Los registros se guardan y puedes incluirlos en el informe.</p></div>${block==='evidence'?'<button class="button quiet" data-export-manifest="true">Manifiesto SHA-256 (JSON)</button>':''}<button class="button accent" data-add="${block}">+ Añadir registro</button></div>${rows.length?rows.map((r,i)=>`<div class="entry" data-entry-key="${html(r._key||'')}" tabindex="-1"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="inventory-fields">${renderInventoryFieldGroups(r,block,i)}</div>${block==='findings'?renderFindingAttachments(r,i):''}${['assets','controls','findings'].includes(block)?renderLinkedEvidence(block,r):''}${block==='controls'?renderControlExtras(r):''}${block==='findings'?renderFindingOrigin(r):''}${block==='evidence'?renderEvidenceRelations(r):''}${block==='cves'?`<div class="cve-tools"><button class="button quiet small" type="button" data-cve-check="${i}">Consultar CVE online (opcional)</button><button class="button small" type="button" data-cve-link="${i}">Ver en CVE.org ↗</button><span class="subtle">Solo se envía el identificador CVE, nunca los datos del cliente.</span></div>`:''}${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Añadir foto o captura</strong> (PNG, JPG o WebP, hasta 5 MiB)</label><p class="subtle">Se guarda una copia optimizada. El SHA-256 identifica el archivo original, que debes conservar por separado.</p>${r.fileSha256?`<p class="evidence-digest">Archivo: ${html(r.fileName||'Sin nombre')} · ${(r.fileBytes||0).toLocaleString('es-ES')} bytes <span>SHA-256 ${html(r.fileSha256)}</span></p>`:''}<input type="file" accept="image/png,image/jpeg,image/webp" multiple data-image-index="${i}" id="evidence-upload-${i}"><div class="evidence-image-grid">${evidenceImages.list(r).map((photo,j)=>`<figure><img class="evidence-preview" alt="Imagen ${j+1} de ${html(r.id||'evidencia')}" src="${photo.image}"><figcaption>${html(photo.fileName||'Imagen '+(j+1))}</figcaption><button type="button" class="button quiet small" data-remove-evidence-photo="${html(r._key)}" data-photo-index="${j}">Quitar esta imagen</button></figure>`).join('')}</div></div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
+  function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p>${['assets','networks','software'].includes(block)?'<button type="button" class="button quiet small" data-go="intake">Captura asistida / Importar inventario ↗</button>':''}${glossaryStageHint(block)}${block==='controls'?renderTemplateLibrary():''}<section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Los registros se guardan y puedes incluirlos en el informe.</p></div>${block==='evidence'?'<button class="button quiet" data-export-manifest="true">Manifiesto SHA-256 (JSON)</button>':''}<button class="button accent" data-add="${block}">+ Añadir registro</button></div>${renderRecordNavigator(block)}${rows.length?rows.map((r,i)=>`<div class="entry" data-entry-key="${html(r._key||'')}" tabindex="-1"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="inventory-fields">${renderInventoryFieldGroups(r,block,i)}</div>${block==='findings'?renderFindingAttachments(r,i):''}${['assets','controls','findings'].includes(block)?renderLinkedEvidence(block,r):''}${block==='controls'?renderControlExtras(r):''}${block==='findings'?renderFindingOrigin(r):''}${block==='evidence'?renderEvidenceRelations(r):''}${block==='cves'?`<div class="cve-tools"><button class="button quiet small" type="button" data-cve-check="${i}">Consultar CVE online (opcional)</button><button class="button small" type="button" data-cve-link="${i}">Ver en CVE.org ↗</button><span class="subtle">Solo se envía el identificador CVE, nunca los datos del cliente.</span></div>`:''}${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Añadir foto o captura</strong> (PNG, JPG o WebP, hasta 5 MiB)</label><p class="subtle">Se guarda una copia optimizada. El SHA-256 identifica el archivo original, que debes conservar por separado.</p>${r.fileSha256?`<p class="evidence-digest">Archivo: ${html(r.fileName||'Sin nombre')} · ${(r.fileBytes||0).toLocaleString('es-ES')} bytes <span>SHA-256 ${html(r.fileSha256)}</span></p>`:''}<input type="file" accept="image/png,image/jpeg,image/webp" multiple data-image-index="${i}" id="evidence-upload-${i}"><div class="evidence-image-grid">${evidenceImages.list(r).map((photo,j)=>`<figure><img class="evidence-preview" alt="Imagen ${j+1} de ${html(r.id||'evidencia')}" src="${photo.image}"><figcaption>${html(photo.fileName||'Imagen '+(j+1))}</figcaption><button type="button" class="button quiet small" data-remove-evidence-photo="${html(r._key)}" data-photo-index="${j}">Quitar esta imagen</button></figure>`).join('')}</div></div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
   const settingsFields=[
     ['company','Nombre legal de la consultora'],['taxType','Identificador fiscal','select',['No indicado','NIF entidad / CIF','DNI / NIF persona física','NIE','NIF intracomunitario / otro']],
     ['taxId','Identificación fiscal'],['email','Email corporativo'],['phone','Teléfono'],
@@ -1257,6 +1295,7 @@
     byId('btn-pdf').disabled=inLibrary;
 
     byId('workspace').innerHTML=(inLibrary?'':renderWizardTop())+(page==='dashboard'?renderOverview():page==='records'?renderRecords():page==='backups'?renderBackups():page==='settings'?renderSettings():page==='connections'||page==='online'?renderConnections():page==='glossary'?renderGlossary():page==='intake'?renderIntake():page==='engagement'?renderEngagement():page==='legal'?renderForm('legal',legalFields,'Cláusulas y privacidad','Modelos editables para auditorías en España. Revisa el contrato y solicita asesoramiento jurídico cuando corresponda.'):page==='quality'?renderQuality():page==='followup'?renderFollowup():page==='delivery'?renderDelivery():renderGroup(page))+(inLibrary?'':renderWizard());
+    refreshRecordNavigator();
     byId('wizard-step-select')?.addEventListener('change',event=>move(event.target.value));
     for(const target of workspace.querySelectorAll('.field [data-field]:not([data-preset])'))updateValidation(target);
   }
@@ -1280,7 +1319,7 @@
   function applyDocumentLock(){
     if(state.documentControl?.status!=='confirmed')return;
     for(const element of workspace.querySelectorAll('input,select,textarea,button')){
-      if(element.id==='wizard-step-select'||element.closest('.document-control')||element.dataset.go||element.dataset.glossaryTerm||element.dataset.glossaryBack||element.dataset.qualitySection||element.id==='delivery-pdf'||element.id==='delivery-json')continue;
+      if(['wizard-step-select','record-search','record-jump'].includes(element.id)||element.closest('.document-control')||element.dataset.go||element.dataset.glossaryTerm||element.dataset.glossaryBack||element.dataset.qualitySection||element.id==='delivery-pdf'||element.id==='delivery-json')continue;
       if(['delivery-executive-final','delivery-executive-draft','delivery-technical-final','delivery-technical-draft'].includes(element.id))continue;
       if(element.matches('input,select,textarea')||element.dataset.add||element.dataset.remove||element.dataset.applyTemplate||element.dataset.clearImage||element.dataset.saveRetest)element.disabled=true;
     }
@@ -1291,6 +1330,8 @@
   byId('navigation').addEventListener('click',e=>{const b=e.target.closest('[data-go]');if(b)move(b.dataset.go)});
   workspace.addEventListener('focusin',event=>{if(event.target.dataset.block==='meta'&&event.target.dataset.field==='client')event.target.dataset.originalClient=event.target.value});
   workspace.addEventListener('input',e=>{
+    if(e.target.id==='record-search'){refreshRecordNavigator();return;}
+
     if(state.documentControl?.status==='confirmed'&&e.target.dataset.block&&e.target.dataset.block!=='settings'){render();return;}
     const t=e.target;
     if(t.id==='glossary-search'){filterGlossary(t.value);return;}
@@ -1311,9 +1352,14 @@
     if(t.dataset.preset)return;
     if(identifiers.isLockedField(t.dataset.block,t.dataset.field))return;
     if(t.dataset.block==='settings'){settings[t.dataset.field]=t.value;updateValidation(t);saveSettings();return}
-    const obj=fieldTarget(t);if(obj){obj[t.dataset.field]=t.value;if(t.dataset.block==='meta'&&['project','client','reportId'].includes(t.dataset.field)){byId('audit-context-title').textContent=state.meta.project||state.meta.client||'Auditoría sin título';byId('audit-context-ref').textContent=(state.meta.reportId||'SIN REFERENCIA')+' · '+(state.meta.client||'Cliente pendiente');byId('active-audit-label').textContent=(state.meta.reportId||'Sin referencia')+' · '+(state.meta.project||state.meta.client||'Sin título')}if(['title','name','id'].includes(t.dataset.field)){const heading=t.closest('.entry')?.querySelector('.entry-head strong');if(heading)heading.textContent=obj.title||obj.name||obj.id||'Registro'}persist();updateValidation(t)}
+    const obj=fieldTarget(t);if(obj){obj[t.dataset.field]=t.value;if(t.dataset.block==='meta'&&['project','client','reportId'].includes(t.dataset.field)){byId('audit-context-title').textContent=state.meta.project||state.meta.client||'Auditoría sin título';byId('audit-context-ref').textContent=(state.meta.reportId||'SIN REFERENCIA')+' · '+(state.meta.client||'Cliente pendiente');byId('active-audit-label').textContent=(state.meta.reportId||'Sin referencia')+' · '+(state.meta.project||state.meta.client||'Sin título')}if(['title','name','id'].includes(t.dataset.field)){const heading=t.closest('.entry')?.querySelector('.entry-head strong');if(heading)heading.textContent=obj.title||obj.name||obj.id||'Registro';refreshRecordNavigator(false)}persist();updateValidation(t)}
   });
   workspace.addEventListener('change',async e=>{
+    if(e.target.id==='record-jump'){
+      const entry=[...workspace.querySelectorAll('.entry[data-entry-key]')].find(row=>row.dataset.entryKey===e.target.value);
+      if(entry){entry.focus({preventScroll:true});entry.scrollIntoView({block:'start',behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});}return;
+    }
+
     if(e.target.dataset.assistRef==='evidence'){
       if(state.documentControl?.status==='confirmed'){render();return;}
       const target=e.target,block=target.dataset.assistBlock,index=Number(target.dataset.assistIndex);
@@ -1506,6 +1552,7 @@
   });
   workspace.addEventListener('click',async e=>{
     const b=e.target.closest('button');if(!b)return;
+    if(b.id==='record-search-clear'){clearRecordSearch();byId('record-search')?.focus();return;}
     if(state.documentControl?.status==='confirmed'&&!['records','backups','connections','online','settings','glossary'].includes(page)){
       const safe=['document-pdf','delivery-executive-final','delivery-executive-draft','delivery-technical-final','delivery-technical-draft','delivery-json','amend-begin','retest-pdf','open-email','native-share-json'];
       if(!b.dataset.go&&!b.dataset.qualitySection&&!b.dataset.glossaryTerm&&!b.dataset.glossaryBack&&!b.dataset.deliveryOpen&&!safe.includes(b.id)){
