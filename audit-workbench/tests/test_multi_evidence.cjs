@@ -34,7 +34,8 @@ assert(app.includes('await Promise.all(photos.map(prepareEvidenceImage))'),'Batc
 assert(app.includes('evidenceImages.list(row).map'),'The PDF must render all photos in a single evidence');
 assert(app.indexOf('const activeChapters=chapters.filter')<app.indexOf("const toc=section("),'PDF index must use initialized chapters');
 const dc=fs.readFileSync(path.join(root,'js/document-control.js'),'utf8');
-assert(dc.includes("key==='attachments'"),'Amendment diff should not include full image payload');
+assert(dc.includes("key==='image'"),'Amendment diff should exclude image payload but preserve attachment metadata');
+assert(!dc.includes("key==='attachments'"),'Attachments metadata must be retained in amendments');
 const sw=fs.readFileSync(path.join(root,'sw.js'),'utf8');
 assert(sw.includes("'./js/audit-evidence-images.js'"));
 console.log('PASS multi-image evidence, v3 legacy, authorizations, delivery warning, PDF and offline assets');
