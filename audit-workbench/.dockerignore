@@ -1,0 +1,16 @@
+# Restrict the Docker build context to the published PWA shell.
+**
+!index.html
+!sw.js
+!manifest.webmanifest
+!css/
+!css/**
+!js/
+!js/**
+!icons/
+!icons/**
+!fonts/
+!fonts/**
+!deploy/
+!deploy/Dockerfile
+!deploy/Caddyfile
