@@ -17,8 +17,9 @@ assert(js.includes('byId(\'report\').dataset.reportType=reportProfile'));
 assert(css.includes('[data-report-type="executive"]'));
 console.log('PASS executive and technical report compositions');
 
-assert(css.includes('@top-left { content: ""; }')&&css.includes('@top-right { content: ""; }'),'Browser title and URL print headers must be suppressed');
-assert(css.includes('@bottom-center { content: ""; }')&&css.includes('content: "Página " counter(page)'),'Print only a discreet page number');
+assert(/@page\s*\{[^}]*margin:\s*0\s*;/s.test(css),'Clean PDF must reserve zero browser page margin');
+assert(css.includes('box-decoration-break: clone')&&css.includes('-webkit-box-decoration-break: clone'),'Text gutters must repeat on long pages');
+assert(css.includes('padding: 19mm 19.5mm 21mm !important'),'Keep print-safe A4 content gutters');
 assert(js.includes('function reportSteps(value)'),'Next steps should use real ordered list elements');
 assert(js.includes('function narrative(fields,row)'),'Long technical fields should use full-width paragraphs');
 assert(js.includes('function reportWarningList(issues)'),'Repeated quality messages should be grouped');

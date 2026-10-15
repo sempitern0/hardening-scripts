@@ -1,4 +1,4 @@
-"""Print layout regression: browser PDF A4, safe gutters and repeated footer.
+"""Print layout regression: browser PDF A4, safe gutters and no browser headers.
 
 Requires Chromium, Playwright and PyMuPDF. This test embeds local code/CSS to
 avoid any HTTP dependency; no audit data or secrets are transmitted.
@@ -55,11 +55,16 @@ with sync_playwright() as playwright:
         assert 'Audit Workbench · Auditoría offline' not in page_text, f'Browser title leaked into margin: {number}'
         assert 'localhost:' not in page_text, f'Browser URL leaked into margin: {number}'
         assert 'about:blank' not in page_text, f'Browser URL leaked into margin: {number}'
-        assert f'Página {number}' in page_text, f'Footer missing: {number}'
+        assert 'Audit Workbench · Auditoría offline' not in page_text, f'Title leaked into margin: {number}'
+        assert 'about:blank' not in page_text, f'Print URL leaked into margin: {number}'
+        # Browser-added automatic numbering must also disappear. All metadata belongs on the cover.
+        assert not any(word.strip().startswith('http://') or word.strip().startswith('https://') for word in page_text.split()), (number, 'URL leaked')
         for block in paper.get_text('blocks'):
             if not str(block[4]).strip(): continue
             assert block[0] >= 39, (number, 'left', block[0], str(block[4])[:60])
+            assert block[1] >= 36, (number, 'top', block[1], str(block[4])[:60])
             assert block[2] <= paper.rect.width - 38, (number, 'right', block[2], str(block[4])[:60])
+            assert block[3] <= paper.rect.height - 36, (number, 'bottom', block[3], str(block[4])[:60])
     assert not errors, errors
-    print('PASS: A4 print, content gutters, long tables and page footers:', len(document), 'pages')
+    print('PASS: A4 print, repeated content gutters, long tables and no browser metadata:', len(document), 'pages')
     browser.close()

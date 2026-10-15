@@ -87,7 +87,7 @@ For multi-audit backups, the dialog shows matching references and how many new r
 
 ## Clean print/PDF layout
 
-The A4 print stylesheet defines explicit empty browser margin boxes so Chromium does not print the app title, localhost/HTTPS URL or automatic date, while retaining a small page number. On browsers that still display their own page headers/footers, uncheck **Headers and footers** in the print dialog. Enable background graphics to preserve cover colors. The executive report avoids duplicated next steps; technical findings use a compact summary and refer to full-size images once in the evidence register. Long text fields render full-width, and empty network/CVE chapters are skipped. No audit data or release controls are altered.
+The A4 print stylesheet reserves zero browser page margin to prevent title, URL, date and automatic page number from being inserted. It applies readable gutters to each page using fragmented-box padding instead. This also removes automatic page numbering. If your browser or printer still inserts its own metadata, uncheck **Headers and footers** in the print dialog; browser settings ultimately control the print output. Enable background graphics to preserve cover colors. The executive report avoids duplicated next steps; technical findings use a compact summary and refer to full-size images once in the evidence register. Long text fields render full-width, and empty network/CVE chapters are skipped. No audit data or release controls are altered.
 
 ## Recommended workflow
 

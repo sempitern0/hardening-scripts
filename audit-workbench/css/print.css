@@ -1,20 +1,10 @@
 /* Audit Workbench · print-only layout. Screen themes and forms are unchanged. */
+/* Browser-independent clean PDF: no printable page margin means no room for
+   browser-added document title, localhost URL, date or automatic page number.
+   All visual A4 gutters are reapplied per fragment on #report instead. */
 @page {
   size: A4 portrait;
-  margin: 19mm 18mm 21mm 18mm;
-
-  /* Explicit empty margin boxes override browser-supplied document title, URL and date
-     in Chromium even if the print dialog has headers/footers enabled. */
-  @top-left { content: ""; }
-  @top-center { content: ""; }
-  @top-right { content: ""; }
-  @bottom-left { content: ""; }
-  @bottom-center { content: ""; }
-  @bottom-right {
-    content: "Página " counter(page);
-    font: 8pt "Atkinson Hyperlegible", Arial, sans-serif;
-    color: #687886;
-  }
+  margin: 0;
 }
 
 @media print {
@@ -44,7 +34,11 @@
     max-width: none !important;
     min-width: 0 !important;
     margin: 0 !important;
-    padding: 0 1.5mm !important;
+    /* Preserve readable space on EVERY printed page, including long reports.
+       'clone' is essential: normal padding protects only the first/last page. */
+    padding: 19mm 19.5mm 21mm !important;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
     background: transparent !important;
     color: #20303d !important;
     font: 400 10pt/1.5 "Atkinson Hyperlegible", Arial, sans-serif !important;
