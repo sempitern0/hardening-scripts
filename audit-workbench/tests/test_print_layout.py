@@ -25,7 +25,7 @@ with sync_playwright() as playwright:
     for css in ('css/normalize.css','css/styles.css','css/team.css','css/contrast.css','css/relations.css','css/templates.css','css/quality.css','css/retest.css','css/comparison.css','css/print.css'):
         page.add_style_tag(content=(ROOT/css).read_text(encoding='utf-8'))
     page.evaluate('''() => {const m=new Map();Object.defineProperty(window,'indexedDB',{configurable:true,value:undefined});Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:k=>m.get(k)||null,setItem:(k,v)=>m.set(k,String(v)),removeItem:k=>m.delete(k)}});}''')
-    for name in ('js/exporters.js','js/hardware-catalog.js','js/audit-relations.js','js/control-templates.js','js/audit-quality.js','js/audit-retest.js','js/audit-comparison.js','js/audit-storage.js','js/app.js'):
+    for name in ('js/exporters.js','js/hardware-catalog.js','js/software-catalog.js','js/os-catalog.js','js/glossary.js','js/audit-relations.js','js/audit-evidence-images.js','js/audit-identifiers.js','js/control-templates.js','js/field-assist.js','js/audit-quality.js','js/audit-retest.js','js/audit-comparison.js','js/audit-storage.js','js/audit-import-plan.js','js/inventory-import.js','js/input-guidance.js','js/secure-transfer.js','js/secure-transfer-ui.js','js/document-control.js','js/pwa-updates.js','js/offline-health.js','js/app.js'):
         page.add_script_tag(content=(ROOT/name).read_text(encoding='utf-8'))
     page.locator('[data-new]').first.click()
     for selector, value in (
@@ -46,12 +46,15 @@ with sync_playwright() as playwright:
           '</td><td>Requiere revisión</td></tr>').join('') + '</tbody></table>';
       document.getElementById('report').appendChild(section);
     })''')
-    pdf = page.pdf(prefer_css_page_size=True, print_background=True, display_header_footer=False)
+    pdf = page.pdf(prefer_css_page_size=True, print_background=True, display_header_footer=True)
     document = fitz.open(stream=pdf, filetype='pdf')
     assert len(document) >= 7, len(document)
     for number, paper in enumerate(document, 1):
         assert abs(paper.rect.width - 595.28) < 1 and abs(paper.rect.height - 841.89) < 1
         page_text = paper.get_text()
+        assert 'Audit Workbench · Auditoría offline' not in page_text, f'Browser title leaked into margin: {number}'
+        assert 'localhost:' not in page_text, f'Browser URL leaked into margin: {number}'
+        assert 'about:blank' not in page_text, f'Browser URL leaked into margin: {number}'
         assert f'Página {number}' in page_text, f'Footer missing: {number}'
         for block in paper.get_text('blocks'):
             if not str(block[4]).strip(): continue
