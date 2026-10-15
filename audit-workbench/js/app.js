@@ -1171,6 +1171,17 @@
           <div class="report-expandable-body">${documentPanel()}</div>
         </details>
       </section>
+      <section class="card" id="delivery-signatures">
+        <h2>Firmas del equipo auditor</h2>
+        <p>Estas son las firmas guardadas en este expediente y que se incluirán en el PDF.</p>
+        ${(state.meta.auditTeam||[]).length?`<ul>${state.meta.auditTeam.map(member=>`<li>${html(member.name)}: <strong>${safeSignature(member.signature)?'Firma incorporada':'Sin firma incorporada'}</strong>${!safeSignature(member.signature)&&safeSignature(settings.members.find(m=>m.id===member.id)?.signature)?' · disponible en el perfil':''}</li>`).join('')}</ul>`:'<p>No hay auditores asignados al expediente.</p>'}
+        <div class="action-row">
+          ${confirmed?'<button type="button" class="button quiet" data-delivery-open="validation">Abrir control documental para rectificar firmas</button>':(state.meta.auditTeam||[]).length?'<button type="button" class="button accent" id="sync-auditor-signatures">Incorporar firmas del perfil al expediente</button>':''}
+          <button type="button" class="button quiet" data-go="engagement">Revisar profesionales asignados</button>
+          <button type="button" class="button quiet" data-go="settings">Subir firmas a los perfiles</button>
+        </div>
+        ${confirmed?'<p class="subtle">Abre una rectificación, incorpora las firmas y valida los cambios antes de generar el definitivo.</p>':''}
+      </section>
       <section class="card report-content-summary">
         <h2>Qué incluirá el informe</h2>
         <p class="subtle">Vista rápida de las actuaciones registradas. Los informes se generan desde los datos actuales del expediente.</p>
@@ -1263,7 +1274,7 @@
   function applyDocumentLock(){
     if(state.documentControl?.status!=='confirmed')return;
     for(const element of workspace.querySelectorAll('input,select,textarea,button')){
-      if(element.closest('.document-control')||element.dataset.go||element.dataset.glossaryTerm||element.dataset.glossaryBack||element.dataset.qualitySection||element.id==='delivery-pdf'||element.id==='delivery-json')continue;
+      if(element.id==='wizard-step-select'||element.closest('.document-control')||element.dataset.go||element.dataset.glossaryTerm||element.dataset.glossaryBack||element.dataset.qualitySection||element.id==='delivery-pdf'||element.id==='delivery-json')continue;
       if(['delivery-executive-final','delivery-executive-draft','delivery-technical-final','delivery-technical-draft'].includes(element.id))continue;
       if(element.matches('input,select,textarea')||element.dataset.add||element.dataset.remove||element.dataset.applyTemplate||element.dataset.clearImage||element.dataset.saveRetest)element.disabled=true;
     }
