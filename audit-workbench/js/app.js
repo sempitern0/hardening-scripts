@@ -35,6 +35,7 @@
   const osCatalog = globalThis.AuditOSCatalog;
   const glossary = globalThis.AuditGlossary;
   const hardwareVendors = Object.keys(vendorModels);
+  const softwareVendors = globalThis.AuditSoftwareCatalog?.PUBLISHERS || hardwareVendors;
   const hardwareModels = Object.values(vendorModels).flat();
   const presets = {
     hardware: ['Servidor físico', 'Servidor virtual', 'Estación de trabajo', 'Portátil', 'Tablet', 'Firewall', 'Switch', 'Router', 'Access point', 'NAS / SAN', 'Impresora', 'Hypervisor', 'UPS / SAI', 'IoT / OT'],
@@ -107,7 +108,7 @@
       ['dns','DNS / DHCP'],['purpose','Función / servicios','picker',presets.function],['firewall','Firewall / controles'],
       ['exposure','Accesibilidad y segmentación','picker',presets.exposure],['notes','Observaciones','textarea'],["ssid","SSID / nombre de red inalámbrica (si procede)"],["wifiSecurity","Seguridad Wi-Fi observada","select",["","WPA2-Personal","WPA2-Enterprise","WPA3-Personal","WPA3-Enterprise","WPA2/WPA3 mixto","WEP / heredada","Abierta","Otra","No verificada","No aplica"]],["wifiSignal","Intensidad Wi-Fi observada (dBm)"],["wifiChannel","Canal Wi-Fi observado"],["wifiStandard","Estándar Wi-Fi (802.11 b/g/n/ac/ax/be)"],["wifiBand","Banda Wi-Fi","select",["","2,4 GHz","5 GHz","6 GHz","Múltiples bandas","No verificada","No aplica"]],["contractedRate","Velocidad contratada (Mbps; si corresponde)"],["measuredRate","Velocidad medida (Mbps; método en observaciones)"]]},
     software:{title:'Inventario de software y servicios',intro:'Aplicaciones instaladas, licencias, versiones, criticidad y mantenimiento.',fields:[
-      ['name','Software / servicio','picker',['Microsoft 365','Microsoft Office','Microsoft SQL Server','PostgreSQL','MySQL','MariaDB','Oracle Database','Apache HTTP Server','Nginx','IIS','Docker Engine','Kubernetes','Proxmox VE','VMware vCenter','Zabbix','Wazuh','Grafana','Prometheus','Elastic / OpenSearch','Suricata','pfSense','Fortinet FortiOS','Veeam Backup & Replication','Acronis Cyber Protect','Active Directory DS','Samba AD','Microsoft Entra ID','Microsoft Defender for Endpoint','CrowdStrike Falcon','Sophos Endpoint','Google Workspace','Nextcloud','GitLab','Jenkins','GitHub Actions','OpenVPN','WireGuard']],['version','Versión'],['vendor','Fabricante','picker',hardwareVendors],['asset','Activo asociado','picker',[]],
+      ['name','Software / servicio','picker',['Microsoft 365','Microsoft Office','Microsoft SQL Server','PostgreSQL','MySQL','MariaDB','Oracle Database','Apache HTTP Server','Nginx','IIS','Docker Engine','Kubernetes','Proxmox VE','VMware vCenter','Zabbix','Wazuh','Grafana','Prometheus','Elastic / OpenSearch','Suricata','pfSense','Fortinet FortiOS','Veeam Backup & Replication','Acronis Cyber Protect','Active Directory DS','Samba AD','Microsoft Entra ID','Microsoft Defender for Endpoint','CrowdStrike Falcon','Sophos Endpoint','Google Workspace','Nextcloud','GitLab','Jenkins','GitHub Actions','OpenVPN','WireGuard']],['version','Versión'],['vendor','Fabricante / editor','picker',softwareVendors],['asset','Activo asociado','picker',[]],
       ['license','Licencia','picker',presets.license],['support','Soporte / EOL','picker',presets.support],['exposure','Exposición / función','picker',presets.exposure],['notes','Observaciones','textarea'],["licenseType","Modelo de distribución / licencia","select",["","Propietaria","Software libre / código abierto","Freeware","Shareware / evaluación","Suscripción","Otro","Sin verificar"]],["licenseStatus","Estado de cumplimiento de licencia","select",["","Verificada","Pendiente de verificar","Incidencia","No aplica"]],["installedAt","Fecha de instalación verificada","date"],["updateStatus","Estado de actualización","select",["","Actualizado","Pendiente de actualizar","No verificado","No aplica"]],["updatedAt","Última actualización observada","date"]]},
     cves:{title:'Catálogo de vulnerabilidades CVE',intro:'Asocia CVE verificados con activos y hallazgos. El expediente funciona offline; las consultas externas son opcionales y explícitas.',fields:[
       ['id','Identificador CVE (CVE-AAAA-NNNN)'],['title','Descripción breve'],['asset','Activo afectado','picker',[]],
@@ -788,6 +789,18 @@
       +'<div class="inventory-baseline-content"><p class="subtle">Datos observados, no conformidades automáticas. Adjunta evidencias y utiliza Controles para registrar el resultado de cada verificación.</p>'
       +'<div class="fields">'+extended.map(field=>renderField(record,section,field,index)).join('')+'</div></div></details>';
   }
+  function focusAddedRecord(key){
+    const entry=[...workspace.querySelectorAll('[data-entry-key]')].find(item=>item.dataset.entryKey===key);
+    if(!entry)return;
+    const editable=[...entry.querySelectorAll('input[data-field], select[data-field], textarea[data-field]')]
+      .find(field=>!field.disabled&&!field.readOnly&&!field.hidden&&!field.dataset.custom);
+    // Focus first for screen-reader feedback, then scroll the entry just below the viewport edge.
+    (editable||entry).focus({preventScroll:true});
+    entry.scrollIntoView({
+      block:'start',
+      behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'
+    });
+  }
   function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p>${['assets','networks','software'].includes(block)?'<button type="button" class="button quiet small" data-go="intake">Captura asistida / Importar inventario ↗</button>':''}${glossaryStageHint(block)}${block==='controls'?renderTemplateLibrary():''}<section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Cada dato registrado podrá aparecer en el informe y en la copia JSON.</p></div>${block==='evidence'?'<button class="button quiet" data-export-manifest="true">Manifiesto SHA-256 (JSON)</button>':''}<button class="button accent" data-add="${block}">+ Añadir registro</button></div>${rows.length?rows.map((r,i)=>`<div class="entry" data-entry-key="${html(r._key||'')}" tabindex="-1"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="inventory-fields">${renderInventoryFieldGroups(r,block,i)}</div>${['assets','controls','findings'].includes(block)?renderLinkedEvidence(block,r):''}${block==='controls'?renderControlExtras(r):''}${block==='findings'?renderFindingOrigin(r):''}${block==='evidence'?renderEvidenceRelations(r):''}${block==='cves'?`<div class="cve-tools"><button class="button quiet small" type="button" data-cve-check="${i}">Consultar CVE online (opcional)</button><button class="button small" type="button" data-cve-link="${i}">Ver en CVE.org ↗</button><span class="subtle">Solo se envía el identificador CVE, nunca los datos del cliente.</span></div>`:''}${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Adjuntar captura local</strong> (PNG, JPG, WebP hasta 5 MiB)</label><p class="subtle">Se guarda una copia optimizada. El SHA-256 identifica el archivo original, que debes conservar por separado.</p>${r.fileSha256?`<p class="evidence-digest">Archivo: ${html(r.fileName||'Sin nombre')} · ${(r.fileBytes||0).toLocaleString('es-ES')} bytes <span>SHA-256 ${html(r.fileSha256)}</span></p>`:''}<input type="file" accept="image/png,image/jpeg,image/webp" data-image-index="${i}" id="evidence-upload-${i}">${r.image?`<img class="evidence-preview" alt="Evidencia incrustada" src="${r.image}"><button class="button small danger" data-clear-image="${i}">Quitar imagen</button>`:''}</div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
   const settingsFields=[
     ['company','Nombre legal de la consultora'],['taxType','Identificador fiscal','select',['No indicado','NIF entidad / CIF','DNI / NIF persona física','NIE','NIF intracomunitario / otro']],
@@ -1350,15 +1363,16 @@
       const items=intake.reconcile(intakePreview,state[block]).filter(x=>x.status==='nuevo'&&intakeSelected.has(x.index));
       if(!items.length||state[block].length+items.length>LIMIT_ROWS){alert('No hay registros válidos o se supera el límite de inventario.');return;}
       if(!confirm('Incorporar '+items.length+' registros NUEVOS a '+groups[block].title+'? No se actualizarán registros existentes.'))return;
-      for(const {record} of items){
+      const added=items.map(({record})=>{
         const row={_key:uid()};for(const [field] of groups[block].fields)row[field]=record[field]||'';
         if(block==='assets'){row.criticality='Sin valorar';row.state='Por revisar';}
         if(block==='software'){row.license='Pendiente de revisar';row.support='Pendiente de verificar';row.exposure=row.exposure||'Pendiente de revisar';}
         row.notes=[row.notes,'Captura importada ('+intakePreview.source+(intakePreview.platform?' · '+intakePreview.platform:'')+(intakePreview.capturedAt?' · '+intakePreview.capturedAt:'')+'); pendiente de verificación por el auditor.'].filter(Boolean).join(' · ').slice(0,20000);
-        state[block].push(row);
-      }
+        return row;
+      });
+      state[block].unshift(...added);
       intakePreview=null;intakeSelected.clear();intakeError='';
-      persist();move(block);return;
+      persist();move(block);focusAddedRecord(added[0]._key);return;
     }
     if(b.dataset.glossaryCopy!==undefined){
       const term=glossary?.byId(b.dataset.glossaryId);
@@ -1427,8 +1441,8 @@
     if(b.id==='check-connectivity'){await checkNetworkServer();return}
     if(b.id==='member-add'){
       if(settings.members.length>=TEAM_MAX){alert('Máximo de 60 profesionales por perfil.');return;}
-      const member={id:uid(),name:'',role:'',idType:'DNI',documentId:'',email:'',phone:''};settings.members.push(member);saveSettings();render();
-      const last=byId('member-name-'+(settings.members.length-1));last?.focus();return;
+      const member={id:uid(),name:'',role:'',idType:'DNI',documentId:'',email:'',phone:''};settings.members.unshift(member);saveSettings();render();
+      byId('member-name-0')?.focus();byId('member-name-0')?.scrollIntoView({block:'center'});return;
     }
     if(b.dataset.memberRemove){
       const member=settings.members.find(m=>m.id===b.dataset.memberRemove);if(!member)return;
@@ -1501,8 +1515,8 @@
         const used=new Set(state.controls.map(row=>row.id));
         for(const row of batch){while(used.has(row.id))row.id=nextAvailableControlCode(used);used.add(row.id)}
         if(!batch.length){templateMessage='Los controles seleccionados ya están incluidos.';render();return}
-        state.controls.push(...batch);templateMessage=`${batch.length} comprobaciones añadidas. Están pendientes de evaluación.`;
-        persist();render();
+        state.controls.unshift(...batch);templateMessage=`${batch.length} comprobaciones añadidas. Están pendientes de evaluación.`;
+        persist();render();focusAddedRecord(batch[0]._key);
       }catch(error){alert('No se pudo aplicar la plantilla: '+error.message)}
       return;
     }
@@ -1516,14 +1530,14 @@
         title:control.name||'Incumplimiento por documentar',severity:'Sin evaluar',status:'Abierto',asset:control.asset||'',
         method:control.method||'',description:control.notes||'',references:control.reference||'',
         recommendation:control.recommendation||'',risk:'',evidenceIds:control.evidenceIds||''};
-      state.findings.push(finding);
+      state.findings.unshift(finding);
       for(const evidence of state.evidence){
         evidence.links=relations.normalizeLinks(evidence.links);
         if(evidence.links.controls.includes(control._key)&&!evidence.links.findings.includes(finding._key))evidence.links.findings.push(finding._key);
       }
-      persist();move('findings');return;
+      persist();move('findings');focusAddedRecord(finding._key);return;
     }
-    if(b.dataset.add){if(state[b.dataset.add].length>=LIMIT_ROWS)return alert('Límite de registros alcanzado.');const type=b.dataset.add;let row={_key:uid()};if(['assets','controls','findings','evidence'].includes(type))row.id=relations.nextCode(state[type],type);if(type==='findings')row={...row,severity:'Media',status:'Abierto'};if(type==='cves')row={...row,id:'',severity:'Sin evaluar',status:'Sin verificar'};if(type==='controls')row.status='Pendiente';if(type==='evidence')row.links=relations.normalizeLinks(null);state[type].push(row);persist();render();return}
+    if(b.dataset.add){if(state[b.dataset.add].length>=LIMIT_ROWS)return alert('Límite de registros alcanzado.');const type=b.dataset.add;let row={_key:uid()};if(['assets','controls','findings','evidence'].includes(type))row.id=relations.nextCode(state[type],type);if(type==='findings')row={...row,severity:'Media',status:'Abierto'};if(type==='cves')row={...row,id:'',severity:'Sin evaluar',status:'Sin verificar'};if(type==='controls')row.status='Pendiente';if(type==='evidence')row.links=relations.normalizeLinks(null);state[type].unshift(row);persist();render();focusAddedRecord(row._key);return}
     if(b.dataset.remove){const k=b.dataset.remove,i=Number(b.dataset.index);if(confirm('¿Eliminar este registro y su contenido?')){state[k].splice(i,1);persist();render()}return}
     if(b.dataset.clearImage!==undefined){if(confirm('¿Eliminar la imagen incrustada?')){state.evidence[Number(b.dataset.clearImage)].image='';persist();render()}return}
     if(b.id==='document-confirm'){

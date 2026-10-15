@@ -39,6 +39,12 @@ Basándonos en la **Planificación Auditoría Informática**, se amplían las fi
 
 En **Controles → Plantillas de comprobaciones**, el paquete **«Situación actual · revisión inicial»** permite incorporar 14 pruebas con método, evidencia esperada y recomendaciones. Todas empiezan **Pendiente**. Ningún dato recopilado se convierte por sí solo en una conformidad o vulnerabilidad. Las referencias del documento a **500 GB**, categorías CAT5/CAT5e o WPA2/WPA3 son contextuales y no se aplican como umbrales automáticos. Revisa políticas, alcance, hardware y normativas aplicables antes de emitir un juicio.
 
+### Altas rápidas y fabricantes de software
+
+Los registros nuevos se colocan **al principio de su lista** y la vista se desplaza al primer campo editable, tanto en altas manuales como al crear hallazgos desde controles, añadir plantillas o importar lotes. Los lotes conservan su orden original y los identificadores y relaciones se mantienen por claves estables. También se muestran arriba los nuevos profesionales del directorio.
+
+En **Software → Fabricante / editor** se utiliza un catálogo específico de proveedores (Oracle, Google, Adobe, AWS, Microsoft, Red Hat, SAP, etc.), independiente del catálogo de hardware. Puedes seguir usando **Otro / escribir…** cuando el fabricante no aparezca, y los valores existentes no se reescriben.
+
 ## Entrada guiada de datos
 
 Los formularios muestran ejemplos contextuales para DNI, NIE, CIF/NIF entidad, identificación fiscal, IP, CIDR, VLAN, CVE, CVSS, SHA-256, referencias y otros campos de formato especializado. Los campos de teléfono de cliente, consultora y auditores admiten selección de país con bandera y prefijo, y presentan una máscara orientativa. Se conserva el teléfono en formato internacional dentro del campo existente (sin migración del JSON); la validación de identidad y teléfono sigue siendo local y no comprueba la titularidad o asignación real. Los números antiguos permanecen editables.

@@ -224,3 +224,6 @@
   #workspace .inventory-baseline > summary { padding: .9rem; }
   #workspace .inventory-baseline-content { padding: .85rem; }
 }
+
+/* Keep newly inserted cards visible while navigating long audit inventories. */
+#workspace .entry { scroll-margin-block-start: 1.25rem; }

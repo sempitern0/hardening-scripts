@@ -39,6 +39,12 @@ The **Hardware**, **Networks** and **Software** inventories now contain optional
 
 The new **Initial situation review** control pack offers 14 guided verification steps, each with a method, expected evidence and recommended follow-up. Controls always start **Pending** and never infer compliance from inventory values. Figures such as 500 GB, CAT5/CAT5e and WPA2/WPA3 are contextual references, not unconditional automated pass/fail thresholds.
 
+### Faster record entry and software publishers
+
+New records appear **at the top** and focus moves to the first editable field, including manual entries, controls from templates, findings derived from a control, and reviewed inventory imports. Imported batches retain their source order and existing records/relationships are unchanged. New team-directory members also appear first.
+
+**Software → Vendor / publisher** now uses a dedicated offline catalog (Oracle, Google, Adobe, AWS, Microsoft, Red Hat, SAP, etc.) rather than the hardware list. Custom vendors remain editable through **Other / enter a value**; existing values are preserved.
+
 ## Guided data entry
 
 Forms provide contextual examples for DNI, NIE, entity CIF/NIF, tax identification, IP, CIDR, VLAN, CVE, CVSS, SHA-256, references, and other specially formatted fields. Phone fields for clients, consulting firms, and auditors support a country flag and dialing code selector, along with a suggested entry mask. Numbers are stored in international format in the existing field (no JSON migration); identity and phone validation stays local and does not verify actual ownership or assignment. Existing phone numbers remain editable.
