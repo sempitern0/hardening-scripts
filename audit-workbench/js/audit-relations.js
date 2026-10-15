@@ -68,7 +68,9 @@
         id:str(row.id), title:str(row.title), fileName:str(row.fileName),
         fileBytes:Number.isSafeInteger(row.fileBytes) ? row.fileBytes : null,
         originalSha256:str(row.fileSha256), captured:str(row.captured),
-        links:normalizeLinks(row.links)
+        links:normalizeLinks(row.links),
+        images:(row.image?1:0)+(Array.isArray(row.attachments)?row.attachments.length:0),
+        attachments:(row.attachments||[]).map(photo=>({fileName:str(photo.fileName),originalSha256:str(photo.fileSha256)}))
       })),
       notes:'Las huellas SHA-256 se calculan sobre el archivo original seleccionado. Las imágenes incrustadas se optimizan y no tienen necesariamente la misma huella. Conserve el archivo original por separado.'
     };

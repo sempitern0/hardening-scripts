@@ -62,10 +62,10 @@
       add('blocker','AUDITORIA_SIN_FINALIZAR','engagement','La fecha de fin es posterior a hoy. El informe definitivo requiere una auditoría finalizada.');
     if(!controls.length)add('warning','SIN_CONTROLES','controls','No hay controles registrados; explica la metodología y el alcance si es intencional.');
     const pending=controls.filter(c=>['Pendiente','No verificado',''].includes(clean(c.status)));
-    if(pending.length)add(finalMode?'blocker':'warning','CONTROLES_PENDIENTES','controls',`${pending.length} controles están pendientes o sin verificar. Valida los controles, justifica su exclusión o genera un borrador.`);
+    if(pending.length)add('warning','CONTROLES_PENDIENTES','controls',`${pending.length} controles están pendientes o sin verificar. Valida los controles, justifica su exclusión o genera un borrador.`);
     for (const c of controls){
       if(c.status==='No conforme'&&!findings.some(f=>f.originControlKey&&f.originControlKey===c._key)){
-        add('blocker','CONTROL_NO_CONFORME','controls',`${clean(c.id)||clean(c.name)||'Control'} no es conforme y no tiene hallazgo de seguimiento.`,clean(c._key));
+        add('warning','CONTROL_NO_CONFORME','controls',`${clean(c.id)||clean(c.name)||'Control'} no es conforme y no tiene hallazgo de seguimiento.`,clean(c._key));
       }
     }
     for(const category of ['assets','controls','findings','evidence']){

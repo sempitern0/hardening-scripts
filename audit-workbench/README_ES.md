@@ -85,6 +85,12 @@ Al importar una auditoría individual o una copia completa, **Audit Workbench re
 
 Las copias completas pueden mezclar informes nuevos y ya existentes. El diálogo resume los que se sustituirán y cuántos se crearán; todas las operaciones se guardan en una sola transacción en IndexedDB o una sola escritura en almacenamiento alternativo. Si hay referencias repetidas dentro del JSON, o la biblioteca contiene más de un registro con la misma referencia, la importación se bloquea sin modificar nada. Un JSON individual sin referencia sigue ofreciéndose como **auditoría nueva**. Ningún registro se sobrescribe automáticamente.
 
+## Carga de varias imágenes y cierre con controles pendientes
+
+Puedes seleccionar varias imágenes a la vez tanto en **Hallazgos** como en **Evidencias**. El asistente permite hasta 10 imágenes por registro de evidencia y limita las imágenes incrustadas del expediente a 28 MiB. Las nuevas imágenes se añaden sin sustituir las anteriores. Desde Hallazgos, se reutiliza una evidencia existente creada desde esa ficha para evitar duplicaciones. Se mantienen los enlaces por identificador y el formato JSON v3 anterior; las imágenes extra se guardan en `attachments`.
+
+Los controles **Pendiente** y **No verificado**, y las no conformidades sin hallazgo de seguimiento, generan **avisos** en lugar de impedir la entrega. La revisión final incluye estos avisos en un capítulo de limitaciones y obliga a confirmarlos antes de generar el PDF definitivo. Se siguen bloqueando datos esenciales, inconsistencias de formato, referencias rotas, ausencia de resultados fundamentales, y expedientes sin confirmación documental. La aplicación no marca controles pendientes como conformes.
+
 ## Flujo recomendado
 
 1. **Configuración:** registra tu consultora y su equipo de auditores; asigna profesionales al expediente.

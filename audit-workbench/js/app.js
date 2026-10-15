@@ -7,6 +7,7 @@
   const storage = globalThis.AuditStorage;
   const importPlan = globalThis.AuditImportPlan;
   const relations = globalThis.AuditRelations;
+  const evidenceImages = globalThis.AuditEvidenceImages;
   const identifiers = globalThis.AuditIdentifiers;
   const templates = globalThis.AuditControlTemplates;
   const quality = globalThis.AuditQuality;
@@ -178,6 +179,7 @@
           const pic=typeof item.image==='string' && item.image.length<1400000?item.image:'';
           record.image=/^data:image\/jpeg;base64,[a-z0-9+/=]+$/i.test(pic)&&pic.length<1400000?pic:'';
           record.links=relations.normalizeLinks(item.links);
+          record.attachments=evidenceImages.normalize(item.attachments);
           record.fileName=str(item.fileName).slice(0,180);
           record.fileBytes=Number.isSafeInteger(item.fileBytes) && item.fileBytes>=0 ? item.fileBytes : null;
           record.fileSha256=/^[a-f0-9]{64}$/i.test(item.fileSha256||'')?item.fileSha256.toLowerCase():'';
@@ -185,6 +187,8 @@
         return record;
       });
     }
+    if(evidenceImages.totalSize(out.evidence)>evidenceImages.MAX_AUDIT_IMAGES)
+      throw Error('Las imágenes del expediente superan el límite de 28 MiB. Divide la captura en varios expedientes.');
     return out;
   }
   const TEAM_MAX=60;
@@ -817,11 +821,11 @@
     return `<div class="finding-attachments"><strong>Fotos y capturas del hallazgo</strong>
       <p class="subtle">Selecciona una imagen para crear una evidencia vinculada automáticamente.</p>
       <label for="finding-image-${index}">Añadir foto o captura (PNG, JPG o WebP, hasta 5 MiB)</label>
-      <input type="file" id="finding-image-${index}" accept="image/png,image/jpeg,image/webp" data-finding-image-key="${html(finding._key)}">
-      <div class="finding-image-gallery">${linked.filter(e=>e.image).slice(0,8).map(e=>`<figure><img src="${e.image}" alt="Evidencia ${html(e.id)}" loading="lazy"><figcaption>${html(e.id)}</figcaption></figure>`).join('')}</div>
+      <input type="file" id="finding-image-${index}" accept="image/png,image/jpeg,image/webp" multiple data-finding-image-key="${html(finding._key)}">
+      <div class="finding-image-gallery">${linked.flatMap(e=>evidenceImages.list(e).map((photo,i)=>({photo,e,i}))).slice(0,12).map(({photo,e,i})=>`<figure><img src="${photo.image}" alt="Evidencia ${html(e.id)} · imagen ${i+1}" loading="lazy"><figcaption>${html(e.id)} · ${i+1}</figcaption></figure>`).join('')}</div>
       <p class="subtle">${linked.length} evidencias vinculadas. Puedes revisarlas en «Evidencias».</p></div>`;
   }
-  function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p>${['assets','networks','software'].includes(block)?'<button type="button" class="button quiet small" data-go="intake">Captura asistida / Importar inventario ↗</button>':''}${glossaryStageHint(block)}${block==='controls'?renderTemplateLibrary():''}<section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Los registros se guardan y puedes incluirlos en el informe.</p></div>${block==='evidence'?'<button class="button quiet" data-export-manifest="true">Manifiesto SHA-256 (JSON)</button>':''}<button class="button accent" data-add="${block}">+ Añadir registro</button></div>${rows.length?rows.map((r,i)=>`<div class="entry" data-entry-key="${html(r._key||'')}" tabindex="-1"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="inventory-fields">${renderInventoryFieldGroups(r,block,i)}</div>${block==='findings'?renderFindingAttachments(r,i):''}${['assets','controls','findings'].includes(block)?renderLinkedEvidence(block,r):''}${block==='controls'?renderControlExtras(r):''}${block==='findings'?renderFindingOrigin(r):''}${block==='evidence'?renderEvidenceRelations(r):''}${block==='cves'?`<div class="cve-tools"><button class="button quiet small" type="button" data-cve-check="${i}">Consultar CVE online (opcional)</button><button class="button small" type="button" data-cve-link="${i}">Ver en CVE.org ↗</button><span class="subtle">Solo se envía el identificador CVE, nunca los datos del cliente.</span></div>`:''}${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Añadir foto o captura</strong> (PNG, JPG o WebP, hasta 5 MiB)</label><p class="subtle">Se guarda una copia optimizada. El SHA-256 identifica el archivo original, que debes conservar por separado.</p>${r.fileSha256?`<p class="evidence-digest">Archivo: ${html(r.fileName||'Sin nombre')} · ${(r.fileBytes||0).toLocaleString('es-ES')} bytes <span>SHA-256 ${html(r.fileSha256)}</span></p>`:''}<input type="file" accept="image/png,image/jpeg,image/webp" data-image-index="${i}" id="evidence-upload-${i}">${r.image?`<img class="evidence-preview" alt="Evidencia incrustada" src="${r.image}"><button class="button small danger" data-clear-image="${i}">Quitar imagen</button>`:''}</div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
+  function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p>${['assets','networks','software'].includes(block)?'<button type="button" class="button quiet small" data-go="intake">Captura asistida / Importar inventario ↗</button>':''}${glossaryStageHint(block)}${block==='controls'?renderTemplateLibrary():''}<section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Los registros se guardan y puedes incluirlos en el informe.</p></div>${block==='evidence'?'<button class="button quiet" data-export-manifest="true">Manifiesto SHA-256 (JSON)</button>':''}<button class="button accent" data-add="${block}">+ Añadir registro</button></div>${rows.length?rows.map((r,i)=>`<div class="entry" data-entry-key="${html(r._key||'')}" tabindex="-1"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="inventory-fields">${renderInventoryFieldGroups(r,block,i)}</div>${block==='findings'?renderFindingAttachments(r,i):''}${['assets','controls','findings'].includes(block)?renderLinkedEvidence(block,r):''}${block==='controls'?renderControlExtras(r):''}${block==='findings'?renderFindingOrigin(r):''}${block==='evidence'?renderEvidenceRelations(r):''}${block==='cves'?`<div class="cve-tools"><button class="button quiet small" type="button" data-cve-check="${i}">Consultar CVE online (opcional)</button><button class="button small" type="button" data-cve-link="${i}">Ver en CVE.org ↗</button><span class="subtle">Solo se envía el identificador CVE, nunca los datos del cliente.</span></div>`:''}${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Añadir foto o captura</strong> (PNG, JPG o WebP, hasta 5 MiB)</label><p class="subtle">Se guarda una copia optimizada. El SHA-256 identifica el archivo original, que debes conservar por separado.</p>${r.fileSha256?`<p class="evidence-digest">Archivo: ${html(r.fileName||'Sin nombre')} · ${(r.fileBytes||0).toLocaleString('es-ES')} bytes <span>SHA-256 ${html(r.fileSha256)}</span></p>`:''}<input type="file" accept="image/png,image/jpeg,image/webp" multiple data-image-index="${i}" id="evidence-upload-${i}"><div class="evidence-image-grid">${evidenceImages.list(r).map((photo,j)=>`<figure><img class="evidence-preview" alt="Imagen ${j+1} de ${html(r.id||'evidencia')}" src="${photo.image}"><figcaption>${html(photo.fileName||'Imagen '+(j+1))}</figcaption><button type="button" class="button quiet small" data-remove-evidence-photo="${html(r._key)}" data-photo-index="${j}">Quitar esta imagen</button></figure>`).join('')}</div></div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
   const settingsFields=[
     ['company','Nombre legal de la consultora'],['taxType','Identificador fiscal','select',['No indicado','NIF entidad / CIF','DNI / NIF persona física','NIE','NIF intracomunitario / otro']],
     ['taxId','Identificación fiscal'],['email','Email corporativo'],['phone','Teléfono'],
@@ -1059,7 +1063,7 @@
   }
   function documentPanel(){
     const dc=docControl.normalize(state.documentControl),confirmed=dc.status==='confirmed',amending=dc.status==='amending';
-    return `<section class="card document-control"><h2>Control documental · ${confirmed?'Confirmado':amending?'Rectificación abierta':'Borrador'}</h2><p class="subtle">${confirmed?'Revisión '+dc.revision+' confirmada. Solo se permiten rectificaciones justificadas.':amending?'Modificaciones excepcionales pendientes de validación. El informe final queda suspendido.':'Completa las verificaciones y confirma el expediente antes de emitir la versión definitiva.'}</p>${dc.confirmed?`<p class="subtle">Última confirmación: ${html(dc.confirmed.at)} · Responsable: ${html(dc.confirmed.author)} · SHA-256: <code>${html(dc.confirmed.digest)}</code></p>`:''}${!confirmed&&!amending?`<div class="fields"><div class="field"><label for="document-author">Responsable de confirmación</label><input id="document-author" placeholder="Nombre y apellidos"></div></div><div class="action-row"><button type="button" class="button accent" id="document-confirm">Confirmar expediente</button></div>`:''}${confirmed?`<div class="fields"><div class="field"><label for="amend-author">Responsable de la rectificación</label><input id="amend-author" placeholder="Nombre y apellidos"></div><div class="field full"><label for="amend-reason">Motivo documentado de la rectificación</label><textarea id="amend-reason" placeholder="Qué debe corregirse y por qué" rows="3"></textarea></div></div><button class="button quiet" type="button" id="amend-begin">Abrir rectificación excepcional</button>`:''}${amending?`<button class="button accent" type="button" id="amend-finish">Validar cambios y cerrar rectificación</button>`:''}<p class="subtle">La huella SHA-256 permite detectar cambios accidentales, pero no constituye firma digital ni registro inalterable. Conserva externamente los PDFs y JSON entregados.</p>${dc.history.length?`<details><summary>Historial documental (${dc.history.length})</summary><ol>${dc.history.map(x=>`<li>Rev. ${x.revision} · ${html(x.at)} · ${html(x.author)} · ${x.type==='confirmation'?'Confirmación':'Rectificación'}${x.reason?' · '+html(x.reason):''}${x.changes?' · '+x.changes.length+' campos afectados':''}</li>`).join('')}</ol></details>`:''}</section>`;
+    return `<section class="card document-control"><h2>Control documental · ${confirmed?'Confirmado':amending?'Rectificación abierta':'Borrador'}</h2><p class="subtle">${confirmed?'Revisión '+dc.revision+' confirmada. Solo se permiten rectificaciones justificadas.':amending?'Modificaciones excepcionales pendientes de validación. El informe final queda suspendido.':'Revisa los avisos y confirma el expediente; los controles pendientes se documentan sin impedir la entrega.'}</p>${dc.confirmed?`<p class="subtle">Última confirmación: ${html(dc.confirmed.at)} · Responsable: ${html(dc.confirmed.author)} · SHA-256: <code>${html(dc.confirmed.digest)}</code></p>`:''}${!confirmed&&!amending?`<div class="fields"><div class="field"><label for="document-author">Responsable de confirmación</label><input id="document-author" placeholder="Nombre y apellidos"></div></div><div class="action-row"><button type="button" class="button accent" id="document-confirm">Confirmar expediente</button></div>`:''}${confirmed?`<div class="fields"><div class="field"><label for="amend-author">Responsable de la rectificación</label><input id="amend-author" placeholder="Nombre y apellidos"></div><div class="field full"><label for="amend-reason">Motivo documentado de la rectificación</label><textarea id="amend-reason" placeholder="Qué debe corregirse y por qué" rows="3"></textarea></div></div><button class="button quiet" type="button" id="amend-begin">Abrir rectificación excepcional</button>`:''}${amending?`<button class="button accent" type="button" id="amend-finish">Validar cambios y cerrar rectificación</button>`:''}<p class="subtle">La huella SHA-256 permite detectar cambios accidentales, pero no constituye firma digital ni registro inalterable. Conserva externamente los PDFs y JSON entregados.</p>${dc.history.length?`<details><summary>Historial documental (${dc.history.length})</summary><ol>${dc.history.map(x=>`<li>Rev. ${x.revision} · ${html(x.at)} · ${html(x.author)} · ${x.type==='confirmation'?'Confirmación':'Rectificación'}${x.reason?' · '+html(x.reason):''}${x.changes?' · '+x.changes.length+' campos afectados':''}</li>`).join('')}</ol></details>`:''}</section>`;
   }
 
   function renderDelivery(){
@@ -1075,7 +1079,7 @@
       ?'Puedes generar un borrador ahora. Para la versión definitiva hay '+unresolved+' comprobaciones por resolver.'
       :amending?'Termina la rectificación documental antes de emitir la versión definitiva.'
       :confirmed?'La revisión documental está confirmada. Revisa los avisos antes de entregar.'
-      :'La revisión de calidad está completa. Confirma el expediente para habilitar el informe definitivo.';
+      :'Los requisitos esenciales están completos. Revisa los avisos y confirma el expediente.';
     return `<div class="report-workflow">
       <span class="eyebrow">INFORMES / ENTREGA</span>
       <h1 class="page-title">Generar informe PDF</h1>
@@ -1376,23 +1380,48 @@
       const id=currentId,key=t.dataset.findingImageKey;
       try{
         if(state.documentControl?.status==='confirmed')throw Error('Abre una rectificación antes de adjuntar imágenes.');
-        if(state.evidence.length>=LIMIT_ROWS)throw Error('Se alcanzó el límite de evidencias.');
-        const imageData=await prepareEvidenceImage(t.files[0]);
+        const photos=[...t.files];
+        if(photos.length>evidenceImages.MAX_IMAGES)throw Error('Máximo de 10 imágenes en una carga.');
+        const finding=state.findings.find(x=>x._key===key);
+        if(!finding)throw Error('Hallazgo no disponible.');
+        // Reuse an existing evidence record for this finding to prevent duplicate forms and links.
+        let record=relations.linkedEvidence(state,'findings',key).find(e=>e.source==='Imagen adjuntada desde un hallazgo');
+        if(!record && state.evidence.length>=LIMIT_ROWS)throw Error('Se alcanzó el límite de evidencias.');
+        if(record && evidenceImages.list(record).length+photos.length>evidenceImages.MAX_IMAGES)
+          throw Error('Esta evidencia ya tiene 10 imágenes. Puedes crear una segunda ficha en Evidencias.');
+        const prepared=await Promise.all(photos.map(prepareEvidenceImage));
         if(id!==currentId||state.documentControl?.status==='confirmed')throw Error('El expediente ha cambiado durante la carga.');
-        const finding=state.findings.find(x=>x._key===key);if(!finding)throw Error('Hallazgo no disponible.');
-        const evidence={_key:uid(),id:relations.nextCode(state.evidence,'evidence'),
-          title:'Captura relacionada con '+(finding.id||finding.title||'hallazgo'),
-          asset:finding.asset||'',captured:new Date().toISOString().slice(0,10),
-          source:'Imagen adjuntada desde un hallazgo',notes:'Conservar original por separado',
-          links:relations.normalizeLinks({findings:[finding._key]}),...imageData};
-        state.evidence.unshift(evidence);persist();render();focusAddedRecord(finding._key);
-      }catch(error){alert('No se pudo adjuntar la imagen: '+error.message);t.value='';}
+        if(evidenceImages.totalSize(state.evidence)+prepared.reduce((n,p)=>n+p.image.length,0)>evidenceImages.MAX_AUDIT_IMAGES)
+          throw Error('Límite de 28 MiB de imágenes por expediente. Exporta una copia antes de continuar.');
+        if(record){
+          evidenceImages.add(record,prepared);
+        }else{
+          record={_key:uid(),id:relations.nextCode(state.evidence,'evidence'),
+            title:'Capturas de '+(finding.id||finding.title||'hallazgo'),
+            asset:finding.asset||'',captured:new Date().toISOString().slice(0,10),
+            source:'Imagen adjuntada desde un hallazgo',notes:'Conservar originales por separado',
+            links:relations.normalizeLinks({findings:[finding._key]}),
+            image:'',attachments:[]};
+          evidenceImages.add(record,prepared);state.evidence.unshift(record);
+        }
+        persist();render();focusAddedRecord(finding._key);
+      }catch(error){alert('No se pudieron adjuntar las imágenes: '+error.message);t.value='';}
       return;
     }
     if(t.dataset.imageIndex!==undefined&&t.files?.length){
       const id=currentId,recordKey=state.evidence[Number(t.dataset.imageIndex)]?._key;
-      try{if(state.documentControl?.status==='confirmed')throw Error('Abre una rectificación para cambiar las evidencias.');const prepared=await prepareEvidenceImage(t.files[0]);if(id!==currentId||state.documentControl?.status==='confirmed')throw Error('El expediente ha cambiado.');const record=state.evidence.find(x=>x._key===recordKey);if(!record)throw Error('Evidencia no encontrada.');Object.assign(record,prepared);persist();render()}
-      catch(err){alert('No se pudo incorporar la imagen: '+err.message);t.value=''}return;
+      try{
+        if(state.documentControl?.status==='confirmed')throw Error('Abre una rectificación para cambiar las evidencias.');
+        const photos=[...t.files];
+        const prepared=await Promise.all(photos.map(prepareEvidenceImage));
+        if(id!==currentId||state.documentControl?.status==='confirmed')throw Error('El expediente ha cambiado.');
+        const record=state.evidence.find(x=>x._key===recordKey);if(!record)throw Error('Evidencia no encontrada.');
+        if(evidenceImages.totalSize(state.evidence)+prepared.reduce((n,p)=>n+p.image.length,0)>evidenceImages.MAX_AUDIT_IMAGES)
+          throw Error('El expediente supera 28 MiB de imágenes.');
+        evidenceImages.add(record,prepared);
+        persist();render();
+      }catch(error){alert('No se pudieron incorporar las imágenes: '+error.message);t.value='';}
+      return;
     }
     if(t.dataset.addEvidenceLink!==undefined){
       const evidence=state.evidence.find(row=>row._key===t.dataset.addEvidenceLink);
@@ -1650,6 +1679,12 @@
     }
     if(b.dataset.add){if(state[b.dataset.add].length>=LIMIT_ROWS)return alert('Límite de registros alcanzado.');const type=b.dataset.add;let row={_key:uid()};if(['assets','controls','findings','evidence'].includes(type))row.id=relations.nextCode(state[type],type);if(type==='findings')row={...row,severity:'Media',status:'Abierto'};if(type==='cves')row={...row,id:'',severity:'Sin evaluar',status:'Sin verificar'};if(type==='controls')row.status='Pendiente';if(type==='evidence')row.links=relations.normalizeLinks(null);state[type].unshift(row);persist();render();focusAddedRecord(row._key);return}
     if(b.dataset.remove){const k=b.dataset.remove,i=Number(b.dataset.index);if(confirm('¿Eliminar este registro y su contenido?')){state[k].splice(i,1);persist();render()}return}
+    if(b.dataset.removeEvidencePhoto!==undefined){
+      if(state.documentControl?.status==='confirmed'){alert('Abre una rectificación antes de cambiar imágenes.');return;}
+      const record=state.evidence.find(e=>e._key===b.dataset.removeEvidencePhoto);
+      if(record&&confirm('¿Quitar esta imagen?')){evidenceImages.remove(record,Number(b.dataset.photoIndex));persist();render();}
+      return;
+    }
     if(b.dataset.clearImage!==undefined){if(confirm('¿Eliminar la imagen incrustada?')){state.evidence[Number(b.dataset.clearImage)].image='';persist();render()}return}
     if(b.id==='document-confirm'){
       try{await flush();const checked=quality.review(state,relations,{mode:'final'}),bad=invalidFields();if(checked.blockers.length||bad.length)throw Error('Hay '+(checked.blockers.length+bad.length)+' validaciones imprescindibles pendientes.');if(checked.warnings.length&&!confirm('Hay '+checked.warnings.length+' advertencias. ¿Confirmar tras revisarlas?'))return;if(!confirm('Se confirmará la versión actual. Para modificarla después será necesario abrir una rectificación justificada. ¿Continuar?'))return;await docControl.confirm(state,byId('document-author').value);persist(true);await flush();render();goToPdfOptions();}catch(error){alert('No se ha confirmado: '+error.message);}return;
@@ -1924,10 +1959,15 @@
     const summaryCounts={assets:state.assets.length,controls:state.controls.length,verified:state.controls.filter(c=>!['Pendiente','No verificado',''].includes(str(c.status).trim())).length,findings:state.findings.length};
     const executive=section(3,'Resumen ejecutivo',`<p>${para(ending.executive)}</p><div class="report-summary-metrics"><div><strong>${summaryCounts.assets}</strong><span>Activos inventariados</span></div><div><strong>${summaryCounts.verified}/${summaryCounts.controls}</strong><span>Controles con resultado</span></div><div><strong>${summaryCounts.findings}</strong><span>Hallazgos registrados</span></div></div><h3>Valoración del riesgo</h3><p>${para(ending.assessment)}</p><div class="report-stat-grid">${severity.map(s=>`<div><strong>${count[s]}</strong><small>${s}</small></div>`).join('')}</div><h3>Puntos fuertes</h3><p>${para(ending.strengths)}</p><h3>Debilidades principales</h3><p>${para(ending.weaknesses)}</p>`);
     const controls=section(8,'Controles y verificaciones',reportRows('controls'));
-    const findings=section(9,'Resumen de hallazgos y ficha técnica',`${state.findings.length?`<table class="report-table"><thead><tr><th>ID</th><th>Hallazgo</th><th>Severidad</th><th>Remediación</th></tr></thead><tbody>${state.findings.map(f=>`<tr><td>${html(f.id)}</td><td>${html(f.title)}</td><td>${html(f.severity)}</td><td>${para(f.recommendation)}</td></tr>`).join('')}</tbody></table>`:'<p class="report-empty">No hay hallazgos registrados.</p>'}${state.findings.map(f=>`<div class="report-finding"><h3>${html(f.id||'Hallazgo')} — ${html(f.title||'Sin título')} <span class="report-badge ${level(f.severity)}">${html(f.severity)}</span></h3>${table(groups.findings.fields,f)}${f.originControlKey?`<p class="report-note"><strong>Control de origen:</strong> ${html(relations.itemLabel(state.controls.find(c=>c._key===f.originControlKey),'controls'))}</p>`:''}${state.evidence.filter(e=>e.image&&((f.evidenceIds||'').split(/[,;\s]+/).includes(e.id)||relations.normalizeLinks(e.links).findings.includes(f._key))).map(e=>`<figure><img class="report-evidence" src="${e.image}" alt="Evidencia ${html(e.id)}"><figcaption class="report-note">${html(e.id)} — ${html(e.title)}</figcaption></figure>`).join('')}</div>`).join('')}`);
+    const findings=section(9,'Resumen de hallazgos y ficha técnica',`${state.findings.length?`<table class="report-table"><thead><tr><th>ID</th><th>Hallazgo</th><th>Severidad</th><th>Remediación</th></tr></thead><tbody>${state.findings.map(f=>`<tr><td>${html(f.id)}</td><td>${html(f.title)}</td><td>${html(f.severity)}</td><td>${para(f.recommendation)}</td></tr>`).join('')}</tbody></table>`:'<p class="report-empty">No hay hallazgos registrados.</p>'}${state.findings.map(f=>`<div class="report-finding"><h3>${html(f.id||'Hallazgo')} — ${html(f.title||'Sin título')} <span class="report-badge ${level(f.severity)}">${html(f.severity)}</span></h3>${table(groups.findings.fields,f)}${f.originControlKey?`<p class="report-note"><strong>Control de origen:</strong> ${html(relations.itemLabel(state.controls.find(c=>c._key===f.originControlKey),'controls'))}</p>`:''}${state.evidence.filter(e=>(f.evidenceIds||'').split(/[,;\s]+/).includes(e.id)||relations.normalizeLinks(e.links).findings.includes(f._key)).flatMap(e=>evidenceImages.list(e).map((photo,i)=>`<figure><img class="report-evidence" src="${photo.image}" alt="Evidencia ${html(e.id)} imagen ${i+1}"><figcaption class="report-note">${html(e.id)} · imagen ${i+1} — ${html(e.title)}</figcaption></figure>`)).join('')}</div>`).join('')}`);
     const reviewed=reviewState('final'); // El borrador debe mostrar también los impedimentos para una entrega definitiva.
     const actionPlan=section(11,'Plan de remediación y comprobación',reviewed.plan.length?reviewed.plan.map(item=>`<div class="report-action"><h3>${html(item.id)} · ${html(item.title)} <span class="report-badge ${level(item.severity)}">${html(item.severity)}</span></h3><p><strong>Estado:</strong> ${html(item.status)} · <strong>Responsable:</strong> ${html(item.owner||'Pendiente de asignar')} · <strong>Fecha objetivo:</strong> ${html(item.deadline||'Por acordar')}</p><p><strong>Acción correctiva:</strong> ${para(item.recommendation||'Sin definir')}</p><p><strong>Criterio de verificación:</strong> ${para(item.verification||'Sin definir')}</p></div>`).join(''):'<p class="report-empty">No se registraron hallazgos que requieran remediación. Esta observación no implica ausencia de riesgos fuera del alcance revisado.</p>');
     const draftMarker=reportDeliveryMode==='final'&&reviewed.ready?'':`<aside class="report-draft"><strong>BORRADOR · NO VALIDADO PARA ENTREGA</strong><p>${reviewed.blockers.length} impedimentos para entregar y ${reviewed.warnings.length} advertencias. Documento de trabajo, no constituye informe definitivo.</p></aside>`;
+    const reviewNotice=reviewed.warnings.length
+      ?section(13,'Comprobaciones y limitaciones pendientes',
+        '<p>La emisión de este informe no implica que se hayan resuelto o verificado todos los controles. Las comprobaciones restantes se comunicarán al cliente para su seguimiento y su eventual revisión posterior.</p><ul>'+
+        reviewed.warnings.map(item=>'<li>'+html(item.message)+'</li>').join('')+'</ul>')
+      :'';
     const closing=section(12,'Conclusiones y plan de acción',table(finalFields.filter(f=>f[0]!=='executive'&&f[0]!=='strengths'&&f[0]!=='weaknesses'&&f[0]!=='assessment'),ending)+`<div class="report-signature">Generado localmente con Audit Workbench. Validación y autorización de entrega: ${html(ending.signoff||'Pendiente de firma')}.</div>`);
 
     // Shared audit data, distinct delivery profiles. The audit JSON stays unchanged.
@@ -1973,6 +2013,7 @@
       [8,'Controles y verificaciones',controls],
       [10,'Registro de evidencias',section(10,'Registro de evidencias',reportRows('evidence'))],
       [12,'Conclusiones y seguimiento',closing],
+      [13,'Comprobaciones y limitaciones pendientes',reviewNotice],
       [1,'Confidencialidad, alcance legal y custodia',legal]
     ]:[
       [3,'Resumen ejecutivo',executive],
@@ -1980,15 +2021,17 @@
       [9,'Riesgos para la organización',executiveFindings],
       [11,'Prioridades y decisiones',executiveActions],
       [12,'Conclusión y validación',executiveClosing],
+      [13,'Comprobaciones y limitaciones pendientes',reviewNotice],
       [1,'Confidencialidad y límites de la evaluación',executiveLegal]
     ]);
     const toc=section(0,'Contenido del informe',
-      `<nav class="report-toc" aria-label="Índice del informe">${chapters.map(([id,title])=>
+      `<nav class="report-toc" aria-label="Índice del informe">${activeChapters.map(([id,title])=>
         `<a href="#report-section-${id}">${html(title)} <span aria-hidden="true">↗</span></a>`).join('')}</nav>`);
+    const activeChapters=chapters.filter(([_id,_title,content])=>Boolean(content));
     byId('report').dataset.reportType=reportProfile;
     byId('report').innerHTML=cover.replace('<div class="report-cover">','<div class="report-cover">'+draftMarker)+
       `<div class="report-note report-kind"><strong>${reportProfile==='technical'?'INFORME TÉCNICO':'INFORME EJECUTIVO'}</strong> · Ref. ${html(meta.reportId||'Sin referencia')} · Rev. ${html(reportDocument.status==='confirmed'?String(reportDocument.revision):meta.revision||'1.0')}</div>`+
-      documentNote+toc+chapters.map(([id,_title,part],index)=>
+      documentNote+toc+activeChapters.map(([id,_title,part],index)=>
         part.replace('class="report-section"','class="report-section" id="report-section-'+id+'"')
         .replace(/(<h2>)\d+\. /,(_,tag)=>tag+(index+1)+'. ')).join('')+
       renderSignaturePage(meta,reportDeliveryMode);
@@ -2039,7 +2082,7 @@
       openDeliveryPanel('validation');
       return;
     }
-    if(reportDeliveryMode==='final'&&review.warnings.length&&!confirm('El informe definitivo contiene '+review.warnings.length+' avisos documentales. Revisa su justificación antes de entregar. ¿Continuar?'))return;
+    if(reportDeliveryMode==='final'&&review.warnings.length&&!confirm('Hay '+review.warnings.length+' avisos pendientes. Estos aparecerán en el informe; confirma que se han comunicado sus limitaciones y que autorizas la entrega. ¿Continuar?'))return;
     if(reportDeliveryMode==='final'){
       try{if(!await docControl.verify(state))throw Error('El contenido difiere de la confirmación. Revisa el expediente.');}
       catch(error){alert('No se puede emitir un informe definitivo: '+error.message);return;}
