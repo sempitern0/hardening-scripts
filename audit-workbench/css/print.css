@@ -305,3 +305,12 @@
   #report .report-executive-finding p { line-height:1.5; }
   #report .report-signature-legal { break-inside:avoid-page; }
 }
+
+/* Long findings can flow; keep each image with its caption. */
+@media print {
+  #report[data-report-type="executive"] .report-executive-finding { break-inside:auto; }
+  #report .report-executive-image { break-inside:avoid-page; margin:4mm 0; }
+  #report .report-executive-image img { display:block; max-width:100%; width:auto; max-height:85mm; object-fit:contain; margin:auto; }
+  #report .report-executive-image figcaption { font-size:9pt; line-height:1.4; margin-top:2mm; }
+  #report .report-executive-finding p { hyphens:none; }
+}

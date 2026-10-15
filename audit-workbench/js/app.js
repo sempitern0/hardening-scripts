@@ -133,7 +133,12 @@
       ['method','Método o herramientas utilizadas','textarea'],['evidenceIds','ID(s) de evidencia'],
       ['references','CVE / CIS / NIST / referencias','textarea'],['recommendation','Remediación propuesta','textarea'],
       ['verification','Cómo comprobar que se ha solucionado','textarea'],
-      ['owner','Responsable','picker',presets.owner],['deadline','Fecha objetivo','date'],['residual','Riesgo residual / notas','textarea']]},
+      ['owner','Responsable','picker',presets.owner],['deadline','Fecha objetivo','date'],['residual','Riesgo residual / notas','textarea'],
+      ['executiveTitle','Título para dirección'],['executiveObservation','Qué se ha observado (dirección)','textarea'],
+      ['executiveImpact','Impacto para la organización','textarea'],['executiveAction','Acción esperada del cliente','textarea'],
+      ['executiveRequest','Información o evidencia que debe aportar el cliente','textarea'],['executiveClosure','Criterio de cierre para dirección','textarea'],
+      ['executiveImages','Imágenes en el ejecutivo','select',['Automática (1)','Seleccionadas (máximo 2)','No mostrar']],
+      ['executiveEvidenceIds','ID de evidencia principal y segunda opcional (en orden)'],['executiveCaption','Pie de imagen para dirección']]},
     evidence:{title:'Evidencias y capturas',intro:'Añade fotos o capturas de lo observado. Se guardan en el expediente y pueden aparecer en el PDF. Conserva los originales aparte.',fields:[
       ['id','ID de evidencia'],['title','Título / descripción breve'],['asset','Activo / hallazgo relacionado','picker',[]],
       ['captured','Fecha de captura','date'],['source','Fuente / comando / ruta segura'],
@@ -792,6 +797,7 @@
 
   function renderInventoryFieldGroups(record,section,index) {
     const definitions=groups[section].fields;
+    if(section==='findings')return '<div class="fields">'+definitions.filter(([name])=>!name.startsWith('executive')).map(field=>renderField(record,section,field,index)).join('')+'</div><details class="inventory-baseline"><summary>Presentación para dirección · texto e imágenes</summary><p>Usa frases breves: observación, impacto, acción y cierre. Los campos vacíos reutilizan el texto del hallazgo; revísalo antes de entregar. Por defecto se muestra una imagen vinculada. Para elegir hasta dos, indica sus ID en orden; solo se usa la primera foto de cada evidencia. Revisa que las capturas sean comprensibles y no expongan datos innecesarios.</p><div class="fields">'+definitions.filter(([name])=>name.startsWith('executive')).map(field=>renderField(record,section,field,index)).join('')+'</div></details>';
     const extra=baselineFieldSet[section];
     if(!extra)return '<div class="fields">'+definitions.map(field=>renderField(record,section,field,index)).join('')+'</div>';
     const basic=definitions.filter(([name])=>!extra.has(name));
@@ -2000,6 +2006,20 @@
         (fields.length?table(fields,row):'')+relationsText+images+'</article>';
     }).join('');
   }
+  function executiveFindingImages(finding){
+    if(finding.executiveImages==='No mostrar')return '';
+    const linked=state.evidence.filter(e=>(finding.evidenceIds||'').split(/[,;\s]+/).includes(e.id)||relations.normalizeLinks(e.links).findings.includes(finding._key));
+    const selected=finding.executiveImages==='Seleccionadas (máximo 2)';
+    const ids=[...new Set(str(finding.executiveEvidenceIds).split(/[,;\s]+/).filter(Boolean))];
+    const candidates=selected?ids.map(id=>linked.find(e=>e.id===id)).filter(Boolean):linked;
+    const seen=new Set();
+    const images=candidates.flatMap(e=>{
+      const photo=evidenceImages.list(e)[0];
+      if(!photo||seen.has(photo.image))return [];
+      seen.add(photo.image);return [{photo,e}];
+    }).slice(0,selected?2:1);
+    return images.map(({photo,e},i)=>`<figure class="report-executive-image"><img src="${photo.image}" alt="${html(finding.executiveCaption||'Evidencia visual del estado observado')} ${i+1}"><figcaption>${html(finding.executiveCaption||'Evidencia visual del estado observado')} · ${html(e.id||'Evidencia vinculada')}</figcaption></figure>`).join('');
+  }
   let printMode='audit',reportDeliveryMode='draft',reportProfile='executive';
   function buildReport(){
     byId('report').dataset.palette=selectedPalette;
@@ -2024,7 +2044,7 @@
         state.findings.map(item=>'<tr><td>'+html(item.id)+'</td><td>'+html(item.title)+'</td><td>'+html(item.severity)+'</td><td>'+html(item.status||'No indicado')+'</td></tr>').join('')+'</tbody></table>':
         '<p class="report-empty">No hay hallazgos registrados.</p>')
       +state.findings.map(item=>{
-        const fields=groups.findings.fields.filter(([name])=>!['id','title','severity','status','evidenceIds'].includes(name)&&str(item[name]).trim());
+        const fields=groups.findings.fields.filter(([name])=>!name.startsWith('executive')&&!['id','title','severity','status','evidenceIds'].includes(name)&&str(item[name]).trim());
         const linked=state.evidence.filter(e=>(item.evidenceIds||'').split(/[,;\s]+/).includes(e.id)||relations.normalizeLinks(e.links).findings.includes(item._key));
         return '<article class="report-finding"><h3>'+html(item.id||'Hallazgo')+' · '+html(item.title||'Sin título')+
           ' <span class="report-badge '+level(item.severity)+'">'+html(item.severity)+'</span></h3>'+
@@ -2060,10 +2080,14 @@
       `<div class="report-executive-findings">${reviewed.plan.map(item=>{
         const f=state.findings.find(x=>x._key===item.key)||state.findings.find(x=>x.id===item.id)||{};
         return `<article class="report-executive-finding">
-          <h3>${html(item.id)} · ${html(item.title)} <span class="report-badge ${level(item.severity)}">${html(item.severity)}</span></h3>
+          <h3>${html(item.id)} · ${html(f.executiveTitle||item.title)} <span class="report-badge ${level(item.severity)}">${html(item.severity)}</span></h3>
           <p><strong>Estado:</strong> ${html(item.status)} · <strong>Ámbito:</strong> ${html(f.asset||'No indicado')}</p>
-          <p><strong>Consecuencia:</strong> ${para(f.risk||'No documentada por el auditor.')}</p>
-          <p><strong>Acción recomendada:</strong> ${para(item.recommendation||'Pendiente de definir.')}</p>
+          <p><strong>Qué se ha observado:</strong> ${para(f.executiveObservation||f.description||'Pendiente de documentar.')}</p>
+          <p><strong>Impacto para la organización:</strong> ${para(f.executiveImpact||f.risk||'Pendiente de valorar por el auditor.')}</p>
+          <p><strong>Acción recomendada:</strong> ${para(f.executiveAction||item.recommendation||'Pendiente de definir.')}</p>
+          <p><strong>Información o evidencia que debe aportar el cliente:</strong> ${para(f.executiveRequest||'Acordar con el responsable la documentación que permita comprobar la acción indicada.')}</p>
+          <p><strong>Criterio de cierre:</strong> ${para(f.executiveClosure||item.verification||'Pendiente de acordar; no se considerará resuelto sin comprobación.')}</p>
+          ${executiveFindingImages(f)}
           <p><strong>Responsable:</strong> ${html(item.owner||'Por asignar')} · <strong>Plazo:</strong> ${html(item.deadline||'Por acordar')}</p>
         </article>`;
       }).join('')}</div>
