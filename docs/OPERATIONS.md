@@ -5,7 +5,6 @@
 ## Contents
 
 - [Choosing a tool](#que-herramienta-usar)
-- [Audit Workbench: auditing and evidence management](#audit-workbench)
 - [Operating principles](#principios-de-operacion)
 - [Quick start](#inicio-rapido)
 - [Samba AD Control Plane (Debian / Ubuntu)](#control-plane-samba-ad)
@@ -31,7 +30,6 @@
 
 | Tool | Primary platform | Purpose |
 |---|---|---|
-| [`audit-workbench/`](../audit-workbench/README.md) | Desktop or tablet browser; PWA | Technical auditing, inventory, controls, evidence, remediation, reporting, and optional backups |
 | [`debian-ad-assistant.sh`](../debian-ad-assistant.sh) | Debian 13 / Ubuntu Server 26.04 LTS | Samba AD DC: provisioning, operation, validation, backup, DNS/GPO, security |
 | [`rhel-ad-assistant.sh`](../rhel-ad-assistant.sh) | Rocky / AlmaLinux 9–10 | Samba AD DC subject to AD-DC capability and operating system support |
 | [`windows-ad-assistant.ps1`](../windows-ad-assistant.ps1) | Windows Server 2019 / 2022 / 2025 | AD DS, directory administration, diagnostics, recovery, and hardening |
@@ -41,36 +39,11 @@
 
 **Quick guidance:**
 
-- **Audit and document without administering a DC:** start with Audit Workbench. It does not require a domain.
 - **Administer a domain controller:** use the assistant for the DC's operating system and run its audit mode before changing anything.
 - **Manage domain clients:** use a client assistant, not the DC provisioning assistant.
 - **Harden a system:** first assess the impact on identity, DNS, applications, and continuity; hardening is an available operation, not an automatic outcome of an audit.
 
 > **RHEL support note:** Red Hat does not support running Samba as an AD Domain Controller on RHEL. `rhel-ad-assistant.sh` blocks provisioning unless the operator explicitly accepts this unsupported use with `--allow-unsupported-rhel-dc`. Do not assume equivalence with Rocky/AlmaLinux or deploy without assessing support.
-
----
-
-<a id="audit-workbench"></a>
-## Audit Workbench · auditing and evidence management
-
-**[Read Audit Workbench documentation](../audit-workbench/README.md)** · [Installation](../audit-workbench/INSTALLATION.md) · [Security](../audit-workbench/SECURITY.md)
-
-The `audit-workbench/` PWA complements the console assistants; **it does not execute them from the browser or automatically scan the network**.
-
-- Audit-record library with local persistence and JSON import/export.
-- Hardware, software, and network inventories; assisted CSV/JSON capture and read-only local collectors.
-- Controls, findings, linked evidence, a contextual technical dictionary, and follow-up.
-- Pre-report validation, draft/final delivery, exports, and PDF generation through browser printing.
-- Local backups and explicitly activated remote-distribution options (subject to security and server requirements).
-
-**Optional local execution** from the repository root:
-
-```bash
-cd audit-workbench
-python3 -m http.server 8765 --bind 127.0.0.1
-```
-
-Open `http://127.0.0.1:8765`. For tablets, initial PWA installation, origin policies, and HTTPS, see [INSTALLATION.md](../audit-workbench/INSTALLATION.md). Audit records stored under one browser origin are not synchronized merely by publishing the application.
 
 ---
 
@@ -131,7 +104,6 @@ Before running a script with elevated privileges, review it and check the mode y
 
 ### 2. Choose a workflow
 
-To **document an audit**, use Audit Workbench and follow its [guide](../audit-workbench/README.md). To **audit or operate AD**, start with the relevant assistant's read-only mode.
 
 ### 3. Start with an audit
 

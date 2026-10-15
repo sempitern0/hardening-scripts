@@ -25,13 +25,11 @@ and test both outputs. Do not add a fix only to the generated variant.
 
 ```bash
 python3 tools/verify.py              # Python 3 + Bash: syntax and client parity
-python3 tools/verify.py --workbench  # Also Node.js: PWA units and mocked discovery
 ```
 
 These commands do not execute administrative modes, install packages, scan the
 network or modify system policy. They return nonzero if any check fails.
-Browser/PDF integration tests under `audit-workbench/tests/` are separate and need
-their browser dependencies. PowerShell parsing and AD lifecycle validation need
+PowerShell parsing and AD lifecycle validation need
 a suitable PowerShell/Windows environment; Bash syntax is not proof of runtime parity.
 
 Before releasing infrastructure changes, exercise audit → change → validation →
@@ -44,8 +42,4 @@ existing state paths and service identities when upgrading deployed assistants.
 - Added reproducible Linux/RHEL client parity checks while preserving standalone downloads.
 - Fixed unsigned IPv4 subnet comparisons: valid 172.16/12 and 192.168/16 gateways
   could be incorrectly flagged as outside their network. Added /0, /32 and invalid-prefix cases.
-- Replaced obsolete cache-version assertions with shared offline-resource checks;
-  exercised explicit update activation and network-only connectivity probes.
-- Validation: 56/56 offline commands passed, including 12 mocked discovery tests;
-  the separate static-resource check also passed. No live network discovery,
-  AD changes, Windows execution or browser/PDF integration tests were performed.
+- Check standalone scripts with `python3 tools/verify.py` before release.
