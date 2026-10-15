@@ -255,3 +255,7 @@
 #workspace .entry[hidden],#record-search-empty[hidden] { display:none!important; }
 #workspace .entry { scroll-margin-block-start:14rem; }
 @media(max-width:600px) { .record-navigator { position:static; } #workspace .entry { scroll-margin-block-start:1rem; } }
+
+/* Visibly distinguish the public offline demonstration. */
+.public-demo-banner{display:flex;align-items:center;flex-wrap:wrap;gap:.35rem 1rem;padding:.65rem 1rem;border-bottom:1px solid #b7c6d0;background:#eaf1f4;color:#102a3b;font-size:.9rem}
+.public-demo-banner[hidden]{display:none}

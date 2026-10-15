@@ -1,7 +1,7 @@
 {
-  "name": "Audit Workbench · Auditorías informáticas",
-  "short_name": "Audit Workbench",
-  "description": "Auditorías de sistemas, seguridad e infraestructura. Edición, evidencias e informes PDF sin conexión.",
+  "name": "Dragonboon InfraAudit · Auditorías de infraestructura y seguridad",
+  "short_name": "InfraAudit",
+  "description": "Dragonboon InfraAudit: inventario, controles y evidencias offline.",
   "id": "./",
   "start_url": "./index.html",
   "scope": "./",

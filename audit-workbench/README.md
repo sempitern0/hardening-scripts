@@ -1,4 +1,4 @@
-# Audit Workbench · sysadmin
+# Dragonboon InfraAudit · sysadmin
 
 **English** · [Español](README_ES.md)
 
@@ -28,6 +28,8 @@ python -m http.server 8765 --bind 127.0.0.1
 ```
 
 Open `http://127.0.0.1:8765`. For installation as a PWA on a tablet or phone, see **[Installation by device](INSTALLATION.md)**: the initial load requires HTTPS and a compatible browser.
+
+For Cloudflare Pages, follow the [safe public-demo deployment guide (Spanish)](deploy/CLOUDFLARE_PAGES_ES.md). The published bundle excludes remote credential modules.
 
 ## Install the PWA from an HTTPS server
 
@@ -81,7 +83,7 @@ Delivery provides two modes: **Generate draft PDF**, always marked as unvalidate
 
 ### Import an existing audit JSON
 
-When a single audit or full-library JSON contains a report reference already in the local browser library, Audit Workbench offers **Cancel** or **Overwrite**. Cancel leaves all records unchanged. Overwrite replaces the complete matching audit (including evidence, images, control/document approval status, and signatures) while keeping its internal library identity and creation date. **Export a verified copy of the current audit before overwriting** if you need to preserve the earlier state.
+When a single audit or full-library JSON contains a report reference already in the local browser library, Dragonboon InfraAudit offers **Cancel** or **Overwrite**. Cancel leaves all records unchanged. Overwrite replaces the complete matching audit (including evidence, images, control/document approval status, and signatures) while keeping its internal library identity and creation date. **Export a verified copy of the current audit before overwriting** if you need to preserve the earlier state.
 
 For multi-audit backups, the dialog shows matching references and how many new reports will also be added. Saves use one IndexedDB transaction or one fallback storage write. Duplicate references in the imported backup or conflicting duplicates already in the local library cause an error without changing anything. A single JSON with no report ID is still imported as a new audit.
 
@@ -177,11 +179,11 @@ audit-workbench/
 └── tests/
 ```
 
-Audit Workbench is part of **sysadmin**, a collection of system administration tools. It operates independently of the Active Directory assistants at the repository root: its purpose is to record and analyze audits, not to perform administration or hardening actions on remote systems.
+Dragonboon InfraAudit is part of **sysadmin**, a collection of system administration tools. It operates independently of the Active Directory assistants at the repository root: its purpose is to record and analyze audits, not to perform administration or hardening actions on remote systems.
 
 ## Document confirmation and exceptional amendments
 
-Audit Workbench distinguishes **draft**, **confirmed**, and **amendment in progress**. Drafts can be edited and reviewed without claiming final approval. The final-report preflight additionally checks the responsible auditor, authorization, executive summary, duplicate identifiers, referenced evidence, sign-off, and other existing consistency checks.
+Dragonboon InfraAudit distinguishes **draft**, **confirmed**, and **amendment in progress**. Drafts can be edited and reviewed without claiming final approval. The final-report preflight additionally checks the responsible auditor, authorization, executive summary, duplicate identifiers, referenced evidence, sign-off, and other existing consistency checks.
 
 Under **Final report**, identify the responsible person and confirm the audited record after reviewing the warnings. Confirmation stores a local SHA-256 digest and a revision entry and disables ordinary editing. To correct a confirmed audit, select **Open exceptional amendment**, identify the responsible person and explain the reason. After editing, run the definitive checks and choose **Validate changes and close amendment**; the local journal records the revision, reason, changed field paths, and before/after SHA-256 digests. A PDF for final delivery requires the confirmed content to match its digest. Older records remain drafts until explicitly confirmed.
 
@@ -189,9 +191,9 @@ Under **Final report**, identify the responsible person and confirm the audited 
 
 ## Controlled PWA updates
 
-When Audit Workbench is served from a stable HTTPS or localhost origin, it checks for updates when opened, when connectivity returns, when the app becomes visible, and periodically while open. A prepared version is announced inside the interface; **it is not activated automatically while an audit is being edited**. Choose **Save and update** to save pending changes, verify local persistence, activate the waiting service worker, and reload. Choose **Later** to continue on the current version. **Check for updates** is also available manually. The application never uploads audit records during update checks.
+When Dragonboon InfraAudit is served from a stable HTTPS or localhost origin, it checks for updates when opened, when connectivity returns, when the app becomes visible, and periodically while open. A prepared version is announced inside the interface; **it is not activated automatically while an audit is being edited**. Choose **Save and update** to save pending changes, verify local persistence, activate the waiting service worker, and reload. Choose **Later** to continue on the current version. **Check for updates** is also available manually. The application never uploads audit records during update checks.
 
-**Initial migration:** PWA installations predating this update manager may need to close all Audit Workbench tabs and reopen the app once to acquire the new interface. A source repository commit is not a deployment: the server hosting the PWA must also be updated. If a local file installer was used, refresh its installation directory first. Close other open tabs before activating an update because a service-worker activation affects all tabs sharing its scope; other tabs are not automatically reloaded by this workflow. Do not clear browser site data to force updates, as that can delete locally stored audit records. Export a backup before major releases.
+**Initial migration:** PWA installations predating this update manager may need to close all Dragonboon InfraAudit tabs and reopen the app once to acquire the new interface. A source repository commit is not a deployment: the server hosting the PWA must also be updated. If a local file installer was used, refresh its installation directory first. Close other open tabs before activating an update because a service-worker activation affects all tabs sharing its scope; other tabs are not automatically reloaded by this workflow. Do not clear browser site data to force updates, as that can delete locally stored audit records. Export a backup before major releases.
 
 ## Offline availability safeguards
 
@@ -221,7 +223,7 @@ The **Duplicate** action creates a new audit reference and returns the copy to d
 
 ## Current JSON contract (pre-release cleanup)
 
-Audit Workbench accepts **only schemaVersion 3** for individual audit JSON. Full-library backups use `kind: "audit-workbench-library"` with `schemaVersion: 3`; consultancy profiles use `kind: "audit-workbench-consultancy"` with `schemaVersion: 3`. The application no longer accepts pre-release backup/profile formats or recovers records from old v2 storage keys. Encrypted backup containers have a separate cryptographic envelope and are not another audit schema. The live IndexedDB store and localStorage fallback remain supported for resilience. Before adopting this release, export any wanted test records from an earlier build and treat them as disposable unless already compatible with the current schema.
+Dragonboon InfraAudit accepts **only schemaVersion 3** for individual audit JSON. Full-library backups use `kind: "audit-workbench-library"` with `schemaVersion: 3`; consultancy profiles use `kind: "audit-workbench-consultancy"` with `schemaVersion: 3`. The application no longer accepts pre-release backup/profile formats or recovers records from old v2 storage keys. Encrypted backup containers have a separate cryptographic envelope and are not another audit schema. The live IndexedDB store and localStorage fallback remain supported for resilience. Before adopting this release, export any wanted test records from an earlier build and treat them as disposable unless already compatible with the current schema.
 
 ### Executive findings and visual evidence
 

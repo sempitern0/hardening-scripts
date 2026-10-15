@@ -1,6 +1,8 @@
-/* Audit Workbench: offline-first audits, explicit network connectors, no telemetry. */
+/* Dragonboon InfraAudit: offline-first audits, explicit network connectors, no telemetry. */
 'use strict';
 (() => {
+  // Unrecognized or absent deployment config must never enable sensitive features.
+  const PUBLIC_DEMO = globalThis.AuditDeployment?.profile !== 'private-full';
   const VERSION = 3; // Only supported audit JSON schema: no migrations from pre-release formats.
   const LIBRARY_KIND = 'audit-workbench-library';
   const PROFILE_KIND = 'audit-workbench-consultancy';
@@ -869,7 +871,7 @@
       <div class="finding-image-gallery">${linked.flatMap(e=>evidenceImages.list(e).map((photo,i)=>({photo,e,i}))).slice(0,12).map(({photo,e,i})=>`<figure><img src="${photo.image}" alt="Evidencia ${html(e.id)} · imagen ${i+1}" loading="lazy"><figcaption>${html(e.id)} · ${i+1}</figcaption></figure>`).join('')}</div>
       <p class="subtle">${linked.length} evidencias vinculadas. Puedes revisarlas en «Evidencias».</p></div>`;
   }
-  function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p>${['assets','networks','software'].includes(block)?'<button type="button" class="button quiet small" data-go="intake">Captura asistida / Importar inventario ↗</button>':''}${glossaryStageHint(block)}${block==='controls'?renderTemplateLibrary():''}<section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Los registros se guardan y puedes incluirlos en el informe.</p></div>${block==='evidence'?'<button class="button quiet" data-export-manifest="true">Manifiesto SHA-256 (JSON)</button>':''}<button class="button accent" data-add="${block}">+ Añadir registro</button></div>${renderRecordNavigator(block)}${rows.length?rows.map((r,i)=>`<div class="entry" data-entry-key="${html(r._key||'')}" tabindex="-1"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="inventory-fields">${renderInventoryFieldGroups(r,block,i)}</div>${block==='findings'?renderFindingAttachments(r,i):''}${['assets','controls','findings'].includes(block)?renderLinkedEvidence(block,r):''}${block==='controls'?renderControlExtras(r):''}${block==='findings'?renderFindingOrigin(r):''}${block==='evidence'?renderEvidenceRelations(r):''}${block==='cves'?`<div class="cve-tools"><button class="button quiet small" type="button" data-cve-check="${i}">Consultar CVE online (opcional)</button><button class="button small" type="button" data-cve-link="${i}">Ver en CVE.org ↗</button><span class="subtle">Solo se envía el identificador CVE, nunca los datos del cliente.</span></div>`:''}${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Añadir foto o captura</strong> (PNG, JPG o WebP, hasta 5 MiB)</label><p class="subtle">Se guarda una copia optimizada. El SHA-256 identifica el archivo original, que debes conservar por separado.</p>${r.fileSha256?`<p class="evidence-digest">Archivo: ${html(r.fileName||'Sin nombre')} · ${(r.fileBytes||0).toLocaleString('es-ES')} bytes <span>SHA-256 ${html(r.fileSha256)}</span></p>`:''}<input type="file" accept="image/png,image/jpeg,image/webp" multiple data-image-index="${i}" id="evidence-upload-${i}"><div class="evidence-image-grid">${evidenceImages.list(r).map((photo,j)=>`<figure><img class="evidence-preview" alt="Imagen ${j+1} de ${html(r.id||'evidencia')}" src="${photo.image}"><figcaption>${html(photo.fileName||'Imagen '+(j+1))}</figcaption><button type="button" class="button quiet small" data-remove-evidence-photo="${html(r._key)}" data-photo-index="${j}">Quitar esta imagen</button></figure>`).join('')}</div></div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
+  function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p>${['assets','networks','software'].includes(block)?'<button type="button" class="button quiet small" data-go="intake">Captura asistida / Importar inventario ↗</button>':''}${glossaryStageHint(block)}${block==='controls'?renderTemplateLibrary():''}<section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Los registros se guardan y puedes incluirlos en el informe.</p></div>${block==='evidence'?'<button class="button quiet" data-export-manifest="true">Manifiesto SHA-256 (JSON)</button>':''}<button class="button accent" data-add="${block}">+ Añadir registro</button></div>${renderRecordNavigator(block)}${rows.length?rows.map((r,i)=>`<div class="entry" data-entry-key="${html(r._key||'')}" tabindex="-1"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="inventory-fields">${renderInventoryFieldGroups(r,block,i)}</div>${block==='findings'?renderFindingAttachments(r,i):''}${['assets','controls','findings'].includes(block)?renderLinkedEvidence(block,r):''}${block==='controls'?renderControlExtras(r):''}${block==='findings'?renderFindingOrigin(r):''}${block==='evidence'?renderEvidenceRelations(r):''}${block==='cves'&&!PUBLIC_DEMO?`<div class="cve-tools"><button class="button quiet small" type="button" data-cve-check="${i}">Consultar CVE online (opcional)</button><button class="button small" type="button" data-cve-link="${i}">Ver en CVE.org ↗</button><span class="subtle">Solo se envía el identificador CVE, nunca los datos del cliente.</span></div>`:''}${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Añadir foto o captura</strong> (PNG, JPG o WebP, hasta 5 MiB)</label><p class="subtle">Se guarda una copia optimizada. El SHA-256 identifica el archivo original, que debes conservar por separado.</p>${r.fileSha256?`<p class="evidence-digest">Archivo: ${html(r.fileName||'Sin nombre')} · ${(r.fileBytes||0).toLocaleString('es-ES')} bytes <span>SHA-256 ${html(r.fileSha256)}</span></p>`:''}<input type="file" accept="image/png,image/jpeg,image/webp" multiple data-image-index="${i}" id="evidence-upload-${i}"><div class="evidence-image-grid">${evidenceImages.list(r).map((photo,j)=>`<figure><img class="evidence-preview" alt="Imagen ${j+1} de ${html(r.id||'evidencia')}" src="${photo.image}"><figcaption>${html(photo.fileName||'Imagen '+(j+1))}</figcaption><button type="button" class="button quiet small" data-remove-evidence-photo="${html(r._key)}" data-photo-index="${j}">Quitar esta imagen</button></figure>`).join('')}</div></div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
   const settingsFields=[
     ['company','Nombre legal de la consultora'],['taxType','Identificador fiscal','select',['No indicado','NIF entidad / CIF','DNI / NIF persona física','NIE','NIF intracomunitario / otro']],
     ['taxId','Identificación fiscal'],['email','Email corporativo'],['phone','Teléfono'],
@@ -988,6 +990,7 @@
     return {url:parsed.href.replace(/\/*$/,'/') ,user:user.trim(),secret:password};
   }
   function connectionSettingsMarkup(){
+    if(PUBLIC_DEMO)return '<section class="card"><h1>Conexiones desactivadas</h1><p>La edición pública no permite credenciales ni transferencias. Tus expedientes son locales.</p></section>';
     const exists=Boolean(localStorage.getItem(CONNECTION_KEY));
     return `<span class="eyebrow">CONECTORES / OPCIONAL</span><h1 class="page-title">Conexiones y entrega</h1>
       <p class="lead">La auditoría funciona offline. Las transferencias son opcionales y requieren confirmación explícita. Distingue exportación JSON sin cifrar, backup cifrado y entrega de PDF.</p>
@@ -1006,6 +1009,7 @@
   }
   function renderConnections(){return connectionSettingsMarkup()}
   async function uploadDav(){
+    if(PUBLIC_DEMO)throw Error('WebDAV no está disponible en la edición pública.');
     if(!currentId||!unlockedConnection)throw Error('Abre un expediente y desbloquea la conexión primero.');
     const filename='auditoria-'+slug(state.meta.client)+'-'+slug(state.meta.reportId||'informe')+'.json';
     const body=JSON.stringify(state,null,2);
@@ -1302,6 +1306,7 @@
   const originalRender=render;
   render=function(){originalRender();applyDocumentLock();};
   function move(section){
+    if(PUBLIC_DEMO && ['connections','online'].includes(section))return;
     if(nav.some(n=>n[0]===section))lastAuditPage=section;
     if(section==='glossary'&&page!=='glossary')glossaryReturn={page:page==='records'?lastAuditPage:page,scrollY:window.scrollY};
     if(!['records','backups','online','settings','connections','glossary'].includes(section)&&!currentId){
@@ -1408,7 +1413,7 @@
       if(t.checked)void backupToFolder({interactive:true});
       return;
     }
-    if(t.name==='channel'){connectionChannel=t.value;for(const key of ['nextcloud','upload','email','share'])byId('connection-'+key).hidden=(key==='upload'||key==='nextcloud'?connectionChannel!=='nextcloud':connectionChannel!==key);return}
+    if(t.name==='channel'){if(PUBLIC_DEMO)return;connectionChannel=t.value;for(const key of ['nextcloud','upload','email','share'])byId('connection-'+key).hidden=(key==='upload'||key==='nextcloud'?connectionChannel!=='nextcloud':connectionChannel!==key);return}
     if(t.id==='settings-import-file'&&t.files?.length){
       try{const raw=JSON.parse(await t.files[0].text());if(raw?.kind!==PROFILE_KIND||raw.schemaVersion!==VERSION)throw Error('Solo se admite el perfil JSON vigente (esquema '+VERSION+').');settings=loadSettingsFromImport(raw.settings);saveSettings();render()}
       catch(error){alert('Perfil no importado: '+error.message)}return;
@@ -1552,6 +1557,7 @@
   });
   workspace.addEventListener('click',async e=>{
     const b=e.target.closest('button');if(!b)return;
+    if(PUBLIC_DEMO && (['dav-save','dav-unlock','dav-forget','dav-upload','open-email','native-share-json'].includes(b.id) || b.dataset.cveLink!==undefined || b.dataset.cveCheck!==undefined || b.dataset.transfer!==undefined))return;
     if(b.id==='record-search-clear'){clearRecordSearch();byId('record-search')?.focus();return;}
     if(state.documentControl?.status==='confirmed'&&!['records','backups','connections','online','settings','glossary'].includes(page)){
       const safe=['document-pdf','delivery-executive-final','delivery-executive-draft','delivery-technical-final','delivery-technical-draft','delivery-json','amend-begin','retest-pdf','open-email','native-share-json'];
@@ -1831,6 +1837,7 @@
     return {image,fileName:file.name.slice(0,180),fileBytes:file.size,fileSha256,sha256:fileSha256};
   }
   async function lookupCve(index,button){
+    if(PUBLIC_DEMO)throw Error('Consultas CVE remotas desactivadas en la edición pública.');
     const row=state.cves[index];if(!row)return;
     const id=str(row.id).trim().toUpperCase();
     if(!CVE_PATTERN.test(id)){alert('Identificador inválido. Usa CVE-AAAA-NNNN (o más dígitos).');return}
@@ -1856,6 +1863,7 @@
     finally{clearTimeout(timeout);button.disabled=false;button.textContent='Consultar CVE online (opcional)'}
   }
   async function shareAudit(){
+    if(PUBLIC_DEMO)throw Error('Compartir remotamente no está disponible en la edición pública.');
     if(!currentId){alert('Primero crea o selecciona una auditoría.');return;}
     const filename='auditoria-'+slug(state.meta.client)+'.json';
     const body=JSON.stringify(state,null,2);
@@ -1877,6 +1885,7 @@
     }
   }
   function draftEmail(){
+    if(PUBLIC_DEMO)throw Error('Correo externo no disponible en la edición pública.');
     if(!currentId){alert('Primero crea o selecciona una auditoría.');return;}
     if(!confirm('Se abrirá tu cliente de correo con un asunto y mensaje de entrega, SIN adjuntos. Exporta el PDF y adjúntalo manualmente tras comprobar destinatario, confidencialidad y autorización. ¿Continuar?'))return;
     const subject='Entrega de auditoría '+(state.meta.reportId||state.meta.project||'');
@@ -2183,7 +2192,7 @@
     const technicalSummary=section(3,'Resumen técnico',
       `<p>${para(ending.assessment)}</p>
       <p><strong>Activos:</strong> ${summaryCounts.assets} · <strong>Controles con resultado:</strong> ${summaryCounts.verified}/${summaryCounts.controls} · <strong>Hallazgos:</strong> ${summaryCounts.findings}</p>
-      <p class="report-note">Este informe reproduce los métodos y resultados documentados. Audit Workbench no realiza pruebas de vulnerabilidades ni valida automáticamente la evidencia.</p>`);
+      <p class="report-note">Este informe reproduce los métodos y resultados documentados. Dragonboon InfraAudit no realiza pruebas de vulnerabilidades ni valida automáticamente la evidencia.</p>`);
     const chapters=(reportProfile==='technical'?[
       [3,'Resumen técnico',technicalSummary],
       [2,'Identificación, alcance y metodología',identity],
@@ -2291,6 +2300,7 @@
 
   window.addEventListener('beforeprint',()=>{if(reportPreparedForPrint)return;if(printMode==='retest')buildRetestReport();else buildReport()});
   window.addEventListener('afterprint',()=>{printMode='audit'});
+  if(PUBLIC_DEMO){byId('public-demo-banner').hidden=false;byId('global-navigation').querySelectorAll('[data-go="connections"]').forEach(button=>button.hidden=true);}
   byId('palette').addEventListener('change',event=>selectPalette(event.target.value));
   byId('open-library').addEventListener('click',async()=>{try{await flush();move('records')}catch(error){alert(error.message)}});
   document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')void saveCurrent()});
@@ -2301,7 +2311,7 @@
   refreshNetworkStatus();
   byId('local-date').textContent=new Date().toLocaleDateString('es-ES');
   try{selectPalette(localStorage.getItem(PALETTE_KEY)||'ocean')}catch(_ignored){selectPalette('ocean')}
-  globalThis.AuditSecureTransferUI.bind({getProfile:()=>unlockedConnection,getAudit:()=>currentId?state:null,download,flush});
+  if(!PUBLIC_DEMO)globalThis.AuditSecureTransferUI.bind({getProfile:()=>unlockedConnection,getAudit:()=>currentId?state:null,download,flush});
   void initialLoad();
   // Leave beforeinstallprompt to the browser: suppressing its default UI caused warning banners.
   window.addEventListener('appinstalled',()=>{

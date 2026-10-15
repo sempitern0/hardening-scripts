@@ -1,4 +1,4 @@
-# Audit Workbench · sysadmin
+# Dragonboon InfraAudit · sysadmin
 
 [English](README.md) · **Español**
 
@@ -28,6 +28,8 @@ python -m http.server 8765 --bind 127.0.0.1
 ```
 
 Abre `http://127.0.0.1:8765`. Para instalar la PWA en tablet o móvil, consulta **[Instalación por dispositivo](INSTALLATION_ES.md)**: la primera carga requiere HTTPS y un navegador compatible.
+
+Para Cloudflare Pages, utiliza la [guía de edición pública segura](deploy/CLOUDFLARE_PAGES_ES.md), que elimina las conexiones con credenciales del paquete distribuido.
 
 ## Instalar la PWA desde un servidor HTTPS
 
@@ -81,7 +83,7 @@ La opción **Descargar expediente JSON** solicita una descarga local y muestra u
 
 ### Importar un JSON que ya existe
 
-Al importar una auditoría individual o una copia completa, **Audit Workbench reconoce expedientes existentes por la referencia del informe** (no por el nombre del cliente). Si coincide, muestra un diálogo con dos botones: **Cancelar** (no cambia los registros) o **Sobrescribir** (sustituye íntegramente el expediente existente por el contenido del JSON). Se conservan la identidad interna y fecha de creación del registro; imágenes, firmas, hallazgos, controles y confirmaciones documentales pasan a ser las del archivo importado. Antes de confirmar, **descarga y verifica una copia de la versión local** si necesitas conservarla.
+Al importar una auditoría individual o una copia completa, **Dragonboon InfraAudit reconoce expedientes existentes por la referencia del informe** (no por el nombre del cliente). Si coincide, muestra un diálogo con dos botones: **Cancelar** (no cambia los registros) o **Sobrescribir** (sustituye íntegramente el expediente existente por el contenido del JSON). Se conservan la identidad interna y fecha de creación del registro; imágenes, firmas, hallazgos, controles y confirmaciones documentales pasan a ser las del archivo importado. Antes de confirmar, **descarga y verifica una copia de la versión local** si necesitas conservarla.
 
 Las copias completas pueden mezclar informes nuevos y ya existentes. El diálogo resume los que se sustituirán y cuántos se crearán; todas las operaciones se guardan en una sola transacción en IndexedDB o una sola escritura en almacenamiento alternativo. Si hay referencias repetidas dentro del JSON, o la biblioteca contiene más de un registro con la misma referencia, la importación se bloquea sin modificar nada. Un JSON individual sin referencia sigue ofreciéndose como **auditoría nueva**. Ningún registro se sobrescribe automáticamente.
 
@@ -93,7 +95,7 @@ Los controles **Pendiente** y **No verificado**, y las no conformidades sin hall
 
 ## Impresión PDF: encabezados limpios y lectura más cómoda
 
-La hoja de impresión A4 ahora reserva **cero margen para los encabezados y pies del navegador** y aplica sus márgenes de lectura dentro de cada página. Así evita el título «Audit Workbench», la dirección local/HTTPS y la fecha incluso cuando el navegador activa sus cabeceras por defecto. Como consecuencia, el PDF no incorpora numeración automática; la portada identifica el documento. Si el navegador o la impresora siguen añadiendo datos propios, abre **Más ajustes → Encabezados y pies de página** y desmárcalo (la configuración nativa tiene la última palabra). Activa «Gráficos de fondo» para reproducir los colores de la portada.
+La hoja de impresión A4 ahora reserva **cero margen para los encabezados y pies del navegador** y aplica sus márgenes de lectura dentro de cada página. Así evita el título «Dragonboon InfraAudit», la dirección local/HTTPS y la fecha incluso cuando el navegador activa sus cabeceras por defecto. Como consecuencia, el PDF no incorpora numeración automática; la portada identifica el documento. Si el navegador o la impresora siguen añadiendo datos propios, abre **Más ajustes → Encabezados y pies de página** y desmárcalo (la configuración nativa tiene la última palabra). Activa «Gráficos de fondo» para reproducir los colores de la portada.
 
 La edición ejecutiva organiza prioridades y próximos pasos por párrafos/números sin repetirlos en la conclusión. La técnica evita repetir en las fichas los identificadores ya mostrados en los encabezados; las fotografías a tamaño completo se presentan en **Registro de evidencias**, mientras cada hallazgo enlaza sus identificadores. Los textos extensos de alcance, metodología y conclusiones se imprimen a ancho completo. Los capítulos sin redes o CVE registrados no se incluyen en el índice ni como páginas vacías. No se alteran el expediente JSON ni los controles documentales.
 
@@ -196,11 +198,11 @@ audit-workbench/
 └── tests/
 ```
 
-Audit Workbench forma parte de **sysadmin**, un conjunto de herramientas de administración de sistemas. Funciona de manera independiente de los asistentes de Active Directory de la raíz: su papel es registrar y analizar auditorías, no ejecutar tareas de administración o hardening sobre equipos remotos.
+Dragonboon InfraAudit forma parte de **sysadmin**, un conjunto de herramientas de administración de sistemas. Funciona de manera independiente de los asistentes de Active Directory de la raíz: su papel es registrar y analizar auditorías, no ejecutar tareas de administración o hardening sobre equipos remotos.
 
 ## Confirmación documental y rectificaciones excepcionales
 
-Audit Workbench diferencia entre **borrador**, **confirmado** y **rectificación en curso**. El borrador puede editarse y revisarse sin presentarse como aprobado. El preflight definitivo comprueba además responsable auditor, autorización, resumen ejecutivo, identificadores duplicados, referencias de evidencia, validación responsable y otras reglas de coherencia existentes.
+Dragonboon InfraAudit diferencia entre **borrador**, **confirmado** y **rectificación en curso**. El borrador puede editarse y revisarse sin presentarse como aprobado. El preflight definitivo comprueba además responsable auditor, autorización, resumen ejecutivo, identificadores duplicados, referencias de evidencia, validación responsable y otras reglas de coherencia existentes.
 
 En **Informe final**, identifica a la persona responsable y confirma el expediente después de revisar los avisos. La confirmación registra una huella SHA-256 local y una revisión, y deshabilita la edición ordinaria. Para modificar una auditoría confirmada, utiliza **Abrir rectificación excepcional**, identifica al responsable y justifica el motivo. Tras editar, supera las validaciones definitivas y pulsa **Validar cambios y cerrar rectificación**; el historial local registra revisión, motivo, rutas de campos modificados y huellas SHA-256 anterior y posterior. El PDF definitivo exige que el contenido coincida con la huella confirmada. Los expedientes antiguos permanecen como borradores hasta confirmación expresa.
 
@@ -208,9 +210,9 @@ En **Informe final**, identifica a la persona responsable y confirma el expedien
 
 ## Actualizaciones controladas de la PWA
 
-Cuando Audit Workbench se sirve desde un origen HTTPS o localhost estable, comprueba las actualizaciones al abrir, al recuperar la conexión, cuando vuelve a estar visible y periódicamente mientras está abierto. Una versión preparada se anuncia dentro de la interfaz; **no se activa automáticamente durante la edición de una auditoría**. Pulsa **Guardar y actualizar** para guardar los cambios pendientes, verificar la persistencia local, activar el service worker preparado y recargar la página. Pulsa **Más tarde** para continuar con la versión actual. También puedes usar **Buscar actualización** manualmente. La comprobación no sube datos de las auditorías.
+Cuando Dragonboon InfraAudit se sirve desde un origen HTTPS o localhost estable, comprueba las actualizaciones al abrir, al recuperar la conexión, cuando vuelve a estar visible y periódicamente mientras está abierto. Una versión preparada se anuncia dentro de la interfaz; **no se activa automáticamente durante la edición de una auditoría**. Pulsa **Guardar y actualizar** para guardar los cambios pendientes, verificar la persistencia local, activar el service worker preparado y recargar la página. Pulsa **Más tarde** para continuar con la versión actual. También puedes usar **Buscar actualización** manualmente. La comprobación no sube datos de las auditorías.
 
-**Primera transición:** las PWA instaladas antes de incorporar este gestor pueden necesitar cerrar todas las pestañas de Audit Workbench y volver a abrir la aplicación una vez para adquirir la nueva interfaz. Actualizar el repositorio no actualiza automáticamente los archivos servidos: también hay que desplegar la versión en el servidor. Con los instaladores de archivos locales, primero actualiza la carpeta instalada. Cierra otras pestañas antes de activar una versión nueva: el service worker afecta a todas las pestañas bajo su ámbito, pero este flujo no las recarga automáticamente. No borres los datos del sitio para forzar actualizaciones, porque pueden contener expedientes. Exporta un backup antes de versiones importantes.
+**Primera transición:** las PWA instaladas antes de incorporar este gestor pueden necesitar cerrar todas las pestañas de Dragonboon InfraAudit y volver a abrir la aplicación una vez para adquirir la nueva interfaz. Actualizar el repositorio no actualiza automáticamente los archivos servidos: también hay que desplegar la versión en el servidor. Con los instaladores de archivos locales, primero actualiza la carpeta instalada. Cierra otras pestañas antes de activar una versión nueva: el service worker afecta a todas las pestañas bajo su ámbito, pero este flujo no las recarga automáticamente. No borres los datos del sitio para forzar actualizaciones, porque pueden contener expedientes. Exporta un backup antes de versiones importantes.
 
 ## Protección de disponibilidad offline
 
@@ -240,7 +242,7 @@ La opción **Duplicar** crea otra referencia de auditoría y devuelve la copia a
 
 ## Contrato JSON vigente (limpieza previa al lanzamiento)
 
-Audit Workbench admite **únicamente schemaVersion 3** para el JSON de auditorías individuales. Las copias de biblioteca utilizan `kind: "audit-workbench-library"` con `schemaVersion: 3`; los perfiles de consultora utilizan `kind: "audit-workbench-consultancy"` con `schemaVersion: 3`. Ya no se aceptan respaldos/perfiles anteriores al lanzamiento ni se recuperan expedientes desde claves antiguas v2. El contenedor de copia cifrada conserva su formato criptográfico independiente: no es otro esquema de auditoría. Se mantienen IndexedDB y el almacenamiento alternativo local para mayor resiliencia. Antes de adoptar esta versión, exporta cualquier dato de prueba que quieras conservar y considéralo descartable si no se ajusta al esquema vigente.
+Dragonboon InfraAudit admite **únicamente schemaVersion 3** para el JSON de auditorías individuales. Las copias de biblioteca utilizan `kind: "audit-workbench-library"` con `schemaVersion: 3`; los perfiles de consultora utilizan `kind: "audit-workbench-consultancy"` con `schemaVersion: 3`. Ya no se aceptan respaldos/perfiles anteriores al lanzamiento ni se recuperan expedientes desde claves antiguas v2. El contenedor de copia cifrada conserva su formato criptográfico independiente: no es otro esquema de auditoría. Se mantienen IndexedDB y el almacenamiento alternativo local para mayor resiliencia. Antes de adoptar esta versión, exporta cualquier dato de prueba que quieras conservar y considéralo descartable si no se ajusta al esquema vigente.
 
 ### Informes ejecutivos con acciones y evidencia visual
 

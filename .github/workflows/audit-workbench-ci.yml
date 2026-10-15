@@ -43,3 +43,7 @@ jobs:
         run: bash -n audit-workbench/audit-workbench.sh
       - name: Verify installable resource references
         run: node audit-workbench/tests/test_shell_resources.cjs
+      - name: Build Cloudflare Pages public-demo
+        run: python3 audit-workbench/deploy/build-pages-demo.py
+      - name: Verify public distribution
+        run: node audit-workbench/tests/test_pages_demo.cjs

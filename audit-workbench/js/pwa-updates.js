@@ -1,6 +1,7 @@
 /* Opt-in PWA updates. No external services, audit data, or automatic reloads. */
 'use strict';
 (() => {
+  const PUBLIC_DEMO = globalThis.AuditDeployment?.profile !== 'private-full';
   const APPLY_MESSAGE='AUDIT_WORKBENCH_APPLY_UPDATE';
   const CHECK_INTERVAL_MS=60*60*1000;
   function supported(){
@@ -44,7 +45,7 @@
       }
       notice.hidden=worker===dismissedWorker;
       if(!notice.hidden){
-        message.textContent='Una nueva versión de Audit Workbench está preparada. Guarda los cambios y decide cuándo actualizar. Se reiniciará solo al confirmar.';
+        message.textContent='Una nueva versión de Dragonboon InfraAudit está preparada. Guarda los cambios y decide cuándo actualizar. Se reiniciará solo al confirmar.';
       }
       apply.disabled=applying;
       later.disabled=applying;
@@ -72,7 +73,7 @@
         if(manual&&!registration.waiting)setStatus('No hay una nueva versión preparada. La instalación continúa funcionando offline.');
       }catch(error){
         if(manual)setStatus('No se pudo comprobar el servidor. La aplicación sigue disponible offline.');
-        console.warn('No se pudo comprobar la actualización de Audit Workbench',error);
+        console.warn('No se pudo comprobar la actualización de Dragonboon InfraAudit',error);
       }finally{checking=false;check.disabled=false;}
     }
     function sendActivation(worker){
@@ -93,7 +94,7 @@
     }
     async function applyUpdate(){
       if(applying||!registration?.waiting)return;
-      if(!confirm('Se guardará el expediente y se reiniciará Audit Workbench para aplicar la nueva versión. Cierra otras ventanas de la aplicación antes de continuar. ¿Actualizar ahora?'))return;
+      if(!confirm('Se guardará el expediente y se reiniciará Dragonboon InfraAudit para aplicar la nueva versión. Cierra otras ventanas de la aplicación antes de continuar. ¿Actualizar ahora?'))return;
       applying=true;apply.disabled=true;later.disabled=true;
       setStatus('Guardando antes de actualizar…');
       try{
@@ -134,9 +135,9 @@
         renderPending();
       }
     });
-    window.addEventListener('online',()=>{void checkUpdates();});
+    window.addEventListener('online',()=>{if(!PUBLIC_DEMO)void checkUpdates();});
     document.addEventListener('visibilitychange',()=>{
-      if(document.visibilityState==='visible')void checkUpdates();
+      if(!PUBLIC_DEMO&&document.visibilityState==='visible')void checkUpdates();
     });
     async function setup(){
       try{
@@ -144,14 +145,14 @@
         registration.addEventListener('updatefound',watchInstalling);
         watchInstalling();
         renderPending();
-        if(navigator.onLine)await checkUpdates();
+        if(!PUBLIC_DEMO&&navigator.onLine)await checkUpdates();
         // Long-running tablet sessions: check only while visible and online.
         setInterval(()=>{
-          if(document.visibilityState==='visible'&&navigator.onLine)void checkUpdates();
+          if(!PUBLIC_DEMO&&document.visibilityState==='visible'&&navigator.onLine)void checkUpdates();
         },CHECK_INTERVAL_MS);
       }catch(error){
         setStatus('No se pudo habilitar la búsqueda de actualizaciones.');
-        console.warn('Service Worker de Audit Workbench no disponible',error);
+        console.warn('Service Worker de Dragonboon InfraAudit no disponible',error);
       }
     }
     if(document.readyState==='complete')void setup();
