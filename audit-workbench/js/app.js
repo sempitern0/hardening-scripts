@@ -2020,9 +2020,9 @@
     const executive=section(3,'Resumen ejecutivo',`<p>${para(ending.executive)}</p><div class="report-summary-metrics"><div><strong>${summaryCounts.assets}</strong><span>Activos inventariados</span></div><div><strong>${summaryCounts.verified}/${summaryCounts.controls}</strong><span>Controles con resultado</span></div><div><strong>${summaryCounts.findings}</strong><span>Hallazgos registrados</span></div></div><h3>Valoración del riesgo</h3><p>${para(ending.assessment)}</p><div class="report-stat-grid">${severity.map(s=>`<div><strong>${count[s]}</strong><small>${s}</small></div>`).join('')}</div><h3>Puntos fuertes</h3><p>${para(ending.strengths)}</p><h3>Debilidades principales</h3><p>${para(ending.weaknesses)}</p>`);
     const controls=section(8,'Controles y verificaciones',reportRows('controls'));
     const findings=section(9,'Resumen de hallazgos y ficha técnica',
-      state.findings.length?'<table class="report-table report-findings-summary"><thead><tr><th>ID</th><th>Hallazgo</th><th>Severidad</th><th>Estado</th></tr></thead><tbody>'+
+      (state.findings.length?'<table class="report-table report-findings-summary"><thead><tr><th>ID</th><th>Hallazgo</th><th>Severidad</th><th>Estado</th></tr></thead><tbody>'+
         state.findings.map(item=>'<tr><td>'+html(item.id)+'</td><td>'+html(item.title)+'</td><td>'+html(item.severity)+'</td><td>'+html(item.status||'No indicado')+'</td></tr>').join('')+'</tbody></table>':
-        '<p class="report-empty">No hay hallazgos registrados.</p>'
+        '<p class="report-empty">No hay hallazgos registrados.</p>')
       +state.findings.map(item=>{
         const fields=groups.findings.fields.filter(([name])=>!['id','title','severity','status','evidenceIds'].includes(name)&&str(item[name]).trim());
         const linked=state.evidence.filter(e=>(item.evidenceIds||'').split(/[,;\s]+/).includes(e.id)||relations.normalizeLinks(e.links).findings.includes(item._key));
