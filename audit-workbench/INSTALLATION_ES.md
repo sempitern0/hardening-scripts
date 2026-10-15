@@ -57,6 +57,21 @@ python3 -m http.server 8765 --bind 127.0.0.1
 
 Para instalar sin abrir navegador, añade `--no-open`. Para elegir carpeta de destino usa `--dir RUTA`. Ambas instalaciones incluyen los módulos `js/`, `css/`, `fonts/` y `icons/`.
 
+## Despliegue en servidor HTTPS (recomendado para varios dispositivos)
+
+La opción reproducible para servir Audit Workbench desde un dominio es **Docker Compose + Caddy**. Se publica exclusivamente la interfaz estática, con certificados HTTPS automáticos; no se almacenan expedientes en el servidor. Consulta [Desplegar con HTTPS](deploy/README_ES.md) para DNS, puertos, instalación, protección de datos, actualizaciones y comprobaciones.
+
+```bash
+cd audit-workbench/deploy
+cp .env.example .env
+# Configura AUDIT_DOMAIN y ACME_EMAIL.
+docker compose config --quiet
+docker compose up -d --build
+python3 smoke_https.py https://auditoria.example.com
+```
+
+**Importante:** cada dispositivo mantiene sus datos locales. Para migrar desde `localhost` u otro dominio, exporta el backup JSON e impórtalo en el nuevo origen HTTPS. Discovery sigue ejecutándose aparte desde el equipo del auditor.
+
 ## Tablet y móvil: instalación PWA
 
 La instalación desde navegador requiere, en general, **una primera carga HTTPS** desde un servidor fiable y accesible al dispositivo. Un ZIP por sí mismo **no es un APK o IPA instalable**.

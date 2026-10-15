@@ -57,6 +57,21 @@ python3 -m http.server 8765 --bind 127.0.0.1
 
 Add `--no-open` to install without opening a browser. Use `--dir PATH` to choose a destination directory. Both installers include the `js/`, `css/`, `fonts/`, and `icons/` modules.
 
+## HTTPS server deployment (recommended for multiple devices)
+
+Use **Docker Compose + Caddy** to serve the static PWA from a stable domain with automatic HTTPS. It does **not** store audit records on the server. See [HTTPS deployment](deploy/README.md) and the [detailed Spanish deployment guide](deploy/README_ES.md) for DNS, TLS, updates, security, and verification.
+
+```bash
+cd audit-workbench/deploy
+cp .env.example .env
+# Set AUDIT_DOMAIN and ACME_EMAIL.
+docker compose config --quiet
+docker compose up -d --build
+python3 smoke_https.py https://your-audit-domain.example
+```
+
+Each device retains its own local records. Export/import JSON when switching from localhost or another origin. Discovery remains an independent local tool.
+
 ## Tablet and mobile: PWA installation
 
 Browser installation generally requires an **initial HTTPS load** from a trusted server accessible to the device. A ZIP file by itself **is not an installable APK or IPA**.

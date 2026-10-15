@@ -35,7 +35,11 @@ jobs:
         run: python3 -m unittest discover -s audit-workbench/tests -p test_discovery_wizard.py -v
       - name: Check Bash discovery launchers
         run: bash -n audit-workbench/discovery/run.sh audit-workbench/discovery/setup.sh
-      - name: Check Bash launcher syntax
+      - name: Check HTTPS static deployment contract
+        run: node audit-workbench/tests/test_https_deploy.cjs
+      - name: Check HTTPS smoke-test Python syntax
+        run: python3 -m py_compile audit-workbench/deploy/smoke_https.py
+      - name: Check Bash launcher syntax      - name: Check Bash launcher syntax
         run: bash -n audit-workbench/audit-workbench.sh
       - name: Verify installable resource references
         run: node audit-workbench/tests/test_shell_resources.cjs

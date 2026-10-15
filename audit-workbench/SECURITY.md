@@ -2,6 +2,10 @@
 
 **English** · [Español](SECURITY_ES.md)
 
+## HTTPS deployment
+
+The optional [static HTTPS deployment](deploy/README.md) distributes allowlisted PWA files only, using Caddy. It does not run Discovery, store audit data or provide write endpoints. Public access exposes the frontend source, not locally stored records. TLS does not encrypt IndexedDB or synchronize devices; keep encrypted device storage and verified JSON backups. Apply appropriate network access controls if the application should not be publicly accessible.
+
 ## Attack surface
 
 - Web application without a backend, accounts, proprietary servers, tracking cookies, analytics, or external libraries.

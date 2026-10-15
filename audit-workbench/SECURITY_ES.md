@@ -2,6 +2,10 @@
 
 [English](SECURITY.md) · **Español**
 
+## Despliegue HTTPS
+
+El [despliegue opcional](deploy/README_ES.md) sirve solo archivos estáticos permitidos mediante Caddy; no aloja expedientes, no ejecuta Discovery y no incorpora endpoints de escritura. Publicar la URL hace público el código cliente. TLS no añade cifrado a IndexedDB ni sincroniza perfiles: cada dispositivo debe proteger su almacenamiento y sus copias. Antes de migrar de dominio exporta el JSON. El administrador debe mantener Docker/Caddy y el servidor actualizados y aplicar controles de acceso de red si el servicio no debe ser público.
+
 ## Superficie
 
 - Aplicación web sin backend, cuentas, servidores propios, cookies de seguimiento, analítica ni librerías externas.

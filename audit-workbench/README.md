@@ -29,6 +29,10 @@ python -m http.server 8765 --bind 127.0.0.1
 
 Open `http://127.0.0.1:8765`. For installation as a PWA on a tablet or phone, see **[Installation by device](INSTALLATION.md)**: the initial load requires HTTPS and a compatible browser.
 
+## Install the PWA from an HTTPS server
+
+A [Docker Compose + Caddy HTTPS deployment](deploy/README.md) is available for installation on multiple devices from one stable URL. The server only distributes static files and TLS certificates; audit data remains in each browser and is not synchronized. Export/import JSON when changing origins. Discovery still runs separately on the auditor's device.
+
 ## Guided data entry
 
 Forms provide contextual examples for DNI, NIE, entity CIF/NIF, tax identification, IP, CIDR, VLAN, CVE, CVSS, SHA-256, references, and other specially formatted fields. Phone fields for clients, consulting firms, and auditors support a country flag and dialing code selector, along with a suggested entry mask. Numbers are stored in international format in the existing field (no JSON migration); identity and phone validation stays local and does not verify actual ownership or assignment. Existing phone numbers remain editable.

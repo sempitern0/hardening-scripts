@@ -29,6 +29,10 @@ python -m http.server 8765 --bind 127.0.0.1
 
 Abre `http://127.0.0.1:8765`. Para instalar la PWA en tablet o móvil, consulta **[Instalación por dispositivo](INSTALLATION_ES.md)**: la primera carga requiere HTTPS y un navegador compatible.
 
+## Instalar la PWA desde un servidor HTTPS
+
+Para instalarla en tablets y móviles desde una dirección común, hemos añadido un [despliegue HTTPS estático con Docker Compose y Caddy](deploy/README_ES.md). El servidor solo entrega la aplicación y gestiona certificados; no almacena auditorías, no sincroniza dispositivos ni ejecuta Discovery. Los datos continúan en el navegador y deben protegerse mediante backups JSON. Antes de cambiar de URL exporta los expedientes desde el origen anterior.
+
 ## Entrada guiada de datos
 
 Los formularios muestran ejemplos contextuales para DNI, NIE, CIF/NIF entidad, identificación fiscal, IP, CIDR, VLAN, CVE, CVSS, SHA-256, referencias y otros campos de formato especializado. Los campos de teléfono de cliente, consultora y auditores admiten selección de país con bandera y prefijo, y presentan una máscara orientativa. Se conserva el teléfono en formato internacional dentro del campo existente (sin migración del JSON); la validación de identidad y teléfono sigue siendo local y no comprueba la titularidad o asignación real. Los números antiguos permanecen editables.
