@@ -713,7 +713,7 @@
     const related=relations.linkedEvidence(state,kind,item._key);
     return related.length?`<div class="related-evidence"><strong>${related.length} evidencia(s) vinculada(s)</strong><p>${related.map(e=>html(relations.itemLabel(e,'evidence'))).join(' · ')}</p></div>`:'';
   }
-  let selectedTemplatePack = templates.PACKS[0].id;
+  let selectedTemplatePack = templates.getPack('systems')?'systems':templates.PACKS[0].id;
   let templateMessage = '';
   function renderTemplateLibrary() {
     const pack=templates.getPack(selectedTemplatePack)||templates.PACKS[0];
