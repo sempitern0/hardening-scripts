@@ -189,6 +189,9 @@
   const TEAM_MAX=60;
   const TEAM_ROLES=['Auditor/a de sistemas','Auditor/a de redes','Auditor/a de ciberseguridad','Responsable de auditoría','Especialista forense','Consultor/a técnico/a','Otro'];
   const MEMBER_DOCUMENT_TYPES=['DNI','NIE','Pasaporte / otro'];
+  // Preserve only bounded raster data URLs. Private keys and certificate files are forbidden.
+  const safeSignature = value => typeof value==='string' && value.length<=340000
+    && /^data:image\/jpeg;base64,[a-z0-9+/=]+$/i.test(value) ? value : '';
   // Store immutable attribution snapshots in each audit. Global member updates must
   // not silently rewrite the author list of already issued reports.
   function normalizeMember(raw){
@@ -196,7 +199,14 @@
     const id=str(raw.id).slice(0,90),name=str(raw.name).trim().slice(0,160);
     if(!id||!name)return null;
     const idType=MEMBER_DOCUMENT_TYPES.includes(raw.idType)?raw.idType:'DNI';
-    return {id,name,role:str(raw.role).slice(0,120),idType,documentId:normalizeId(raw.documentId).slice(0,32),email:str(raw.email).slice(0,254),phone:str(raw.phone).slice(0,40)};
+    const proof=raw.signatureProof;
+    const signatureProof=proof && typeof proof==='object' && !Array.isArray(proof)
+      && /\.(pdf|p7s|p7m|asice)$/i.test(str(proof.name).slice(0,180))
+      && /^[a-f0-9]{64}$/i.test(str(proof.sha256))
+        ?{name:str(proof.name).slice(0,180),sha256:str(proof.sha256).toLowerCase()}:null;
+    return {id,name,role:str(raw.role).slice(0,120),idType,documentId:normalizeId(raw.documentId).slice(0,32),
+      email:str(raw.email).slice(0,254),phone:str(raw.phone).slice(0,40),
+      signature:safeSignature(raw.signature),signatureProof};
   }
   function normalizeAuditTeam(raw){
     if(!Array.isArray(raw))return [];
@@ -809,14 +819,49 @@
   ];
   function renderMemberDirectory(){
     const members=settings.members;
-    return `<section class="card"><div class="card-head"><div><h2>Equipo de auditores</h2><p class="subtle">Registra nombre, función y documento identificativo de cada profesional. Estos datos se copian a los expedientes seleccionados y figuran en el PDF; custodia los backups como información personal.</p></div><button class="button accent" type="button" id="member-add" ${members.length>=TEAM_MAX?'disabled':''}>+ Añadir auditor/a</button></div>
+    return `<section class="card"><div class="card-head"><div><h2>Equipo de auditores</h2><p class="subtle">Registra a los profesionales y, si quieres, añade su firma. Al asignarlos a una auditoría, se guarda una copia de sus datos y de la firma para el informe. Protege los archivos exportados.</p></div><button class="button accent" type="button" id="member-add" ${members.length>=TEAM_MAX?'disabled':''}>+ Añadir auditor/a</button></div>
     ${members.length?`<div class="member-directory">${members.map((member,i)=>`<section class="member-card" data-member-id="${html(member.id)}"><div class="member-card-head"><strong>Miembro ${i+1}${member.name?' · '+html(member.name):''}</strong><button type="button" class="button danger small" data-member-remove="${html(member.id)}">Eliminar</button></div><div class="fields">
     <div class="field"><label for="member-name-${i}">Nombre y apellidos</label><input id="member-name-${i}" data-member-id="${html(member.id)}" data-member-field="name" maxlength="160" autocomplete="off" value="${html(member.name)}" required></div>
     <div class="field"><label for="member-role-${i}">Función en las auditorías</label><select id="member-role-${i}" data-member-id="${html(member.id)}" data-member-field="role"><option value="">Seleccionar función…</option>${[...new Set([...TEAM_ROLES,member.role].filter(Boolean))].map(role=>`<option value="${html(role)}" ${role===member.role?'selected':''}>${html(role)}</option>`).join('')}</select></div>
     <div class="field"><label for="member-id-type-${i}">Tipo de identificador personal</label><select id="member-id-type-${i}" data-member-id="${html(member.id)}" data-member-field="idType">${MEMBER_DOCUMENT_TYPES.map(type=>`<option value="${html(type)}" ${type===(member.idType||'DNI')?'selected':''}>${html(type)}</option>`).join('')}</select></div>
     <div class="field"><label for="member-document-${i}">DNI / NIE / identificador personal <span class="required-mark">*</span></label><input id="member-document-${i}" data-member-id="${html(member.id)}" data-member-field="documentId" maxlength="32" autocomplete="off" autocapitalize="characters" spellcheck="false" value="${html(member.documentId||'')}" aria-describedby="member-help-${i}" required><small class="field-hint" id="member-help-${i}">Validación local de DNI/NIE. Para otro documento se comprueba el formato, no su autenticidad.</small></div>
     <div class="field"><label for="member-email-${i}">Correo profesional (opcional)</label><input id="member-email-${i}" type="email" data-member-id="${html(member.id)}" data-member-field="email" maxlength="254" value="${html(member.email)}"></div>
-    <div class="field"><label for="member-phone-${i}">Teléfono profesional (opcional)</label><input id="member-phone-${i}" type="tel" data-member-id="${html(member.id)}" data-member-field="phone" maxlength="40" value="${html(member.phone)}"></div></div></section>`).join('')}</div>`:'<p class="empty">Todavía no hay auditores registrados. Añade un miembro para poder seleccionarlo en tus auditorías.</p>'}</section>`;
+    <div class="field"><label for="member-phone-${i}">Teléfono profesional (opcional)</label><input id="member-phone-${i}" type="tel" data-member-id="${html(member.id)}" data-member-field="phone" maxlength="40" value="${html(member.phone)}"></div></div>
+    <div class="member-signature">
+      <strong>Firma para el informe</strong>
+      <p class="subtle">Sube una imagen de tu firma (PNG, JPG o WebP, hasta 2 MiB). Se guardará en este dispositivo y aparecerá cuando asignes al auditor al expediente.</p>
+      <label for="member-signature-${i}">Imagen de firma</label>
+      <input id="member-signature-${i}" type="file" accept="image/png,image/jpeg,image/webp" data-member-signature="${html(member.id)}">
+      ${member.signature?`<div class="member-signature-preview"><img src="${member.signature}" alt="Firma de ${html(member.name||'auditor')}" loading="lazy"><button type="button" class="button quiet small" data-remove-member-signature="${html(member.id)}">Quitar imagen</button></div>`:'<p class="subtle">Sin firma gráfica (opcional).</p>'}
+      <details class="member-signature-proof"><summary>¿Tienes un documento firmado digitalmente?</summary>
+        <p class="subtle">Admite PDF, P7S, P7M y ASiC-E solo como referencia: se guardan nombre y SHA-256, no el archivo. La validez de la firma debe verificarse por separado. No cargues certificados ni claves privadas.</p>
+        <input type="file" accept=".pdf,.p7s,.p7m,.asice" aria-label="Documento de firma externo" data-member-signature-proof="${html(member.id)}">
+        ${member.signatureProof?`<p class="subtle">Archivo: ${html(member.signatureProof.name)} · SHA-256: ${html(member.signatureProof.sha256)}</p><button type="button" class="button quiet small" data-remove-member-signature-proof="${html(member.id)}">Quitar referencia</button>`:''}
+      </details>
+    </div></section>`).join('')}</div>`:'<p class="empty">Todavía no hay auditores registrados. Añade un miembro para poder seleccionarlo en tus auditorías.</p>'}</section>`;
+  }
+  function memberProofInfo(member){
+    const proof=member.signatureProof;
+    return proof ? '<p><strong>Documento externo:</strong> '+html(proof.name)+' · SHA-256 '+html(proof.sha256)+
+      '. El archivo y su firma no han sido verificados por esta aplicación.</p>' : '';
+  }
+  function renderSignaturePage(meta,mode){
+    const members=normalizeAuditTeam(meta.auditTeam);
+    const blocks=members.length?members.map(member=>`<article class="report-signature-card">
+      <h3>${html(member.name)}</h3><p>${html(member.role||'Auditor/a')}</p>
+      ${member.signature?`<img class="report-signature-image" alt="Representación gráfica de la firma de ${html(member.name)}" src="${member.signature}">`:'<p class="report-signature-missing">Firma gráfica no incorporada</p>'}
+      ${memberProofInfo(member)}
+    </article>`).join(''):'<p>No se han asignado profesionales a este informe.</p>';
+    return `<section class="report-signature-page" aria-label="Página de firmas del equipo auditor">
+      <h2>Equipo auditor y firmas</h2>
+      <p>Informe: ${html(meta.project||'Auditoría')} · Referencia: ${html(meta.reportId||'No indicada')}.</p>
+      <div class="report-signature-cards">${blocks}</div>
+      <div class="report-signature-legal">
+        <h3>Nota sobre la validez de las firmas</h3>
+        <p>Las imágenes de firma son reproducciones aportadas por los profesionales y se muestran como referencia documental. Por sí solas no acreditan identidad, consentimiento ni constituyen firmas electrónicas avanzadas o cualificadas. Los documentos externos indicados mediante SHA-256 deben conservarse y verificarse con herramientas independientes.</p>
+        <p>${mode==='final'?'Este informe figura como definitivo según su control documental interno.':'Este informe es un borrador pendiente de validación; las imágenes no acreditan su aprobación.'} La validación jurídica y criptográfica de cualquier firma electrónica requiere un procedimiento externo adecuado a la normativa aplicable.</p>
+      </div>
+    </section>`;
   }
   function renderAuditTeam(){
     const team=state.meta.auditTeam||[];
@@ -824,7 +869,7 @@
     return `<section class="card"><h2>Profesionales asignados a esta auditoría</h2><p class="subtle">Selecciona los auditores que realizan el trabajo. Se pueden elegir varios. El equipo seleccionado se guarda dentro del expediente y se incorpora al PDF.</p>
     ${settings.members.length?`<div class="auditor-choice-list">${settings.members.map(member=>`<label class="auditor-choice"><input type="checkbox" data-auditor-select="${html(member.id)}" ${team.some(x=>x.id===member.id)?'checked':''}><span><strong>${html(member.name)}</strong><small>${html(member.role||'Sin función definida')}${member.email?' · '+html(member.email):''} · ${memberIdentityIssue(member)?'Identificación pendiente':'Identidad documentada'}</small></span></label>`).join('')}</div>`:'<div class="notice warn">Configura primero los miembros de la consultora. <button type="button" class="button quiet small" data-go="settings">Añadir auditores</button></div>'}
     ${team.filter(member=>!seen.has(member.id)).map(member=>`<label class="auditor-choice archived"><input type="checkbox" data-auditor-select="${html(member.id)}" checked><span><strong>${html(member.name)}</strong><small>Profesional archivado en este informe; ya no figura en el directorio</small></span></label>`).join('')}
-    <small class="subtle">Si actualizas el nombre o la función de un miembro del directorio, el expediente conserva sus datos anteriores hasta que lo desmarques y vuelvas a seleccionar.</small></section>`;
+    <small class="subtle">El expediente conserva una copia de los datos y la firma tal como estaban cuando asignaste al auditor. Para actualizarla, desmarca y vuelve a seleccionar al profesional, siempre que el expediente siga editable.</small></section>`;
   }
   function renderSettings(){
     return `<span class="eyebrow">PREFERENCIAS / CONSULTORA</span><h1 class="page-title">Configuración de la consultora</h1>
@@ -1286,6 +1331,37 @@
       }catch(error){alert('No se pudo incorporar el logo: '+error.message);t.value=''}
       return;
     }
+    if(t.dataset.memberSignature!==undefined&&t.files?.length){
+      const memberId=t.dataset.memberSignature;
+      try{
+        const image=await resizeImage(t.files[0],900,.82,320000,2);
+        const member=settings.members.find(row=>row.id===memberId);
+        if(!member)throw Error('No se encuentra el auditor.');
+        const accepted=safeSignature(image);
+        if(!accepted)throw Error('La imagen no pudo guardarse de forma segura.');
+        member.signature=accepted;
+        if(!saveSettings())throw Error('No se pudo almacenar en este dispositivo.');
+        render();
+      }catch(error){alert('No se pudo guardar la firma: '+error.message);t.value='';}
+      return;
+    }
+    if(t.dataset.memberSignatureProof!==undefined&&t.files?.length){
+      const memberId=t.dataset.memberSignatureProof;
+      try{
+        const file=t.files[0];
+        if(!/\.(pdf|p7s|p7m|asice)$/i.test(file.name)||file.size>10*1024*1024||!file.size)
+          throw Error('Solo PDF, P7S, P7M o ASiC-E de hasta 10 MiB. No admitimos certificados ni claves privadas.');
+        if(!globalThis.crypto?.subtle)throw Error('Necesitas HTTPS o localhost para registrar SHA-256.');
+        const digest=await crypto.subtle.digest('SHA-256',await file.arrayBuffer());
+        const hash=Array.from(new Uint8Array(digest),x=>x.toString(16).padStart(2,'0')).join('');
+        const member=settings.members.find(row=>row.id===memberId);
+        if(!member)throw Error('No se encuentra el auditor.');
+        member.signatureProof={name:file.name.slice(0,180),sha256:hash};
+        if(!saveSettings())throw Error('No se pudo guardar la referencia.');
+        render();
+      }catch(error){alert('No se pudo registrar el documento: '+error.message);t.value='';}
+      return;
+    }
     if(t.dataset.imageIndex!==undefined&&t.files?.length){
       const id=currentId,recordKey=state.evidence[Number(t.dataset.imageIndex)]?._key;
       try{const file=t.files[0];if(!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size>5*1024*1024)throw Error('Selecciona una imagen PNG, JPEG o WebP de hasta 5 MiB.');const digest=globalThis.crypto?.subtle ? Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await file.arrayBuffer())),b=>b.toString(16).padStart(2,'0')).join('') : '';const image=await resizeImage(file);if(id!==currentId)throw Error('Ha cambiado el expediente.');const record=state.evidence.find(x=>x._key===recordKey);if(!record)throw Error('No se encontró la evidencia.');record.image=image;record.fileName=file.name.slice(0,180);record.fileBytes=file.size;record.fileSha256=digest;record.sha256=digest;persist();render()}
@@ -1439,9 +1515,17 @@
     if(b.dataset.go){if(b.dataset.go==='intake'&&['assets','networks','software'].includes(page)){intakeReturn=page;intakeBlock=page;intakePreview=null;intakeSelected.clear();intakeError='';}move(b.dataset.go);return}
     if(b.id==='install-pwa'){alert('Instala desde el menú del navegador: Instalar aplicación / Añadir a pantalla de inicio. Requiere HTTPS o localhost y compatibilidad PWA.');return;}
     if(b.id==='check-connectivity'){await checkNetworkServer();return}
+    if(b.dataset.removeMemberSignature||b.dataset.removeMemberSignatureProof){
+      const member=settings.members.find(row=>row.id===(b.dataset.removeMemberSignature||b.dataset.removeMemberSignatureProof));
+      if(!member)return;
+      if(!confirm('¿Quitar la firma o referencia del perfil? Los expedientes anteriores mantendrán sus datos.'))return;
+      if(b.dataset.removeMemberSignature)member.signature='';
+      else member.signatureProof=null;
+      saveSettings();render();return;
+    }
     if(b.id==='member-add'){
       if(settings.members.length>=TEAM_MAX){alert('Máximo de 60 profesionales por perfil.');return;}
-      const member={id:uid(),name:'',role:'',idType:'DNI',documentId:'',email:'',phone:''};settings.members.unshift(member);saveSettings();render();
+      const member={id:uid(),name:'',role:'',idType:'DNI',documentId:'',email:'',phone:'',signature:'',signatureProof:null};settings.members.unshift(member);saveSettings();render();
       byId('member-name-0')?.focus();byId('member-name-0')?.scrollIntoView({block:'center'});return;
     }
     if(b.dataset.memberRemove){
@@ -1816,7 +1900,8 @@
       `<div class="report-note report-kind"><strong>${reportProfile==='technical'?'INFORME TÉCNICO':'INFORME EJECUTIVO'}</strong> · Ref. ${html(meta.reportId||'Sin referencia')} · Rev. ${html(reportDocument.status==='confirmed'?String(reportDocument.revision):meta.revision||'1.0')}</div>`+
       documentNote+toc+chapters.map(([id,_title,part],index)=>
         part.replace('class="report-section"','class="report-section" id="report-section-'+id+'"')
-        .replace(/(<h2>)\d+\. /,(_,tag)=>tag+(index+1)+'. ')).join('');
+        .replace(/(<h2>)\d+\. /,(_,tag)=>tag+(index+1)+'. ')).join('')+
+      renderSignaturePage(meta,reportDeliveryMode);
   }
   function buildRetestReport(){
     byId('report').dataset.palette=selectedPalette;
@@ -1843,7 +1928,7 @@
     const comparisonSection=section(2,'Evolución y decisiones para dirección',`<p>${html(cmp.limitations)}</p><div class="comparison-summary">${metricRows.slice(0,4).map(([label,value],index)=>`<div class="comparison-metric"><strong>${html(index===1&&cmp.hasBaseline?cmp.verifiedPercent+' %':value)}</strong><span>${html(label)}</span></div>`).join('')}</div><table class="report-table"><thead><tr><th>Indicador</th><th>Resultado</th></tr></thead><tbody>${metricRows.map(([label,value])=>`<tr><td>${html(label)}</td><td>${html(value)}</td></tr>`).join('')}</tbody></table><h3>Prioridades técnicas pendientes</h3>${keyRows?`<table class="report-table"><thead><tr><th>Hallazgo</th><th>Severidad</th><th>Responsable</th><th>Fecha objetivo</th></tr></thead><tbody>${keyRows}</tbody></table>`:'<p>Sin hallazgos de severidad alta o crítica pendientes en el inventario actual.</p>'}<p class="report-note">Una aceptación de riesgo no es una corrección. Los hallazgos no comprobables, sin reevaluar o con estados contradictorios permanecen sin verificación de cierre. Los indicadores son recuentos documentales, no mediciones de pérdidas económicas evitadas.</p>`);
     const details=section(3,'Resultado por hallazgo',entries||'<p>Sin hallazgos registrados.</p>');
     const closing=section(4,'Consideraciones y entrega',`<p>Una corrección se considera verificada solo cuando existe una comprobación documentada con su resultado. Los riesgos aceptados no se computan como corregidos. Los activos y sistemas no revisados en esta visita permanecen fuera de este documento.</p><p>Responsable de revisión: ${html(auditorNames(meta)||'Pendiente de identificar')}. Documento generado localmente: ${html(today)}.</p>`);
-    byId('report').innerHTML=cover+summary+comparisonSection+details+closing;
+    byId('report').innerHTML=cover+summary+comparisonSection+details+closing+renderSignaturePage(meta,'draft');
   }
   function printRetestReport(){
     if(!state.findings.length){alert('Registra al menos un hallazgo para preparar una reevaluación.');return;}

@@ -73,3 +73,11 @@
 .backup-opt input{width:19px;height:19px;flex-shrink:0;accent-color:var(--brand);margin-top:3px}
 .backup-error{border:1px solid #bc4560;border-radius:10px;padding:12px;color:var(--ink)}
 @media(max-width:700px){.backup-exports{display:grid;grid-template-columns:1fr}.backup-exports .button{width:100%}}
+
+/* Auditor signature settings - no executable or remote content. */
+#workspace .member-signature {margin-top:1rem;padding:1rem;border:1px solid var(--line);border-radius:12px;display:grid;gap:.75rem;background:var(--paper);}
+#workspace .member-signature input[type=file]{display:block;max-width:100%;width:100%;color:var(--ink);font:inherit}
+#workspace .member-signature-preview{display:flex;flex-wrap:wrap;align-items:center;gap:1rem}
+#workspace .member-signature-preview img{max-width:min(100%,260px);max-height:110px;object-fit:contain;border:1px solid var(--line);background:#fff;border-radius:7px}
+#workspace .member-signature-proof{border:1px dashed var(--line);padding:.8rem;border-radius:10px}
+#workspace .member-signature-proof summary{min-height:44px;cursor:pointer}

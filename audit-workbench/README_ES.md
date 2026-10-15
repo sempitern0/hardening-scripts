@@ -45,6 +45,14 @@ Los registros nuevos se colocan **al principio de su lista** y la vista se despl
 
 En **Software → Fabricante / editor** se utiliza un catálogo específico de proveedores (Oracle, Google, Adobe, AWS, Microsoft, Red Hat, SAP, etc.), independiente del catálogo de hardware. Puedes seguir usando **Otro / escribir…** cuando el fabricante no aparezca, y los valores existentes no se reescriben.
 
+## Firma visual del equipo auditor
+
+En **Configuración → Equipo de auditores**, cada profesional puede añadir una imagen PNG/JPG/WebP de su firma (hasta 2 MiB). La imagen se optimiza como JPEG y queda almacenada en el perfil local; la firma se copia al expediente cuando el profesional es asignado en **Cliente y alcance**. Si cambias una firma posteriormente, el expediente existente conserva la anterior hasta que desmarques y vuelvas a marcar al profesional (solo en expedientes editables).
+
+Los informes PDF **ejecutivo**, **técnico** y **de reevaluación** añaden al final una página con los profesionales asignados, sus firmas gráficas disponibles y una nota legal. Una imagen de firma **no es una firma electrónica validada** ni equivale a consentimiento/identidad acreditada. También puedes seleccionar un PDF/P7S/P7M/ASiC-E externo: la aplicación solo guarda nombre y SHA-256, **no guarda ni verifica el archivo**; conserva el original aparte. No admitimos certificados, claves privadas, P12 ni PFX.
+
+**Privacidad:** las imágenes forman parte de la configuración, sus copias JSON y los expedientes donde se hayan asignado profesionales; protege los respaldos cifrados y limita su distribución. Las confirmaciones documentales siguen siendo necesarias para entregar la versión definitiva.
+
 ## Entrada guiada de datos
 
 Los formularios muestran ejemplos contextuales para DNI, NIE, CIF/NIF entidad, identificación fiscal, IP, CIDR, VLAN, CVE, CVSS, SHA-256, referencias y otros campos de formato especializado. Los campos de teléfono de cliente, consultora y auditores admiten selección de país con bandera y prefijo, y presentan una máscara orientativa. Se conserva el teléfono en formato internacional dentro del campo existente (sin migración del JSON); la validación de identidad y teléfono sigue siendo local y no comprueba la titularidad o asignación real. Los números antiguos permanecen editables.

@@ -45,6 +45,10 @@ New records appear **at the top** and focus moves to the first editable field, i
 
 **Software → Vendor / publisher** now uses a dedicated offline catalog (Oracle, Google, Adobe, AWS, Microsoft, Red Hat, SAP, etc.) rather than the hardware list. Custom vendors remain editable through **Other / enter a value**; existing values are preserved.
 
+## Auditor signature illustrations in PDF
+
+**Settings → Auditors** accepts a PNG/JPG/WebP signature image (up to 2 MiB); it is normalized to JPEG and copied into an audit when a member is selected. Existing audit snapshots do not automatically change when the directory changes. Executive, technical and follow-up PDF reports end with a separate team/signature page and a disclaimer: **graphic images do not constitute validated electronic signatures**. A PDF/P7S/P7M/ASiC-E may be referenced by filename/SHA-256 only; the original is not stored or validated. Do not upload certificates/private keys. Protect profile backups and audit JSON files containing signatures.
+
 ## Guided data entry
 
 Forms provide contextual examples for DNI, NIE, entity CIF/NIF, tax identification, IP, CIDR, VLAN, CVE, CVSS, SHA-256, references, and other specially formatted fields. Phone fields for clients, consulting firms, and auditors support a country flag and dialing code selector, along with a suggested entry mask. Numbers are stored in international format in the existing field (no JSON migration); identity and phone validation stays local and does not verify actual ownership or assignment. Existing phone numbers remain editable.
