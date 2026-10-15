@@ -261,3 +261,14 @@ Antes de entregar, comprueba que el resumen escrito coincide con los contadores
 actuales, que cada acción tiene responsable y plazo y que el criterio de cierre
 explica cómo se verificará. Revisa la vista de impresión A4 y las imágenes; los
 campos editoriales se guardan en el JSON junto con el resto del expediente.
+
+### Si la firma no aparece en el PDF
+
+La firma del perfil y la firma guardada en una auditoría son copias independientes.
+Tras subir una firma en Configuración, entra en **Profesionales asignados a esta
+auditoría** y pulsa **Incorporar firmas del perfil al expediente**. El estado de
+cada auditor indica si su firma está incorporada. Esta acción actualiza solo las
+firmas disponibles de profesionales ya asignados y conserva sus demás datos.
+Si el expediente está confirmado, abre una rectificación, incorpora las firmas y
+valida de nuevo antes de generar el definitivo. No se alteran informes confirmados
+automáticamente. La generación espera a las imágenes y avisa si alguna no carga.

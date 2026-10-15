@@ -883,13 +883,24 @@
       </div>
     </section>`;
   }
+  function syncAuditorSignatures(audit,members){
+    if(audit.documentControl?.status==='confirmed')throw Error('Abre una rectificación antes de incorporar firmas.');
+    let updated=0;
+    for(const member of audit.meta.auditTeam||[]){
+      const signature=safeSignature(members.find(row=>row.id===member.id)?.signature);
+      if(signature&&signature!==member.signature){member.signature=signature;updated++;}
+    }
+    return updated;
+  }
   function renderAuditTeam(){
     const team=state.meta.auditTeam||[];
     const seen=new Set(settings.members.map(m=>m.id));
     return `<section class="card"><h2>Profesionales asignados a esta auditoría</h2><p class="subtle">Selecciona los auditores que realizan el trabajo. Se pueden elegir varios. El equipo seleccionado se guarda dentro del expediente y se incorpora al PDF.</p>
     ${settings.members.length?`<div class="auditor-choice-list">${settings.members.map(member=>`<label class="auditor-choice"><input type="checkbox" data-auditor-select="${html(member.id)}" ${team.some(x=>x.id===member.id)?'checked':''}><span><strong>${html(member.name)}</strong><small>${html(member.role||'Sin función definida')}${member.email?' · '+html(member.email):''} · ${memberIdentityIssue(member)?'Identificación pendiente':'Identidad documentada'}</small></span></label>`).join('')}</div>`:'<div class="notice warn">Configura primero los miembros de la consultora. <button type="button" class="button quiet small" data-go="settings">Añadir auditores</button></div>'}
     ${team.filter(member=>!seen.has(member.id)).map(member=>`<label class="auditor-choice archived"><input type="checkbox" data-auditor-select="${html(member.id)}" checked><span><strong>${html(member.name)}</strong><small>Profesional archivado en este informe; ya no figura en el directorio</small></span></label>`).join('')}
-    <small class="subtle">El expediente conserva una copia de los datos y la firma tal como estaban cuando asignaste al auditor. Para actualizarla, desmarca y vuelve a seleccionar al profesional, siempre que el expediente siga editable.</small></section>`;
+    <ul class="subtle">${team.map(member=>`<li>${html(member.name)}: ${safeSignature(member.signature)?'firma incorporada al expediente':'sin firma en el expediente'}${!safeSignature(member.signature)&&safeSignature(settings.members.find(m=>m.id===member.id)?.signature)?' · disponible en el perfil':''}</li>`).join('')}</ul>
+    ${team.length?'<button type="button" class="button quiet small" id="sync-auditor-signatures">Incorporar firmas del perfil al expediente</button>':''}
+    <small class="subtle">El expediente conserva una copia de los datos y la firma tal como estaban cuando asignaste al auditor. Usa «Incorporar firmas» después de subirlas al perfil. En un expediente confirmado, abre antes una rectificación y vuelve a validarlo. Para actualizar los demás datos, desmarca y vuelve a seleccionar al profesional mientras el expediente sea editable.</small></section>`;
   }
   function renderSettings(){
     return `<span class="eyebrow">PREFERENCIAS / CONSULTORA</span><h1 class="page-title">Configuración de la consultora</h1>
@@ -1483,6 +1494,9 @@
       if(!b.dataset.go&&!b.dataset.qualitySection&&!b.dataset.glossaryTerm&&!b.dataset.glossaryBack&&!b.dataset.deliveryOpen&&!safe.includes(b.id)){
         alert('Expediente confirmado: abre una rectificación excepcional para modificarlo.');return;
       }
+    }
+    if(b.id==='sync-auditor-signatures'){
+      try{const updated=syncAuditorSignatures(state,settings.members);if(updated){persist();await flush();render();}alert(updated?updated+' firma(s) incorporadas al expediente. Revisa el PDF antes de confirmar.':'No hay firmas nuevas en los perfiles de los auditores asignados.');}catch(error){alert(error.message);}return;
     }
     if(b.dataset.deliveryOpen){
       openDeliveryPanel(b.dataset.deliveryOpen);
@@ -2168,10 +2182,26 @@
     const closing=section(4,'Consideraciones y entrega',`<p>Una corrección se considera verificada solo cuando existe una comprobación documentada con su resultado. Los riesgos aceptados no se computan como corregidos. Los activos y sistemas no revisados en esta visita permanecen fuera de este documento.</p><p>Responsable de revisión: ${html(auditorNames(meta)||'Pendiente de identificar')}. Documento generado localmente: ${html(today)}.</p>`);
     byId('report').innerHTML=cover+summary+comparisonSection+details+closing+renderSignaturePage(meta,'draft');
   }
-  function printRetestReport(){
+  async function printRetestReport(){
     if(!state.findings.length){alert('Registra al menos un hallazgo para preparar una reevaluación.');return;}
     if(!state.findings.some(f=>retest.normalize(f.retests).length)&&!confirm('No hay verificaciones posteriores registradas. El informe mostrará todos los hallazgos como sin reevaluar. ¿Continuar?'))return;
-    printMode='retest';buildRetestReport();window.print();
+    printMode='retest';buildRetestReport();await printPreparedReport();
+  }
+  let reportPreparedForPrint=false;
+  async function printPreparedReport(){
+    try{
+      await Promise.all([...byId('report').querySelectorAll('img')].map(img=>new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>finish(Error('Tiempo de espera agotado al cargar una imagen.')),10000);
+        function finish(error){clearTimeout(timer);img.removeEventListener('load',loaded);img.removeEventListener('error',failed);error?reject(error):resolve();}
+        function loaded(){finish(img.naturalWidth?null:Error('Imagen vacía en el informe.'));}
+        function failed(){finish(Error('No se ha podido cargar una imagen del informe.'));}
+        if(img.complete){loaded();return;}
+        img.addEventListener('load',loaded,{once:true});img.addEventListener('error',failed,{once:true});
+      })));
+      reportPreparedForPrint=true;
+      window.print();
+    }catch(error){alert('No se ha generado el PDF: '+error.message+' Revisa las firmas y evidencias.');}
+    finally{reportPreparedForPrint=false;}
   }
   async function printReport(mode='draft',profile='executive'){
     printMode='audit';
@@ -2192,10 +2222,10 @@
       try{if(!await docControl.verify(state))throw Error('El contenido difiere de la confirmación. Revisa el expediente.');}
       catch(error){alert('No se puede emitir un informe definitivo: '+error.message);return;}
     }
-    buildReport();window.print();
+    buildReport();await printPreparedReport();
   }
 
-  window.addEventListener('beforeprint',()=>{if(printMode==='retest')buildRetestReport();else buildReport()});
+  window.addEventListener('beforeprint',()=>{if(reportPreparedForPrint)return;if(printMode==='retest')buildRetestReport();else buildReport()});
   window.addEventListener('afterprint',()=>{printMode='audit'});
   byId('palette').addEventListener('change',event=>selectPalette(event.target.value));
   byId('open-library').addEventListener('click',async()=>{try{await flush();move('records')}catch(error){alert(error.message)}});
