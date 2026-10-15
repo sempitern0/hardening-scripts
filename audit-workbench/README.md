@@ -222,3 +222,18 @@ The **Duplicate** action creates a new audit reference and returns the copy to d
 ## Current JSON contract (pre-release cleanup)
 
 Audit Workbench accepts **only schemaVersion 3** for individual audit JSON. Full-library backups use `kind: "audit-workbench-library"` with `schemaVersion: 3`; consultancy profiles use `kind: "audit-workbench-consultancy"` with `schemaVersion: 3`. The application no longer accepts pre-release backup/profile formats or recovers records from old v2 storage keys. Encrypted backup containers have a separate cryptographic envelope and are not another audit schema. The live IndexedDB store and localStorage fallback remain supported for resilience. Before adopting this release, export any wanted test records from an earlier build and treat them as disposable unless already compatible with the current schema.
+
+### Executive findings and visual evidence
+
+Under **Findings → Presentación para dirección**, optionally provide a business
+headline, observation, impact, client action, requested evidence and closure
+criterion. Empty fields reuse existing finding text; review its language before
+delivery. The application does not automatically translate or infer conclusions.
+
+The executive report shows one linked evidence image by default. Choose
+**Seleccionadas (máximo 2)** and enter evidence IDs in priority order to select up
+to two images (the first photo of each evidence), or **No mostrar** to omit them.
+Unlinked/deleted selections are not replaced with unrelated images. The technical
+report retains the complete evidence register. Check narrative counts against the
+current metrics and review the A4 print preview before delivery. Editorial fields
+are preserved in JSON exports/imports.

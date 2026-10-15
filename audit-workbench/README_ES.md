@@ -241,3 +241,23 @@ La opción **Duplicar** crea otra referencia de auditoría y devuelve la copia a
 ## Contrato JSON vigente (limpieza previa al lanzamiento)
 
 Audit Workbench admite **únicamente schemaVersion 3** para el JSON de auditorías individuales. Las copias de biblioteca utilizan `kind: "audit-workbench-library"` con `schemaVersion: 3`; los perfiles de consultora utilizan `kind: "audit-workbench-consultancy"` con `schemaVersion: 3`. Ya no se aceptan respaldos/perfiles anteriores al lanzamiento ni se recuperan expedientes desde claves antiguas v2. El contenedor de copia cifrada conserva su formato criptográfico independiente: no es otro esquema de auditoría. Se mantienen IndexedDB y el almacenamiento alternativo local para mayor resiliencia. Antes de adoptar esta versión, exporta cualquier dato de prueba que quieras conservar y considéralo descartable si no se ajusta al esquema vigente.
+
+### Informes ejecutivos con acciones y evidencia visual
+
+En **Hallazgos → Presentación para dirección**, redacta opcionalmente el título,
+la observación, el impacto, la acción esperada, la documentación que debe aportar
+el cliente y el criterio de cierre. Escribe frases claras sin comandos ni detalles
+internos. Los campos vacíos reutilizan el texto técnico existente: revisa el tono
+antes de entregar; no existe una traducción automática ni se infieren conclusiones.
+
+Por defecto se incluye la primera imagen de una evidencia vinculada al hallazgo.
+Selecciona **Seleccionadas (máximo 2)** e indica los ID de evidencia en el orden
+preferido para elegir las imágenes; se usa la primera foto de cada evidencia.
+**No mostrar** permite excluir capturas técnicas o con datos innecesarios. Una
+selección eliminada o desvinculada nunca se sustituye por una imagen ajena.
+El informe técnico conserva el registro completo de evidencias.
+
+Antes de entregar, comprueba que el resumen escrito coincide con los contadores
+actuales, que cada acción tiene responsable y plazo y que el criterio de cierre
+explica cómo se verificará. Revisa la vista de impresión A4 y las imágenes; los
+campos editoriales se guardan en el JSON junto con el resto del expediente.
