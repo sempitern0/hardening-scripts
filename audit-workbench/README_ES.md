@@ -79,6 +79,12 @@ La entrega ofrece dos modos: **Generar borrador PDF**, siempre marcado como trab
 
 La opción **Descargar expediente JSON** solicita una descarga local y muestra un aviso de estado; el navegador decide el destino según su configuración. Verifica la presencia del archivo en Descargas. La barra superior utiliza el mismo flujo y no recibe accidentalmente el evento `click` como contenido del expediente. Los borradores reflejan los bloqueos del preflight definitivo y el informe evita duplicar la nota legal final.
 
+### Importar un JSON que ya existe
+
+Al importar una auditoría individual o una copia completa, **Audit Workbench reconoce expedientes existentes por la referencia del informe** (no por el nombre del cliente). Si coincide, muestra un diálogo con dos botones: **Cancelar** (no cambia los registros) o **Sobrescribir** (sustituye íntegramente el expediente existente por el contenido del JSON). Se conservan la identidad interna y fecha de creación del registro; imágenes, firmas, hallazgos, controles y confirmaciones documentales pasan a ser las del archivo importado. Antes de confirmar, **descarga y verifica una copia de la versión local** si necesitas conservarla.
+
+Las copias completas pueden mezclar informes nuevos y ya existentes. El diálogo resume los que se sustituirán y cuántos se crearán; todas las operaciones se guardan en una sola transacción en IndexedDB o una sola escritura en almacenamiento alternativo. Si hay referencias repetidas dentro del JSON, o la biblioteca contiene más de un registro con la misma referencia, la importación se bloquea sin modificar nada. Un JSON individual sin referencia sigue ofreciéndose como **auditoría nueva**. Ningún registro se sobrescribe automáticamente.
+
 ## Flujo recomendado
 
 1. **Configuración:** registra tu consultora y su equipo de auditores; asigna profesionales al expediente.

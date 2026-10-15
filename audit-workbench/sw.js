@@ -1,10 +1,10 @@
 /* Audit Workbench: versioned, offline-first app shell. No audit data is stored in CacheStorage. */
 'use strict';
-const CACHE_NAME='audit-workbench-shell-v48-auditor-signatures';
+const CACHE_NAME='audit-workbench-shell-v49-import-overwrite';
 const CACHE_PREFIX='audit-workbench-shell-';
 const OPTIONAL_FONTS = ['Regular','Bold','Italic','BoldItalic'].map(weight => `./fonts/AtkinsonHyperlegible-${weight}.woff2`);
 const CORE = [
-  './', './index.html', './css/styles.css', './js/app.js', './js/audit-storage.js',
+  './', './index.html', './css/styles.css', './js/app.js', './js/audit-storage.js', './js/audit-import-plan.js',
   './css/normalize.css', './css/team.css', './css/contrast.css', './css/relations.css', './js/audit-relations.js', './js/audit-identifiers.js', './css/templates.css', './css/quality.css', './js/field-assist.js', './js/audit-quality.js', './css/retest.css', './js/audit-retest.js', './css/comparison.css', './js/audit-comparison.js', './js/control-templates.js', './css/print.css', './js/exporters.js', './js/hardware-catalog.js', './js/software-catalog.js', './js/os-catalog.js', './js/glossary.js', './js/inventory-import.js', './js/input-guidance.js', './js/secure-transfer.js', './js/secure-transfer-ui.js', './js/document-control.js', './js/pwa-updates.js', './js/offline-health.js', './css/glossary.css', './css/atkinson.css', './css/workspace-ux.css', './manifest.webmanifest', './icons/os-windows.svg', './icons/os-linux.svg', './icons/os-macos.svg', './icons/dragon.svg', './icons/icon-192.png', './icons/icon-512.png'
 ];
 const urlFor=path=>new URL(path,self.registration.scope).href;

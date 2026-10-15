@@ -227,3 +227,21 @@
 
 /* Keep newly inserted cards visible while navigating long audit inventories. */
 #workspace .entry { scroll-margin-block-start: 1.25rem; }
+
+/* Explicit duplicate-report decision; no accidental overwrite when importing JSON. */
+#audit-import-dialog {
+  width:min(92vw,34rem);max-height:min(88vh,780px);
+  overflow:auto;border:1px solid var(--line);border-radius:16px;
+  padding:0;background:var(--paper);color:var(--ink);
+  box-shadow:0 24px 90px rgba(0,0,0,.3);
+}
+#audit-import-dialog::backdrop{background:rgba(11,24,34,.68)}
+#audit-import-dialog .audit-import-dialog-content{display:grid;gap:1rem;padding:clamp(1.2rem,3vw,1.8rem)}
+#audit-import-dialog h2,#audit-import-dialog p{margin:0}
+#audit-import-dialog #audit-import-summary{white-space:pre-line;overflow-wrap:anywhere;line-height:1.6}
+#audit-import-dialog .audit-import-warning{padding:.95rem;border:1px solid var(--line);border-radius:10px;background:var(--canvas);line-height:1.55}
+#audit-import-dialog .audit-import-actions{justify-content:flex-end;gap:.8rem;margin-top:.4rem}
+#audit-import-dialog .audit-import-actions .button{min-height:44px}
+@media(max-width:520px){
+  #audit-import-dialog .audit-import-actions .button{flex:1 1 100%}
+}

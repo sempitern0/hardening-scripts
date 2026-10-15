@@ -79,6 +79,17 @@ async function main() {
   assert.equal((await fallback.list()).length,1,'replace same ID, not duplicate');
   assert.equal((await fallback.list())[0].audit.meta.client,'Cliente actualizado');
   await fallback.put({id:'a-2',audit:{schemaVersion:3}});
+  const batch={id:'a-3',audit:{schemaVersion:3,meta:{client:'Nuevo'}}};
+  const replaced={...original,audit:{schemaVersion:3,meta:{client:'Sustituido'},evidence:[{image:'data:image/jpeg;base64,/9j/'}]}};
+  const writesBeforeBatch=local.writes;
+  await fallback.putMany([replaced,batch]);
+  assert.equal(local.writes,writesBeforeBatch+1,'Whole batch must use one localStorage write');
+  assert.equal((await fallback.list()).length,3);
+  assert.equal((await fallback.list()).find(r=>r.id==='a-1').audit.evidence.length,1);
+  await fallback.putMany([replaced]);
+  assert.equal((await fallback.list()).length,3,'Overwriting must retain library identity');
+  await assert.rejects(fallback.putMany([replaced,replaced]),/repetidos/);
+  await fallback.remove('a-3');
   const secondSession=createRepository({storage:local,indexed:null,logger});
   await secondSession.init();
   assert.equal((await secondSession.list()).length,2,'same storage key across browser sessions');
@@ -94,6 +105,7 @@ async function main() {
   const before=invalid.writes;
   await assert.rejects(blocked.list(),/formato incorrecto/);
   await assert.rejects(blocked.put({id:'overwrite'}),/formato incorrecto/);
+  await assert.rejects(blocked.putMany([{id:'overwrite'}]),/formato incorrecto/);
   await assert.rejects(blocked.remove('a-1'),/formato incorrecto/);
   assert.equal(invalid.writes,before,'invalid data must never be erased or replaced');
 

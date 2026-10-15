@@ -57,6 +57,22 @@
         }
       },
       async list() { return database ? transaction('readonly', store => store.getAll()) : fallback(); },
+      async putMany(items) {
+        if(!Array.isArray(items)||items.some(item=>!item||typeof item.id!=='string'||!item.id)||
+           new Set(items.map(item=>item.id)).size!==items.length)
+          throw Error('Lote de auditorías inválido o con identificadores repetidos.');
+        if(!items.length)return;
+        if(database)return transaction('readwrite',store=>{
+          for(const item of items)store.put(item);
+          return null;
+        });
+        const saved=fallback(), byId=new Map(items.map(item=>[item.id,item]));
+        const known=new Set(saved.map(item=>item.id));
+        const merged=saved.map(item=>byId.get(item.id)||item);
+        for(const item of items)if(!known.has(item.id))merged.push(item);
+        // Build the full next library and write once; failed writes leave the original intact.
+        storage.setItem(fallbackKey,JSON.stringify(merged));
+      },
       async put(record) {
         if (database) return transaction('readwrite', store => store.put(record));
         const records = fallback().filter(item => item.id !== record.id);

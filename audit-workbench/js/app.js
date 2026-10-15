@@ -5,6 +5,7 @@
   const LIBRARY_KIND = 'audit-workbench-library';
   const PROFILE_KIND = 'audit-workbench-consultancy';
   const storage = globalThis.AuditStorage;
+  const importPlan = globalThis.AuditImportPlan;
   const relations = globalThis.AuditRelations;
   const identifiers = globalThis.AuditIdentifiers;
   const templates = globalThis.AuditControlTemplates;
@@ -1807,6 +1808,58 @@
       return null;
     }
   }
+  function confirmAuditOverwrite(plan){
+    const entries=plan.replaced, count=entries.length;
+    if(!count)return Promise.resolve(true);
+    const labels=entries.slice(0,4).map(item=>item.reference+' · '+(item.existing.audit?.meta?.project||item.existing.audit?.meta?.client||'Auditoría sin título'));
+    const remainder=count>4?'\n… y '+(count-4)+' más.':'';
+    const summary=count===1
+      ?'Ya hay una auditoría con la referencia '+entries[0].reference+'.\n'
+        +'Guardada: '+(entries[0].existing.audit?.meta?.project||'Sin título')+'.\n'
+        +'Archivo seleccionado: '+(entries[0].audit.meta.project||'Sin título')+'.'
+      :'El archivo incluye '+count+' auditorías que ya existen:\n'+labels.join('\n')+remainder
+        +'\nTambién se añadirán '+plan.added.length+' auditorías nuevas.';
+    const dialog=byId('audit-import-dialog');
+    if(!dialog||typeof dialog.showModal!=='function')
+      return Promise.resolve(confirm(summary+'\n\n¿Sobrescribir los expedientes existentes? Cancelar mantiene los datos actuales.'));
+    byId('audit-import-heading').textContent=count===1?'Este informe ya existe':'Hay '+count+' informes repetidos';
+    byId('audit-import-summary').textContent=summary;
+    return new Promise(resolve=>{
+      const yes=byId('audit-import-overwrite'),no=byId('audit-import-cancel');
+      let resolved=false;
+      function done(value){
+        if(resolved)return;
+        resolved=true;
+        yes.removeEventListener('click',accept);
+        no.removeEventListener('click',reject);
+        dialog.removeEventListener('cancel',onCancel);
+        if(dialog.open)dialog.close();
+        resolve(value);
+      }
+      function accept(){done(true)}
+      function reject(){done(false)}
+      function onCancel(event){event.preventDefault();done(false)}
+      yes.addEventListener('click',accept);
+      no.addEventListener('click',reject);
+      dialog.addEventListener('cancel',onCancel);
+      dialog.showModal();
+      no.focus();
+    });
+  }
+  async function applyImportedAudits(plan){
+    // A single IndexedDB transaction (or one localStorage write) avoids partial library restores.
+    await flush();
+    const previousIds=new Set(records.map(item=>item.id));
+    const replacement=plan.entries.map(({audit,existing})=>existing
+      ?{...existing,updatedAt:new Date().toISOString(),audit}
+      :newRecord(audit));
+    await enqueue(()=>repository.putMany(replacement));
+    const byId=new Map(replacement.map(item=>[item.id,item]));
+    records=records.map(item=>byId.get(item.id)||item);
+    for(const item of replacement)if(!previousIds.has(item.id))records.push(item);
+    if(replacement.length)setActive(replacement[replacement.length-1]);
+    move('records');
+  }
   async function importJson(file){
     try{
       if(file.size>40*1024*1024)throw Error('El archivo supera 40 MiB. Exporta los expedientes individualmente o separa los backups.');
@@ -1815,24 +1868,26 @@
         if(input.schemaVersion!==VERSION)throw Error('Solo se admite el formato JSON actual (esquema '+VERSION+').');
         if(!Array.isArray(input.records)||input.records.length>250)throw Error('El backup es inválido o supera 250 auditorías.');
         const all=input.records.map(item=>validate(item.audit));
-        const existing=new Set(records.map(r=>String(r.audit?.meta?.reportId||'').trim().toUpperCase()).filter(Boolean));
-        const imported=new Set();
-        for(const item of all){
-          const ref=String(item.meta.reportId||'').trim().toUpperCase();
-          if(!ref||existing.has(ref)||imported.has(ref))
-            throw Error('La copia contiene referencias vacías o repetidas: '+(ref||'SIN REFERENCIA')+'. Revisa las auditorías antes de importarlas.');
-          imported.add(ref);
-        }
-        if(!confirm('Se restaurarán '+all.length+' auditorías conservando sus identificadores originales. No se sustituirán los expedientes existentes. ¿Continuar?'))return;
         await flush();
-        for(const audit of all){const record=newRecord(audit);await enqueue(()=>repository.put(record));records.push(record)}
-        if(all.length)setActive(records[records.length-1]);
-        move('records');
+        const plan=importPlan.plan(records,all);
+        if(plan.replaced.length){
+          if(!await confirmAuditOverwrite(plan))return;
+        }else if(!confirm('Se incorporarán '+plan.added.length+' auditorías nuevas, sin modificar las existentes. ¿Continuar?'))return;
+        await applyImportedAudits(plan);
         return;
       }
       const loaded=validate(input);
-      if(!confirm('Se importará como una nueva auditoría sin sustituir los expedientes guardados. ¿Continuar?'))return;
-      await createAudit(loaded);
+      if(!loaded.meta.reportId){
+        if(!confirm('El JSON no tiene referencia de informe. Se importará como auditoría nueva con una referencia generada. ¿Continuar?'))return;
+        await createAudit(loaded);
+        return;
+      }
+      await flush();
+      const plan=importPlan.plan(records,[loaded]);
+      if(plan.replaced.length){
+        if(!await confirmAuditOverwrite(plan))return;
+      }else if(!confirm('Se importará como una nueva auditoría sin sustituir los expedientes guardados. ¿Continuar?'))return;
+      await applyImportedAudits(plan);
     }catch(error){alert('No se pudo importar el JSON: '+error.message)}
   }
   byId('btn-import').addEventListener('click',()=>byId('input-import').click());

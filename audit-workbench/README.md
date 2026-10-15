@@ -79,6 +79,12 @@ Delivery provides two modes: **Generate draft PDF**, always marked as unvalidate
 
 **Reports → Generate PDF** now opens directly on the Executive and Technical report choices, each offering **Generate draft PDF** as the default action. Printing uses the browser's **Save as PDF** destination; no remote service is involved. The readiness panel explains what remains before final delivery, while the conclusion fields, document confirmation, historical controls and secondary exports are grouped in expandable sections. Final reports still require quality checks and confirmed document control. Drafts remain visibly marked as such.
 
+### Import an existing audit JSON
+
+When a single audit or full-library JSON contains a report reference already in the local browser library, Audit Workbench offers **Cancel** or **Overwrite**. Cancel leaves all records unchanged. Overwrite replaces the complete matching audit (including evidence, images, control/document approval status, and signatures) while keeping its internal library identity and creation date. **Export a verified copy of the current audit before overwriting** if you need to preserve the earlier state.
+
+For multi-audit backups, the dialog shows matching references and how many new reports will also be added. Saves use one IndexedDB transaction or one fallback storage write. Duplicate references in the imported backup or conflicting duplicates already in the local library cause an error without changing anything. A single JSON with no report ID is still imported as a new audit.
+
 ## Recommended workflow
 
 1. **Settings:** register your consultancy and audit team; assign professionals to the audit record.

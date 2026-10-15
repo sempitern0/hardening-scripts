@@ -90,6 +90,17 @@
       <footer class="app-footer">Audit Workbench · Los resultados deben ser revisados por el auditor · <span id="local-date"></span></footer>
     </div>
   </div>
+  <dialog id="audit-import-dialog" class="audit-import-dialog" aria-labelledby="audit-import-heading" aria-describedby="audit-import-summary">
+    <div class="audit-import-dialog-content">
+      <h2 id="audit-import-heading">Ya existe este informe</h2>
+      <p id="audit-import-summary"></p>
+      <p class="audit-import-warning">Sobrescribir sustituye el contenido guardado (incluidos los hallazgos, controles, imágenes, firmas y estado documental). No podrás recuperar la versión anterior sin una copia de seguridad.</p>
+      <div class="action-row audit-import-actions">
+        <button type="button" class="button quiet" id="audit-import-cancel">Cancelar</button>
+        <button type="button" class="button danger" id="audit-import-overwrite">Sobrescribir</button>
+      </div>
+    </div>
+  </dialog>
   <article id="report" aria-label="Informe final de auditoría"></article>
   <script src="js/exporters.js" defer></script>
   <script src="js/hardware-catalog.js" defer></script>
@@ -104,6 +115,7 @@
   <script src="js/audit-retest.js" defer></script>
   <script src="js/audit-comparison.js" defer></script>
   <script src="js/audit-storage.js" defer></script>
+  <script src="js/audit-import-plan.js" defer></script>
   <script src="js/inventory-import.js" defer></script>
   <script src="js/input-guidance.js" defer></script>
   <script src="js/secure-transfer.js" defer></script>
