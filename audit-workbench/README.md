@@ -85,6 +85,10 @@ When a single audit or full-library JSON contains a report reference already in 
 
 For multi-audit backups, the dialog shows matching references and how many new reports will also be added. Saves use one IndexedDB transaction or one fallback storage write. Duplicate references in the imported backup or conflicting duplicates already in the local library cause an error without changing anything. A single JSON with no report ID is still imported as a new audit.
 
+## Clean print/PDF layout
+
+The A4 print stylesheet defines explicit empty browser margin boxes so Chromium does not print the app title, localhost/HTTPS URL or automatic date, while retaining a small page number. On browsers that still display their own page headers/footers, uncheck **Headers and footers** in the print dialog. Enable background graphics to preserve cover colors. The executive report avoids duplicated next steps; technical findings use a compact summary and refer to full-size images once in the evidence register. Long text fields render full-width, and empty network/CVE chapters are skipped. No audit data or release controls are altered.
+
 ## Recommended workflow
 
 1. **Settings:** register your consultancy and audit team; assign professionals to the audit record.

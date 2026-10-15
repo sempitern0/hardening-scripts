@@ -91,6 +91,12 @@ Puedes seleccionar varias imágenes a la vez tanto en **Hallazgos** como en **Ev
 
 Los controles **Pendiente** y **No verificado**, y las no conformidades sin hallazgo de seguimiento, generan **avisos** en lugar de impedir la entrega. La revisión final incluye estos avisos en un capítulo de limitaciones y obliga a confirmarlos antes de generar el PDF definitivo. Se siguen bloqueando datos esenciales, inconsistencias de formato, referencias rotas, ausencia de resultados fundamentales, y expedientes sin confirmación documental. La aplicación no marca controles pendientes como conformes.
 
+## Impresión PDF: encabezados limpios y lectura más cómoda
+
+La hoja de impresión A4 define explícitamente los encabezados vacíos de página para evitar que Chromium añada el título «Audit Workbench», la dirección local/HTTPS y la fecha. Mantiene un **único número de página discreto**. Si otro navegador todavía incluye su propio encabezado o pie, abre **Más ajustes → Encabezados y pies de página** y desmárcalo; Chrome, Firefox y Safari pueden variar en sus opciones. Activa «Gráficos de fondo» para reproducir los colores de la portada.
+
+La edición ejecutiva organiza prioridades y próximos pasos por párrafos/números sin repetirlos en la conclusión. La técnica evita repetir en las fichas los identificadores ya mostrados en los encabezados; las fotografías a tamaño completo se presentan en **Registro de evidencias**, mientras cada hallazgo enlaza sus identificadores. Los textos extensos de alcance, metodología y conclusiones se imprimen a ancho completo. Los capítulos sin redes o CVE registrados no se incluyen en el índice ni como páginas vacías. No se alteran el expediente JSON ni los controles documentales.
+
 ## Flujo recomendado
 
 1. **Configuración:** registra tu consultora y su equipo de auditores; asigna profesionales al expediente.

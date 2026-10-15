@@ -3,11 +3,13 @@
   size: A4 portrait;
   margin: 19mm 18mm 21mm 18mm;
 
-  @bottom-left {
-    content: "AUDIT WORKBENCH  ·  INFORME DE AUDITORÍA";
-    font: 8pt "Atkinson Hyperlegible", Arial, sans-serif;
-    color: #687886;
-  }
+  /* Explicit empty margin boxes override browser-supplied document title, URL and date
+     in Chromium even if the print dialog has headers/footers enabled. */
+  @top-left { content: ""; }
+  @top-center { content: ""; }
+  @top-right { content: ""; }
+  @bottom-left { content: ""; }
+  @bottom-center { content: ""; }
   @bottom-right {
     content: "Página " counter(page);
     font: 8pt "Atkinson Hyperlegible", Arial, sans-serif;
@@ -272,4 +274,40 @@
   #report .report-signature-missing{font-style:italic;color:#526274}
   #report .report-signature-legal{border-top:.4mm solid #cbd7df;padding-top:5mm;break-inside:avoid-page}
   #report .report-signature-legal p{font-size:8.8pt}
+}
+
+/* Report-specific print hierarchy: full-width prose and no repeated attachments. */
+@media print {
+  #report .report-toc a span[aria-hidden="true"] { display:none!important; }
+  #report .report-toc { break-inside:avoid-page; margin-bottom:4mm; }
+  #report .report-note { overflow-wrap:anywhere; }
+  #report .report-narrative-item { margin:5mm 0 6mm; }
+  #report .report-narrative-item h3 { margin:0 0 2mm!important; break-after:avoid-page; }
+  #report .report-narrative-item p { margin:0; line-height:1.57; }
+  #report .report-roadmap p { margin-bottom:3.3mm; line-height:1.55; }
+  #report .report-roadmap p strong { color:var(--report-heading,#15394a); }
+  #report .report-steps { margin:2mm 0 6mm; padding-left:6mm; }
+  #report .report-steps li, #report .report-warning-list li { 
+    padding-left:1mm; margin:0 0 2.2mm; line-height:1.5;
+    break-inside:avoid-page; page-break-inside:avoid;
+  }
+  #report .report-warning-list { padding-left:6mm; }
+  #report .report-findings-summary { margin-bottom:8mm!important; }
+  #report .report-findings-summary th:first-child,
+  #report .report-findings-summary td:first-child { width:16mm; }
+  #report .report-findings-summary th:nth-child(3),
+  #report .report-findings-summary td:nth-child(3) { width:22mm; }
+  #report .report-findings-summary th:nth-child(4),
+  #report .report-findings-summary td:nth-child(4) { width:24mm; }
+  #report .report-detail-table .report-field-label { width:29%!important; }
+  #report .report-inventory-item { margin-bottom:6mm; }
+  #report .report-inventory-item > h3 { margin-top:5mm!important; }
+  #report .report-evidence-figure { break-inside:avoid-page!important; }
+  #report .report-evidence-figure figcaption { break-before:avoid-page; }
+  #report .report-finding > .report-note { margin:0 0 3mm; }
+  #report .report-finding h3 { font-size:11.3pt!important; line-height:1.42!important; }
+  #report .report-table td { line-height:1.48; }
+  #report .report-table td a { overflow-wrap:anywhere; }
+  #report .report-executive-finding p { line-height:1.5; }
+  #report .report-signature-legal { break-inside:avoid-page; }
 }

@@ -16,3 +16,12 @@ assert(js.includes("if(reportDeliveryMode==='final'")&&js.includes('docControl.v
 assert(js.includes('byId(\'report\').dataset.reportType=reportProfile'));
 assert(css.includes('[data-report-type="executive"]'));
 console.log('PASS executive and technical report compositions');
+
+assert(css.includes('@top-left { content: ""; }')&&css.includes('@top-right { content: ""; }'),'Browser title and URL print headers must be suppressed');
+assert(css.includes('@bottom-center { content: ""; }')&&css.includes('content: "Página " counter(page)'),'Print only a discreet page number');
+assert(js.includes('function reportSteps(value)'),'Next steps should use real ordered list elements');
+assert(js.includes('function narrative(fields,row)'),'Long technical fields should use full-width paragraphs');
+assert(js.includes('function reportWarningList(issues)'),'Repeated quality messages should be grouped');
+assert(js.includes('Las fotografías completas se incluyen en el registro de evidencias.'),'Linked evidence images must not be printed twice');
+assert(!js.includes('<th>Remediación</th>'),'Technical findings summary should not repeat full remediation');
+console.log('PASS browser margin header suppression and print readability checks');
