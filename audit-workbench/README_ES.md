@@ -33,6 +33,12 @@ Abre `http://127.0.0.1:8765`. Para instalar la PWA en tablet o móvil, consulta 
 
 Para instalarla en tablets y móviles desde una dirección común, hemos añadido un [despliegue HTTPS estático con Docker Compose y Caddy](deploy/README_ES.md). El servidor solo entrega la aplicación y gestiona certificados; no almacena auditorías, no sincroniza dispositivos ni ejecuta Discovery. Los datos continúan en el navegador y deben protegerse mediante backups JSON. Antes de cambiar de URL exporta los expedientes desde el origen anterior.
 
+## Revisión inicial de la situación actual
+
+Basándonos en la **Planificación Auditoría Informática**, se amplían las fichas de **Hardware**, **Redes** y **Software** con una sección desplegable **«Revisión ampliada · situación actual»**. Permite documentar licencias, actualizaciones, antivirus/EDR, cuentas y procesos, capacidad de RAM y discos, GPU, cableado, cifrado Wi-Fi, canal, banda y velocidad medida/contratada. Son campos **opcionales**: los valores no verificados quedan vacíos, no se asume una configuración favorable. Se conservan en el mismo expediente JSON, se pueden importar desde capturas revisadas, aparecen en CSV/XLSX y en el informe técnico únicamente cuando están cumplimentados.
+
+En **Controles → Plantillas de comprobaciones**, el paquete **«Situación actual · revisión inicial»** permite incorporar 14 pruebas con método, evidencia esperada y recomendaciones. Todas empiezan **Pendiente**. Ningún dato recopilado se convierte por sí solo en una conformidad o vulnerabilidad. Las referencias del documento a **500 GB**, categorías CAT5/CAT5e o WPA2/WPA3 son contextuales y no se aplican como umbrales automáticos. Revisa políticas, alcance, hardware y normativas aplicables antes de emitir un juicio.
+
 ## Entrada guiada de datos
 
 Los formularios muestran ejemplos contextuales para DNI, NIE, CIF/NIF entidad, identificación fiscal, IP, CIDR, VLAN, CVE, CVSS, SHA-256, referencias y otros campos de formato especializado. Los campos de teléfono de cliente, consultora y auditores admiten selección de país con bandera y prefijo, y presentan una máscara orientativa. Se conserva el teléfono en formato internacional dentro del campo existente (sin migración del JSON); la validación de identidad y teléfono sigue siendo local y no comprueba la titularidad o asignación real. Los números antiguos permanecen editables.

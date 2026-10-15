@@ -7,11 +7,12 @@ const root=path.resolve(__dirname,'..');
 const sandbox={};sandbox.globalThis=sandbox;
 vm.runInNewContext(fs.readFileSync(path.join(root,'js/control-templates.js'),'utf8'),sandbox);
 const lib=sandbox.AuditControlTemplates;
-assert.equal(lib.PACKS.length,4);
-assert.equal(lib.PACKS.reduce((total,pack)=>total+pack.controls.length,0),24);
+assert.equal(lib.PACKS.length,5);
+assert.equal(lib.PACKS.reduce((total,pack)=>total+pack.controls.length,0),38);
 assert.ok(lib.PACKS.every(pack=>pack.controls.every(c=>c.name&&c.method&&c.expectedEvidence&&c.recommendation)));
 let next=0, code=0;
 const getId=()=>`key-${++next}`;const getCode=()=>`CTRL-${String(++code).padStart(3,'0')}`;
+assert.equal(lib.getPack('baseline').controls.length,14);
 const selection=lib.getPack('systems').controls.slice(0,3).map(x=>x.id);
 const first=lib.prepare([], 'systems', selection, getId, getCode);
 assert.equal(first.length,3);
@@ -29,4 +30,4 @@ assert.throws(()=>lib.prepare(first,'systems','SYS-01',getId,getCode),/inválida
 // Check immutable catalog and no server access or data in this pure module.
 assert.equal(Object.isFrozen(lib.PACKS),true);
 assert.equal(Object.isFrozen(lib.PACKS[0].controls[0]),true);
-console.log('PASS: 4 packages, 24 checks, default pending, no duplicates');
+console.log('PASS: 5 packages, 38 checks, default pending, no duplicates');

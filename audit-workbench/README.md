@@ -33,6 +33,12 @@ Open `http://127.0.0.1:8765`. For installation as a PWA on a tablet or phone, se
 
 A [Docker Compose + Caddy HTTPS deployment](deploy/README.md) is available for installation on multiple devices from one stable URL. The server only distributes static files and TLS certificates; audit data remains in each browser and is not synchronized. Export/import JSON when changing origins. Discovery still runs separately on the auditor's device.
 
+## Initial infrastructure situation review
+
+The **Hardware**, **Networks** and **Software** inventories now contain optional expandable **Initial situation review** fields based on the user-supplied planning checklist: licenses, patch state, AV/EDR, privileged users, processes, RAM limits, disks, GPU, wired and wireless characteristics, Wi-Fi encryption/channels/bands and contracted versus observed throughput. Fields remain empty until checked, are preserved in the v3 JSON contract, can be mapped from inventory imports and appear in CSV/XLSX and technical PDFs when populated.
+
+The new **Initial situation review** control pack offers 14 guided verification steps, each with a method, expected evidence and recommended follow-up. Controls always start **Pending** and never infer compliance from inventory values. Figures such as 500 GB, CAT5/CAT5e and WPA2/WPA3 are contextual references, not unconditional automated pass/fail thresholds.
+
 ## Guided data entry
 
 Forms provide contextual examples for DNI, NIE, entity CIF/NIF, tax identification, IP, CIDR, VLAN, CVE, CVSS, SHA-256, references, and other specially formatted fields. Phone fields for clients, consulting firms, and auditors support a country flag and dialing code selector, along with a suggested entry mask. Numbers are stored in international format in the existing field (no JSON migration); identity and phone validation stays local and does not verify actual ownership or assignment. Existing phone numbers remain editable.

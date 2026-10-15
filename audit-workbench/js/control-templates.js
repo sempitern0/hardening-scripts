@@ -4,6 +4,139 @@
   const VERSION = 1;
   const PACKS = [
   {
+  "id": "baseline",
+  "name": "Situación actual · revisión inicial",
+  "description": "Comprobaciones de software, hardware, usuarios, antivirus y Wi-Fi basadas en la planificación aportada; sin resultados automáticos.",
+  "controls": [
+    {
+      "id": "BASE-01",
+      "name": "Licencia y soporte del sistema operativo",
+      "category": "Sistemas",
+      "method": "Contrastar tipo de licencia, versión del SO y soporte del fabricante con documentación autorizada.",
+      "expectedEvidence": "Datos de licenciamiento saneados, versión y consulta al fabricante.",
+      "recommendation": "Documentar situación y regularizar licencias o soporte según necesidades.",
+      "reference": "Guía Situación actual · Planificación Auditoría Informática; criterio orientativo sujeto al alcance."
+    },
+    {
+      "id": "BASE-02",
+      "name": "Actualizaciones automáticas o gestión centralizada",
+      "category": "Parcheado",
+      "method": "Verificar configuración y estado de actualizaciones; diferenciar una gestión centralizada de su desactivación.",
+      "expectedEvidence": "Captura saneada de políticas, canal de actualización e historial.",
+      "recommendation": "Definir política, revisión periódica y gestión de excepciones.",
+      "reference": "Guía Situación actual · Planificación Auditoría Informática; criterio orientativo sujeto al alcance."
+    },
+    {
+      "id": "BASE-03",
+      "name": "Antivirus o EDR: tiempo real y firmas",
+      "category": "Sistemas",
+      "method": "Comprobar si está instalado, activo en tiempo real y actualizado; contrastar alertas y exclusiones autorizadas.",
+      "expectedEvidence": "Consola de protección, estado del motor/firmas y fecha de comprobación.",
+      "recommendation": "Configurar y supervisar protección adecuada a los riesgos.",
+      "reference": "Guía Situación actual · Planificación Auditoría Informática; criterio orientativo sujeto al alcance."
+    },
+    {
+      "id": "BASE-04",
+      "name": "Software instalado y licenciamiento",
+      "category": "Inventario",
+      "method": "Inventariar productos, versión, fecha de instalación comprobable, modalidad de distribución y licencias aplicables.",
+      "expectedEvidence": "Listado saneado de aplicaciones y justificantes de licencia cuando proceda.",
+      "recommendation": "Regularizar licencias y actualizar componentes fuera de soporte.",
+      "reference": "Guía Situación actual · Planificación Auditoría Informática; criterio orientativo sujeto al alcance."
+    },
+    {
+      "id": "BASE-05",
+      "name": "Procesos y servicios en ejecución",
+      "category": "Sistemas",
+      "method": "Revisar procesos/servicios relevantes y su justificación, evitando copiar tokens o líneas de comando sensibles.",
+      "expectedEvidence": "Listado saneado, propietario del servicio y justificación técnica.",
+      "recommendation": "Revisar persistencias o servicios innecesarios con el responsable.",
+      "reference": "Guía Situación actual · Planificación Auditoría Informática; criterio orientativo sujeto al alcance."
+    },
+    {
+      "id": "BASE-06",
+      "name": "Usuarios locales y privilegios",
+      "category": "Identidad",
+      "method": "Comprobar cuentas existentes, administradores locales y necesidad de permisos; excluir secretos y datos personales innecesarios.",
+      "expectedEvidence": "Relación saneada de usuarios, grupos y autorizaciones.",
+      "recommendation": "Aplicar mínimo privilegio y revisión periódica.",
+      "reference": "Guía Situación actual · Planificación Auditoría Informática; criterio orientativo sujeto al alcance."
+    },
+    {
+      "id": "BASE-07",
+      "name": "CPU y memoria instalada",
+      "category": "Inventario",
+      "method": "Documentar CPU/frecuencia, RAM instalada, capacidad máxima admitida y ranuras de memoria; comparar con el uso previsto.",
+      "expectedEvidence": "Inventario de firmware o fabricante y observación de recursos.",
+      "recommendation": "Dimensionar según carga, compatibilidad y vida útil, sin mínimos universales.",
+      "reference": "Guía Situación actual · Planificación Auditoría Informática; criterio orientativo sujeto al alcance."
+    },
+    {
+      "id": "BASE-08",
+      "name": "Almacenamiento: capacidad y tecnología",
+      "category": "Inventario",
+      "method": "Registrar capacidad observada y tipo HDD/SSD/NVMe y verificar salud y adecuación al uso; 500 GB es una referencia del plan, no un mínimo universal.",
+      "expectedEvidence": "Inventario de discos y requisitos de capacidad aprobados.",
+      "recommendation": "Ajustar capacidad y redundancia a necesidad operativa.",
+      "reference": "Guía Situación actual · Planificación Auditoría Informática; criterio orientativo sujeto al alcance."
+    },
+    {
+      "id": "BASE-09",
+      "name": "GPU y memoria de vídeo",
+      "category": "Inventario",
+      "method": "Identificar si la GPU es integrada, dedicada o híbrida y, si aplica, su memoria dedicada.",
+      "expectedEvidence": "Especificaciones del dispositivo y captura saneada.",
+      "recommendation": "Evaluar dimensionamiento de GPU si la carga lo requiere.",
+      "reference": "Guía Situación actual · Planificación Auditoría Informática; criterio orientativo sujeto al alcance."
+    },
+    {
+      "id": "BASE-10",
+      "name": "Ethernet y cableado",
+      "category": "Red",
+      "method": "Comprobar conector, velocidad de enlace negociada y categoría de cable visible cuando proceda; CAT5/CAT5e son referencias contextualizables.",
+      "expectedEvidence": "Estado de interfaz, negociación y certificación/etiquetado del cable, si disponible.",
+      "recommendation": "Corregir enlaces deficientes según el estándar y velocidad requeridos.",
+      "reference": "Guía Situación actual · Planificación Auditoría Informática; criterio orientativo sujeto al alcance."
+    },
+    {
+      "id": "BASE-11",
+      "name": "Wi-Fi: cifrado y segmentación",
+      "category": "Red",
+      "method": "Verificar WPA2/WPA3 u otro método realmente configurado, autenticación, separación de invitados y soporte de los clientes.",
+      "expectedEvidence": "Configuración saneada del AP/controladora y pruebas autorizadas.",
+      "recommendation": "Alinear autenticación y cifrado con el riesgo y compatibilidad.",
+      "reference": "Guía Situación actual · Planificación Auditoría Informática; criterio orientativo sujeto al alcance."
+    },
+    {
+      "id": "BASE-12",
+      "name": "Wi-Fi: intensidad, canal, banda y estándar",
+      "category": "Red",
+      "method": "Medir señal en dBm, observar canal, bandas y estándares, y evaluar interferencias según entorno.",
+      "expectedEvidence": "Capturas de analizador Wi-Fi y ubicación/hora de la muestra.",
+      "recommendation": "Optimizar cobertura y canalización según mediciones, no solo SSID.",
+      "reference": "Guía Situación actual · Planificación Auditoría Informática; criterio orientativo sujeto al alcance."
+    },
+    {
+      "id": "BASE-13",
+      "name": "Capacidad WAN: contratada frente a medida",
+      "category": "Red",
+      "method": "Documentar capacidad contratada y pruebas representativas, anotando método, fecha, condiciones y limitaciones.",
+      "expectedEvidence": "Contrato o SLA y resultados de medida anonimizados.",
+      "recommendation": "Investigar diferencias persistentes antes de concluir incumplimiento.",
+      "reference": "Guía Situación actual · Planificación Auditoría Informática; criterio orientativo sujeto al alcance."
+    },
+    {
+      "id": "BASE-14",
+      "name": "Vulnerabilidades contrastadas",
+      "category": "Sistemas",
+      "method": "Relacionar CVE o alertas con versión realmente instalada, exposición y evidencia; no deducir afectación solo por detección.",
+      "expectedEvidence": "Avisos del fabricante, versión del activo y prueba de aplicabilidad.",
+      "recommendation": "Priorizar correcciones según exposición, criticidad y riesgo demostrado.",
+      "reference": "Guía Situación actual · Planificación Auditoría Informática; criterio orientativo sujeto al alcance."
+    }
+  ]
+},
+  {
     "id": "systems",
     "name": "Sistemas y servidores",
     "description": "Sistemas operativos, configuración y mantenimiento",
