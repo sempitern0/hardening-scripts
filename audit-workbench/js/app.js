@@ -1942,7 +1942,7 @@
   byId('btn-pdf').addEventListener('click',goToPdfOptions);
   const table = (fields,row) => `<table class="report-table"><tbody>${fields.map(([name,label])=>`<tr><th class="report-field-label">${html(label)}</th><td>${para(row[name])}</td></tr>`).join('')}</tbody></table>`;
   const section = (num,title,content) => `<section class="report-section"><h2>${num}. ${html(title)}</h2>${content}</section>`;
-  function reportRows(k){const rows=state[k];return rows.length?rows.map((row,i)=>`<h3>${i+1}. ${html(row.title||row.name||row.id||'Registro')}</h3>${table(groups[k].fields.filter(([name])=>!baselineFieldSet[k]?.has(name)||str(row[name]).trim()),row)}${k==='evidence'?`<p class="report-note"><strong>Integridad y vínculos:</strong> ${html(row.fileSha256?'SHA-256 original: '+row.fileSha256:'Archivo original sin huella calculada')} ${html(row.fileName?' · Archivo: '+row.fileName:'')} · ${html(relations.CATEGORIES.map(kind=>{const names=relations.normalizeLinks(row.links)[kind].map(key=>state[kind].find(x=>x._key===key)).filter(Boolean).map(x=>relations.itemLabel(x,kind));return names.length?relationLabels[kind]+': '+names.join(', '):''}).filter(Boolean).join(' · ')||'Sin relaciones explícitas')}</p>`:''}${k==='evidence'&&row.image?`<figure><img class="report-evidence" alt="Evidencia ${html(row.id)}" src="${row.image}"><figcaption class="report-note">${html(row.id||'Evidencia')}: ${html(row.title||'Captura adjunta')}</figcaption></figure>`:''}`).join(''):'<p class="report-empty">Sin registros incluidos en esta categoría.</p>'}
+  function reportRows(k){const rows=state[k];return rows.length?rows.map((row,i)=>`<h3>${i+1}. ${html(row.title||row.name||row.id||'Registro')}</h3>${table(groups[k].fields.filter(([name])=>!baselineFieldSet[k]?.has(name)||str(row[name]).trim()),row)}${k==='evidence'?`<p class="report-note"><strong>Integridad y vínculos:</strong> ${html(row.fileSha256?'SHA-256 original: '+row.fileSha256:'Archivo original sin huella calculada')} ${html(row.fileName?' · Archivo: '+row.fileName:'')} · ${html(relations.CATEGORIES.map(kind=>{const names=relations.normalizeLinks(row.links)[kind].map(key=>state[kind].find(x=>x._key===key)).filter(Boolean).map(x=>relations.itemLabel(x,kind));return names.length?relationLabels[kind]+': '+names.join(', '):''}).filter(Boolean).join(' · ')||'Sin relaciones explícitas')}</p>`:''}${k==='evidence'?evidenceImages.list(row).map((photo,j)=>`<figure><img class="report-evidence" alt="Evidencia ${html(row.id)} · imagen ${j+1}" src="${photo.image}"><figcaption class="report-note">${html(row.id||'Evidencia')}: ${html(row.title||'Captura adjunta')} · imagen ${j+1} (${html(photo.fileName||'sin nombre')})</figcaption></figure>`).join(''):''}`).join(''):'<p class="report-empty">Sin registros incluidos en esta categoría.</p>'}
   let printMode='audit',reportDeliveryMode='draft',reportProfile='executive';
   function buildReport(){
     byId('report').dataset.palette=selectedPalette;
@@ -2024,10 +2024,10 @@
       [13,'Comprobaciones y limitaciones pendientes',reviewNotice],
       [1,'Confidencialidad y límites de la evaluación',executiveLegal]
     ]);
+    const activeChapters=chapters.filter(([_id,_title,content])=>Boolean(content));
     const toc=section(0,'Contenido del informe',
       `<nav class="report-toc" aria-label="Índice del informe">${activeChapters.map(([id,title])=>
         `<a href="#report-section-${id}">${html(title)} <span aria-hidden="true">↗</span></a>`).join('')}</nav>`);
-    const activeChapters=chapters.filter(([_id,_title,content])=>Boolean(content));
     byId('report').dataset.reportType=reportProfile;
     byId('report').innerHTML=cover.replace('<div class="report-cover">','<div class="report-cover">'+draftMarker)+
       `<div class="report-note report-kind"><strong>${reportProfile==='technical'?'INFORME TÉCNICO':'INFORME EJECUTIVO'}</strong> · Ref. ${html(meta.reportId||'Sin referencia')} · Rev. ${html(reportDocument.status==='confirmed'?String(reportDocument.revision):meta.revision||'1.0')}</div>`+

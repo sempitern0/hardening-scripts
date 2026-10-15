@@ -42,7 +42,7 @@
       }
       if(value&&typeof value==='object'){
         for(const [key,item] of Object.entries(value)){
-          if(key==='documentControl'||(path.startsWith('evidence[')&&key==='image'))continue;
+          if(key==='documentControl'||(path.startsWith('evidence[')&&key==='image')||(path.startsWith('evidence[')&&key==='attachments'))continue;
           flatten(item,path?(path+'.'+key):key,level+1);
         }
         return;
