@@ -314,3 +314,35 @@
   #report .report-executive-image figcaption { font-size:9pt; line-height:1.4; margin-top:2mm; }
   #report .report-executive-finding p { hyphens:none; }
 }
+
+/* Prefer meaningful reading units without forcing entire long chapters together.
+   Browsers may split a unit taller than a printable page to avoid clipping. */
+@media print {
+  #report h2, #report h3, #report h4 {
+    break-inside:avoid-page;
+    break-after:avoid-page;
+    page-break-after:avoid;
+  }
+  #report h2 + *, #report h3 + *, #report h4 + * {
+    break-before:avoid-page;
+    page-break-before:avoid;
+  }
+  #report p, #report li {
+    orphans:3;
+    widows:3;
+    break-inside:avoid-page;
+    page-break-inside:avoid;
+  }
+  #report .report-narrative-item { break-inside:avoid-page; page-break-inside:avoid; }
+  #report .report-section, #report .report-executive-findings {
+    break-inside:auto;
+    page-break-inside:auto;
+  }
+  #report .report-executive-finding > h3 + p,
+  #report .report-finding > h3 + .report-note {
+    break-after:avoid-page;
+    page-break-after:avoid;
+  }
+  #report figure img { break-after:avoid-page; }
+  #report figcaption { break-before:avoid-page; }
+}

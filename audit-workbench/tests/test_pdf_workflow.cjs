@@ -21,6 +21,11 @@ assert(app.includes("if(b.dataset.deliveryOpen)"),'Expandable settings need keyb
 assert(app.includes("if(section==='delivery'){openDeliveryPanel('summary');return;}"),'Quality links to delivery must reveal the required fields');
 assert(app.includes("if(reportDeliveryMode==='final'&&state.documentControl?.status!=='confirmed')"),'Final PDF must still require document confirmation');
 assert(app.includes("docControl.verify(state)"),'Final PDF must retain cryptographic integrity check');
-assert(app.includes("buildReport();window.print();"),'Browser print action remains available');
+assert(app.includes("buildReport();await printPreparedReport();"),'Browser print action remains available');
 assert(css.includes('#workspace .report-stage-head')&&css.includes('#workspace .report-expandable > summary'));
 console.log('PASS PDF workflow: first actions, collapsible editing, preflight and confirmation');
+
+assert(view.indexOf('report-revision-entry')<view.indexOf('report-optional-section'),'Rectifications must precede optional settings');
+assert.equal((view.match(/id="delivery-validation"/g)||[]).length,1,'One control panel only');
+for(const label of ['Rectificar informe','Revisar y cerrar rectificación','Ir a editar el expediente'])assert(view.includes(label),label);
+console.log('PASS prominent revision controls with existing delivery flow');
