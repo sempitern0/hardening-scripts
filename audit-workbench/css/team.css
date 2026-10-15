@@ -81,3 +81,9 @@
 #workspace .member-signature-preview img{max-width:min(100%,260px);max-height:110px;object-fit:contain;border:1px solid var(--line);background:#fff;border-radius:7px}
 #workspace .member-signature-proof{border:1px dashed var(--line);padding:.8rem;border-radius:10px}
 #workspace .member-signature-proof summary{min-height:44px;cursor:pointer}
+
+#workspace .finding-attachments{display:grid;gap:.75rem;margin:1rem 0;padding:1rem;border:1px solid var(--line);border-radius:12px;background:var(--paper)}
+#workspace .finding-attachments input[type=file]{width:100%;max-width:100%;font:inherit;color:var(--ink)}
+#workspace .finding-image-gallery{display:flex;flex-wrap:wrap;gap:.75rem}
+#workspace .finding-image-gallery figure{margin:0;display:grid;gap:.25rem}
+#workspace .finding-image-gallery img{width:105px;height:75px;object-fit:cover;border-radius:7px;border:1px solid var(--line)}

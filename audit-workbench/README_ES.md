@@ -53,6 +53,10 @@ Los informes PDF **ejecutivo**, **técnico** y **de reevaluación** añaden al f
 
 **Privacidad:** las imágenes forman parte de la configuración, sus copias JSON y los expedientes donde se hayan asignado profesionales; protege los respaldos cifrados y limita su distribución. Las confirmaciones documentales siguen siendo necesarias para entregar la versión definitiva.
 
+## Capturas directamente en hallazgos
+
+En **Problemas detectados y recomendaciones** puedes adjuntar imágenes PNG/JPG/WebP de hasta 5 MiB por hallazgo. Cada imagen crea una nueva evidencia vinculada, sin sobrescribir las anteriores, con SHA-256 del original cuando está disponible. Las capturas aparecen en el informe técnico, pueden gestionarse en **Evidencias** y quedan incluidas en el JSON. Conserva el original aparte. Si el expediente está confirmado, debes abrir una rectificación antes de modificarlo.
+
 ## Entrada guiada de datos
 
 Los formularios muestran ejemplos contextuales para DNI, NIE, CIF/NIF entidad, identificación fiscal, IP, CIDR, VLAN, CVE, CVSS, SHA-256, referencias y otros campos de formato especializado. Los campos de teléfono de cliente, consultora y auditores admiten selección de país con bandera y prefijo, y presentan una máscara orientativa. Se conserva el teléfono en formato internacional dentro del campo existente (sin migración del JSON); la validación de identidad y teléfono sigue siendo local y no comprueba la titularidad o asignación real. Los números antiguos permanecen editables.

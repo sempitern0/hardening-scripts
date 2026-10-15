@@ -49,6 +49,10 @@ New records appear **at the top** and focus moves to the first editable field, i
 
 **Settings → Auditors** accepts a PNG/JPG/WebP signature image (up to 2 MiB); it is normalized to JPEG and copied into an audit when a member is selected. Existing audit snapshots do not automatically change when the directory changes. Executive, technical and follow-up PDF reports end with a separate team/signature page and a disclaimer: **graphic images do not constitute validated electronic signatures**. A PDF/P7S/P7M/ASiC-E may be referenced by filename/SHA-256 only; the original is not stored or validated. Do not upload certificates/private keys. Protect profile backups and audit JSON files containing signatures.
 
+## Finding attachments
+
+Attach PNG/JPEG/WebP captures (up to 5 MiB) directly from findings. Each creates a separate evidence record with the existing finding relation, optimized image and original SHA-256 where supported. Audit data stays offline; originals are stored separately. Confirmed reports require opening a formal amendment before attaching new evidence.
+
 ## Guided data entry
 
 Forms provide contextual examples for DNI, NIE, entity CIF/NIF, tax identification, IP, CIDR, VLAN, CVE, CVSS, SHA-256, references, and other specially formatted fields. Phone fields for clients, consulting firms, and auditors support a country flag and dialing code selector, along with a suggested entry mask. Numbers are stored in international format in the existing field (no JSON migration); identity and phone validation stays local and does not verify actual ownership or assignment. Existing phone numbers remain editable.

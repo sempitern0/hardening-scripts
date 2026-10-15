@@ -121,7 +121,7 @@
       ['name','Control / criterio'],['asset','Activo o alcance','picker',[]],['status','Resultado','select',['Pendiente','Conforme','No conforme','No aplica','No verificado']],
       ['method','Método de verificación','textarea'],['reference','Marco / referencia'],
       ['evidenceIds','ID(s) de evidencia'],['notes','Observaciones','textarea']]},
-    findings:{title:'Hallazgos y recomendaciones',intro:'Una ficha por debilidad. La puntuación CVSS, si se indica, es manual y no implica cálculo ni validación automática.',fields:[
+    findings:{title:'Problemas detectados y recomendaciones',intro:'Describe lo observado, el riesgo que podría suponer y cómo solucionarlo. El nivel de riesgo lo determina el auditor.',fields:[
       ['id','Código del hallazgo'],['title','Título'],['severity','Severidad','select',['Sin evaluar','Crítica','Alta','Media','Baja','Informativa']],
       ['status','Seguimiento','select',['Abierto','En curso','Mitigado','Riesgo aceptado','Cerrado']],
       ['asset','Activos / alcance afectados','picker',[]],['cvss','CVSS (si corresponde)'],
@@ -132,7 +132,7 @@
       ['references','CVE / CIS / NIST / referencias','textarea'],['recommendation','Remediación propuesta','textarea'],
       ['verification','Cómo comprobar que se ha solucionado','textarea'],
       ['owner','Responsable','picker',presets.owner],['deadline','Fecha objetivo','date'],['residual','Riesgo residual / notas','textarea']]},
-    evidence:{title:'Cadena documental de evidencias',intro:'Las imágenes se incrustan opcionalmente en el expediente JSON y en el PDF; conserva los originales de manera separada y segura.',fields:[
+    evidence:{title:'Evidencias y capturas',intro:'Añade fotos o capturas de lo observado. Se guardan en el expediente y pueden aparecer en el PDF. Conserva los originales aparte.',fields:[
       ['id','ID de evidencia'],['title','Título / descripción breve'],['asset','Activo / hallazgo relacionado','picker',[]],
       ['captured','Fecha de captura','date'],['source','Fuente / comando / ruta segura'],
       ['sha256','SHA-256 del original (opcional)'],['notes','Detalle, custodia y observaciones','textarea']]}
@@ -782,7 +782,7 @@
       <div class="intake-toolbar"><button class="button quiet small" type="button" data-intake-select="new">Seleccionar solo nuevos</button><button class="button quiet small" type="button" data-intake-select="none">Deseleccionar</button></div>
       <div class="intake-records">${candidates.map(c=>`<label class="intake-record"><input type="checkbox" data-intake-row="${c.index}" ${intakeSelected.has(c.index)?'checked':''} ${c.status!=='nuevo'?'disabled':''}><span><strong>${html(c.record.name||c.record.id||c.record.cidr||'Registro '+(c.index+1))}</strong><small>${html(c.status==='nuevo'?'Nuevo':c.status==='duplicado'?'Duplicado':'Conflicto: '+c.differences.slice(0,3).join(' · '))}</small><small>${html(Object.entries(c.record).filter(([,v])=>v).slice(0,8).map(([k,v])=>k+': '+v).join(' · '))}</small></span></label>`).join('')}</div>
       <div class="action-row"><button class="button accent" type="button" data-intake-apply="true" ${intakeSelected.size?'':'disabled'}>Incorporar ${intakeSelected.size} registros nuevos</button><button class="button quiet" type="button" data-intake-reset="true">Descartar vista previa</button></div>
-      <p class="subtle">Los conflictos se muestran para revisión manual. Datos incompletos, credenciales y resultados no verificados nunca se convierten automáticamente en hallazgos.</p></section>`;
+      <p class="subtle">Revisa los registros que no coincidan. Los datos sin comprobar no se convierten automáticamente en problemas detectados.</p></section>`;
   }
 
   function renderInventoryFieldGroups(record,section,index) {
@@ -811,7 +811,16 @@
       behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'
     });
   }
-  function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p>${['assets','networks','software'].includes(block)?'<button type="button" class="button quiet small" data-go="intake">Captura asistida / Importar inventario ↗</button>':''}${glossaryStageHint(block)}${block==='controls'?renderTemplateLibrary():''}<section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Cada dato registrado podrá aparecer en el informe y en la copia JSON.</p></div>${block==='evidence'?'<button class="button quiet" data-export-manifest="true">Manifiesto SHA-256 (JSON)</button>':''}<button class="button accent" data-add="${block}">+ Añadir registro</button></div>${rows.length?rows.map((r,i)=>`<div class="entry" data-entry-key="${html(r._key||'')}" tabindex="-1"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="inventory-fields">${renderInventoryFieldGroups(r,block,i)}</div>${['assets','controls','findings'].includes(block)?renderLinkedEvidence(block,r):''}${block==='controls'?renderControlExtras(r):''}${block==='findings'?renderFindingOrigin(r):''}${block==='evidence'?renderEvidenceRelations(r):''}${block==='cves'?`<div class="cve-tools"><button class="button quiet small" type="button" data-cve-check="${i}">Consultar CVE online (opcional)</button><button class="button small" type="button" data-cve-link="${i}">Ver en CVE.org ↗</button><span class="subtle">Solo se envía el identificador CVE, nunca los datos del cliente.</span></div>`:''}${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Adjuntar captura local</strong> (PNG, JPG, WebP hasta 5 MiB)</label><p class="subtle">Se guarda una copia optimizada. El SHA-256 identifica el archivo original, que debes conservar por separado.</p>${r.fileSha256?`<p class="evidence-digest">Archivo: ${html(r.fileName||'Sin nombre')} · ${(r.fileBytes||0).toLocaleString('es-ES')} bytes <span>SHA-256 ${html(r.fileSha256)}</span></p>`:''}<input type="file" accept="image/png,image/jpeg,image/webp" data-image-index="${i}" id="evidence-upload-${i}">${r.image?`<img class="evidence-preview" alt="Evidencia incrustada" src="${r.image}"><button class="button small danger" data-clear-image="${i}">Quitar imagen</button>`:''}</div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
+  function renderFindingAttachments(finding,index){
+    const linked=relations.linkedEvidence(state,'findings',finding._key);
+    return `<div class="finding-attachments"><strong>Fotos y capturas del hallazgo</strong>
+      <p class="subtle">Selecciona una imagen para crear una evidencia vinculada automáticamente.</p>
+      <label for="finding-image-${index}">Añadir foto o captura (PNG, JPG o WebP, hasta 5 MiB)</label>
+      <input type="file" id="finding-image-${index}" accept="image/png,image/jpeg,image/webp" data-finding-image-key="${html(finding._key)}">
+      <div class="finding-image-gallery">${linked.filter(e=>e.image).slice(0,8).map(e=>`<figure><img src="${e.image}" alt="Evidencia ${html(e.id)}" loading="lazy"><figcaption>${html(e.id)}</figcaption></figure>`).join('')}</div>
+      <p class="subtle">${linked.length} evidencias vinculadas. Puedes revisarlas en «Evidencias».</p></div>`;
+  }
+  function renderGroup(block){const def=groups[block],rows=state[block];return `<span class="eyebrow">INVENTARIO / EVIDENCIAS</span><h1 class="page-title">${def.title}</h1><p class="lead">${def.intro}</p>${['assets','networks','software'].includes(block)?'<button type="button" class="button quiet small" data-go="intake">Captura asistida / Importar inventario ↗</button>':''}${glossaryStageHint(block)}${block==='controls'?renderTemplateLibrary():''}<section class="card"><div class="card-head"><div><h2>${rows.length} registros</h2><p class="subtle">Los registros se guardan y puedes incluirlos en el informe.</p></div>${block==='evidence'?'<button class="button quiet" data-export-manifest="true">Manifiesto SHA-256 (JSON)</button>':''}<button class="button accent" data-add="${block}">+ Añadir registro</button></div>${rows.length?rows.map((r,i)=>`<div class="entry" data-entry-key="${html(r._key||'')}" tabindex="-1"><div class="entry-head"><div><strong>${html(r.title||r.name||r.id||'Registro '+(i+1))}</strong> ${block==='findings'?pill(r.severity):''}</div><button class="button danger small" data-remove="${block}" data-index="${i}">Eliminar</button></div><div class="inventory-fields">${renderInventoryFieldGroups(r,block,i)}</div>${block==='findings'?renderFindingAttachments(r,i):''}${['assets','controls','findings'].includes(block)?renderLinkedEvidence(block,r):''}${block==='controls'?renderControlExtras(r):''}${block==='findings'?renderFindingOrigin(r):''}${block==='evidence'?renderEvidenceRelations(r):''}${block==='cves'?`<div class="cve-tools"><button class="button quiet small" type="button" data-cve-check="${i}">Consultar CVE online (opcional)</button><button class="button small" type="button" data-cve-link="${i}">Ver en CVE.org ↗</button><span class="subtle">Solo se envía el identificador CVE, nunca los datos del cliente.</span></div>`:''}${block==='evidence'?`<div class="file-upload"><label for="evidence-upload-${i}"><strong>Añadir foto o captura</strong> (PNG, JPG o WebP, hasta 5 MiB)</label><p class="subtle">Se guarda una copia optimizada. El SHA-256 identifica el archivo original, que debes conservar por separado.</p>${r.fileSha256?`<p class="evidence-digest">Archivo: ${html(r.fileName||'Sin nombre')} · ${(r.fileBytes||0).toLocaleString('es-ES')} bytes <span>SHA-256 ${html(r.fileSha256)}</span></p>`:''}<input type="file" accept="image/png,image/jpeg,image/webp" data-image-index="${i}" id="evidence-upload-${i}">${r.image?`<img class="evidence-preview" alt="Evidencia incrustada" src="${r.image}"><button class="button small danger" data-clear-image="${i}">Quitar imagen</button>`:''}</div>`:''}</div>`).join(''):`<div class="empty"><b>No hay registros todavía</b>Usa «Añadir registro» para empezar.</div>`}</section>`}
   const settingsFields=[
     ['company','Nombre legal de la consultora'],['taxType','Identificador fiscal','select',['No indicado','NIF entidad / CIF','DNI / NIF persona física','NIE','NIF intracomunitario / otro']],
     ['taxId','Identificación fiscal'],['email','Email corporativo'],['phone','Teléfono'],
@@ -1362,9 +1371,26 @@
       }catch(error){alert('No se pudo registrar el documento: '+error.message);t.value='';}
       return;
     }
+    if(t.dataset.findingImageKey!==undefined&&t.files?.length){
+      const id=currentId,key=t.dataset.findingImageKey;
+      try{
+        if(state.documentControl?.status==='confirmed')throw Error('Abre una rectificación antes de adjuntar imágenes.');
+        if(state.evidence.length>=LIMIT_ROWS)throw Error('Se alcanzó el límite de evidencias.');
+        const imageData=await prepareEvidenceImage(t.files[0]);
+        if(id!==currentId||state.documentControl?.status==='confirmed')throw Error('El expediente ha cambiado durante la carga.');
+        const finding=state.findings.find(x=>x._key===key);if(!finding)throw Error('Hallazgo no disponible.');
+        const evidence={_key:uid(),id:relations.nextCode(state.evidence,'evidence'),
+          title:'Captura relacionada con '+(finding.id||finding.title||'hallazgo'),
+          asset:finding.asset||'',captured:new Date().toISOString().slice(0,10),
+          source:'Imagen adjuntada desde un hallazgo',notes:'Conservar original por separado',
+          links:relations.normalizeLinks({findings:[finding._key]}),...imageData};
+        state.evidence.unshift(evidence);persist();render();focusAddedRecord(finding._key);
+      }catch(error){alert('No se pudo adjuntar la imagen: '+error.message);t.value='';}
+      return;
+    }
     if(t.dataset.imageIndex!==undefined&&t.files?.length){
       const id=currentId,recordKey=state.evidence[Number(t.dataset.imageIndex)]?._key;
-      try{const file=t.files[0];if(!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size>5*1024*1024)throw Error('Selecciona una imagen PNG, JPEG o WebP de hasta 5 MiB.');const digest=globalThis.crypto?.subtle ? Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await file.arrayBuffer())),b=>b.toString(16).padStart(2,'0')).join('') : '';const image=await resizeImage(file);if(id!==currentId)throw Error('Ha cambiado el expediente.');const record=state.evidence.find(x=>x._key===recordKey);if(!record)throw Error('No se encontró la evidencia.');record.image=image;record.fileName=file.name.slice(0,180);record.fileBytes=file.size;record.fileSha256=digest;record.sha256=digest;persist();render()}
+      try{if(state.documentControl?.status==='confirmed')throw Error('Abre una rectificación para cambiar las evidencias.');const prepared=await prepareEvidenceImage(t.files[0]);if(id!==currentId||state.documentControl?.status==='confirmed')throw Error('El expediente ha cambiado.');const record=state.evidence.find(x=>x._key===recordKey);if(!record)throw Error('Evidencia no encontrada.');Object.assign(record,prepared);persist();render()}
       catch(err){alert('No se pudo incorporar la imagen: '+err.message);t.value=''}return;
     }
     if(t.dataset.addEvidenceLink!==undefined){
@@ -1674,6 +1700,15 @@
       if(encoded.length<=maxLength)return encoded;
     }
     throw Error('No se pudo reducir el tamaño; prueba con otra imagen.');
+  }
+  async function prepareEvidenceImage(file){
+    if(!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size>5*1024*1024)
+      throw Error('Utiliza una imagen PNG, JPG o WebP de hasta 5 MiB.');
+    const fileSha256=globalThis.crypto?.subtle
+      ?Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await file.arrayBuffer())),
+        b=>b.toString(16).padStart(2,'0')).join(''):'';
+    const image=await resizeImage(file);
+    return {image,fileName:file.name.slice(0,180),fileBytes:file.size,fileSha256,sha256:fileSha256};
   }
   async function lookupCve(index,button){
     const row=state.cves[index];if(!row)return;
