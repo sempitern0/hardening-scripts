@@ -201,3 +201,26 @@
   #workspace .report-review-actions .button { flex: 1 1 100%; }
   #workspace .report-expandable-body { padding: .9rem; }
 }
+
+/* Initial-situation measurements stay secondary to the normal inventory. */
+#workspace .inventory-baseline {
+  margin-top: 1rem; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--paper); overflow: hidden;
+}
+#workspace .inventory-baseline > summary {
+  display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between;
+  gap: .75rem; min-height: 52px; padding: 1rem 1.2rem;
+  cursor: pointer; color: var(--ink);
+}
+#workspace .inventory-baseline > summary:focus-visible {
+  outline: 3px solid var(--brand); outline-offset: -3px;
+}
+#workspace .inventory-baseline > summary > span:first-child { display: grid; gap: .3rem; min-width: 0; }
+#workspace .inventory-baseline small { color: var(--muted); font-size: .84rem; line-height: 1.5; }
+#workspace .inventory-baseline-count { font-size: .82rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+#workspace .inventory-baseline-content { padding: 1.2rem; border-top: 1px solid var(--line); }
+#workspace .inventory-baseline-content .fields { row-gap: 1.15rem; }
+@media (max-width: 600px) {
+  #workspace .inventory-baseline > summary { padding: .9rem; }
+  #workspace .inventory-baseline-content { padding: .85rem; }
+}

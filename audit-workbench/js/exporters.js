@@ -22,12 +22,12 @@
         ['Alcance', basic.scope], ['Exclusiones', basic.exclusions]]
     }];
     const defs = [
-      ['Hardware', ['name','type','vendor','model','serial','ip','os','cpu','ram','storage','site','owner','criticality','state','notes'],
-        ['Activo','Tipo','Fabricante','Modelo','Serie','IP','Sistema operativo','CPU','RAM','Almacenamiento','Ubicación','Responsable','Criticidad','Estado','Observaciones']],
-      ['Redes', ['name','cidr','vlan','gateway','dns','purpose','firewall','exposure','notes'],
-        ['Red / dispositivo','CIDR','VLAN','Gateway','DNS / DHCP','Función','Firewall','Exposición','Observaciones']],
-      ['Software', ['name','version','vendor','asset','license','support','exposure','notes'],
-        ['Producto','Versión','Fabricante','Activo','Licencia','Soporte','Exposición','Observaciones']],
+      ['Hardware', ['name','type','vendor','model','serial','ip','os','cpu','ram','storage','site','owner','criticality','state','notes','osLicense','osUpdates','avProduct','avRealtime','avUpdated','cpuSpeed','ramMax','ramSlots','diskCapacity','diskType','gpuType','gpuMemory','ethernetPort','cableCategory','ethernetSpeed','wifiAdapter','wifiSignal','processReview','localAccounts','adminAccounts'],
+        ['Activo','Tipo','Fabricante','Modelo','Serie','IP','Sistema operativo','CPU','RAM','Almacenamiento','Ubicación','Responsable','Criticidad','Estado','Observaciones','Licencia SO','Actualizaciones SO','Antivirus / EDR','Protección en tiempo real','Firmas / motor','CPU GHz','RAM máxima GB','Ranuras RAM','Disco GB','Tipo de disco','Tipo de GPU','Memoria GPU GB','Ethernet','Categoría cable','Enlace Mbps','Wi-Fi','Señal dBm','Procesos revisados','Usuarios revisados','Privilegios revisados']],
+      ['Redes', ['name','cidr','vlan','gateway','dns','purpose','firewall','exposure','notes','ssid','wifiSecurity','wifiSignal','wifiChannel','wifiStandard','wifiBand','contractedRate','measuredRate'],
+        ['Red / dispositivo','CIDR','VLAN','Gateway','DNS / DHCP','Función','Firewall','Exposición','Observaciones','SSID','Seguridad Wi-Fi','Señal dBm','Canal Wi-Fi','Estándar 802.11','Banda Wi-Fi','Velocidad contratada Mbps','Velocidad medida Mbps']],
+      ['Software', ['name','version','vendor','asset','license','support','exposure','notes','licenseType','licenseStatus','installedAt','updateStatus','updatedAt'],
+        ['Producto','Versión','Fabricante','Activo','Licencia','Soporte','Exposición','Observaciones','Tipo de licencia','Cumplimiento licencia','Fecha instalación','Estado de actualización','Fecha actualización']],
       ['CVE', ['id','title','asset','status','severity','cvss','published','source','references','notes'],
         ['CVE','Descripción','Activo','Estado','Severidad','CVSS','Publicación','Fuente','Referencias','Notas']],
       ['Controles', ['id','category','name','asset','status','method','reference','evidenceIds','notes'],
