@@ -4,6 +4,8 @@ Standalone Windows/Linux administration, Active Directory, diagnostics and recov
 
 **English** · [Español](README_ES.md)
 
+RabbitMole (formerly Audit Workbench) has [its own repository](https://github.com/sempitern0/RabbitMole). This repository maintains the six console assistants, with no PWA dependency.
+
 ## Choose your task
 
 | Task | Start here |
@@ -26,6 +28,7 @@ cd sysadmin
 
 ```bash
 bash ./linux-ad-client-assistant.sh --help
+bash ./linux-ad-client-assistant.sh --preflight
 sudo bash ./linux-ad-client-assistant.sh --audit
 # For a Debian/Ubuntu domain controller instead:
 sudo bash ./debian-ad-assistant.sh --audit
@@ -33,6 +36,9 @@ sudo bash ./debian-ad-assistant.sh --audit
 
 ```powershell
 Get-Help .\windows-ad-client-assistant.ps1 -Detailed
+# No elevation required:
+powershell.exe -NoProfile -File .\windows-ad-client-assistant.ps1 -Mode Preflight
+# In an elevated console:
 .\windows-ad-client-assistant.ps1 -Mode Audit
 # For a Windows domain controller instead:
 .\windows-ad-assistant.ps1 -Mode Audit
@@ -40,6 +46,12 @@ Get-Help .\windows-ad-client-assistant.ps1 -Detailed
 
 Use your organization's approved script execution/signing policy on Windows.
 All six root scripts are standalone downloads.
+
+## Deploy a verified revision
+
+The [launch guide](docs/DEPLOYMENT.md) covers assistant selection, commit-pinned downloads, hash/syntax checks, SSH transfer and Windows execution. CI packages scripts with checksums only after Linux and Windows PowerShell 5.1/7 checks pass.
+
+`--preflight` / `-Mode Preflight` checks local launch prerequisites without modifying the system. The subsequent audit may create logs and reports. Passing these checks does not replace lab change/recovery acceptance.
 
 ## Operating expectations
 
@@ -58,7 +70,9 @@ All six root scripts are standalone downloads.
 | Change code and run offline checks | [Maintenance](docs/MAINTENANCE.md) |
 
 ```bash
-python3 tools/verify.py              # Bash syntax + standalone client parity
+python3 tools/verify.py              # Syntax, parity and regression checks
+# CI also requires ShellCheck and PowerShell:
+python3 tools/verify.py --require-shellcheck --require-powershell
 ```
 
 [MIT license](LICENSE).

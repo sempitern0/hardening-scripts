@@ -1,5 +1,7 @@
 # Operations reference
 
+> Antes del primer uso, consulta [lanzamiento y despliegue](DEPLOYMENT_ES.md): preflight sin elevación, revisión por commit, hashes, SSH y Windows.
+
 [Quick start](../README.md) · [Inicio rápido](../README_ES.md)
 
 # sysadmin · Herramientas de administración de sistemas

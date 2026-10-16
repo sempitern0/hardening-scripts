@@ -1,4 +1,4 @@
-﻿#requires -RunAsAdministrator
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     Windows Server AD Control Plane - v1.8.3-runtime-sanitization
@@ -53,13 +53,17 @@
 .EXAMPLE
     .\windows-ad-assistant.ps1 -Mode Validate
 
+.EXAMPLE
+    .\windows-ad-assistant.ps1 -Mode Preflight
+    Check local launch prerequisites without elevation or configuration changes.
+
 .NOTES
     Validate in a lab before production deployment.
 #>
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Audit','Validate','Harden','Backup','ADAdmin','Provision','Migration','DirectorySecurity','Dependencies','Reset','IDS','IDSReport','IDSResponseCleanup','IDSAwarenessCheck','RemoteOps')]
+    [ValidateSet('Preflight','Interactive','Audit','Validate','Harden','Backup','ADAdmin','Provision','Migration','DirectorySecurity','Dependencies','Reset','IDS','IDSReport','IDSResponseCleanup','IDSAwarenessCheck','RemoteOps')]
     [string]$Mode = 'Interactive',
 
     [ValidateSet('en','es')]
@@ -73,6 +77,46 @@ param(
     # switch is supplied. HIGH-impact confirmation is still required.
     [switch]$AllowRemoteFirewallChange
 )
+
+# Preflight must run before path construction, logging, discovery or elevation.
+# A standalone download needs no helper modules for this check.
+function Invoke-LaunchPreflight {
+    $failed = $false
+    Write-Output 'Preflight: Windows domain controller'
+    Write-Output ("PowerShell: {0}" -f $PSVersionTable.PSVersion)
+    if ($env:OS -ne 'Windows_NT') {
+        Write-Output '[FAIL] Windows is required.'
+        return 1
+    }
+    foreach ($command in @('Get-CimInstance','Get-NetAdapter','Get-DnsClientServerAddress')) {
+        if (Get-Command $command -ErrorAction SilentlyContinue) {
+            Write-Output ("[OK] {0}" -f $command)
+        } else {
+            Write-Output ("[FAIL] Missing launch prerequisite: {0}" -f $command)
+            $failed = $true
+        }
+    }
+    foreach ($module in @('ActiveDirectory','DnsServer')) {
+        if (-not (Get-Module -ListAvailable -Name $module)) {
+            Write-Output ("[WARN] Module {0} is absent; relevant role operations require it." -f $module)
+        }
+    }
+    Write-Output '[INFO] Operational modes require an elevated Windows console.'
+    Write-Output 'No changes made. Next: review warnings, then run -Mode Audit on the target host.'
+    if ($failed) { return 1 }
+    return 0
+}
+
+if ($Mode -eq 'Preflight') {
+    $result = @(Invoke-LaunchPreflight)
+    $result | Select-Object -SkipLast 1 | Write-Output
+    exit ([int]$result[-1])
+}
+if ($env:OS -ne 'Windows_NT') { throw 'This assistant requires Windows. Use -Mode Preflight for launch checks.' }
+if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw 'Administrator privileges are required. Preflight is the only non-elevated mode.'
+}
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -7221,7 +7265,7 @@ function Test-PublicIpForGuardedIps {
     if ($b[0] -eq 169 -and $b[1] -eq 254) { return $false }
     if ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) { return $false }
     if ($b[0] -eq 192 -and $b[1] -eq 168) { return $false }
-    if ($b[0] -eq 224 -or $b[0] -ge 240) { return $false }
+    if ($b[0] -eq 0 -or $b[0] -ge 224) { return $false }
     try {
         $local = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress)
         if ($local -contains $Address) { return $false }
@@ -9301,11 +9345,6 @@ try {
     Write-Log 'Starting Windows Server AD Control Plane.'
     Write-Log ("Export directory: {0}" -f $ExportPath)
 
-    if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-        [Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw 'Administrator privileges are required.'
-    }
-
     switch ($Mode) {
         'Audit' {
             $script:Results.Clear()
@@ -9381,6 +9420,7 @@ try {
             }
             catch {
                 Write-Log ("Scheduled IDS report failed: {0}" -f $_.Exception.Message) ERROR
+                throw
             }
         }
 
@@ -9392,6 +9432,7 @@ try {
             }
             catch {
                 Write-Log ("Guarded IPS scheduled cycle failed: {0}" -f $_.Exception.Message) ERROR
+                throw
             }
         }
 
@@ -9402,6 +9443,7 @@ try {
             }
             catch {
                 Write-Log ("Defense awareness scheduled cycle failed: {0}" -f $_.Exception.Message) ERROR
+                throw
             }
         }
 

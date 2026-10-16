@@ -4,6 +4,8 @@ Asistentes autónomos de administración Windows/Linux, Active Directory, diagn�
 
 [English](README.md) · **Español**
 
+RabbitMole (antes Audit Workbench) tiene [su propio repositorio](https://github.com/sempitern0/RabbitMole). Aquí se mantienen los seis asistentes de consola, sin dependencias de la PWA.
+
 ## Elige la tarea
 
 | Necesitas… | Empieza por… |
@@ -26,6 +28,7 @@ cd sysadmin
 
 ```bash
 bash ./linux-ad-client-assistant.sh --help
+bash ./linux-ad-client-assistant.sh --preflight
 sudo bash ./linux-ad-client-assistant.sh --audit
 # Para un controlador Debian/Ubuntu:
 sudo bash ./debian-ad-assistant.sh --audit
@@ -33,6 +36,9 @@ sudo bash ./debian-ad-assistant.sh --audit
 
 ```powershell
 Get-Help .\windows-ad-client-assistant.ps1 -Detailed
+# No requiere elevación:
+powershell.exe -NoProfile -File .\windows-ad-client-assistant.ps1 -Mode Preflight
+# En una consola elevada:
 .\windows-ad-client-assistant.ps1 -Mode Audit
 # Para un controlador Windows:
 .\windows-ad-assistant.ps1 -Mode Audit
@@ -40,6 +46,12 @@ Get-Help .\windows-ad-client-assistant.ps1 -Detailed
 
 En Windows utiliza la política de ejecución/firma aprobada por tu organización.
 Los seis scripts de la raíz son descargables y autónomos.
+
+## Desplegar una revisión verificada
+
+La [guía de lanzamiento](docs/DEPLOYMENT_ES.md) explica cómo elegir el asistente, descargar por commit, comprobar hashes/sintaxis, copiar por SSH y lanzar en Windows. CI genera un paquete con checksums solo tras superar las comprobaciones Linux y Windows PowerShell 5.1/7.
+
+`--preflight` / `-Mode Preflight` no modifica el sistema. Comprueba requisitos locales; la auditoría posterior sí puede crear logs e informes. Un resultado correcto no sustituye una prueba de cambio y recuperación en laboratorio.
 
 ## Criterios de operación
 
@@ -58,7 +70,9 @@ Los seis scripts de la raíz son descargables y autónomos.
 | Modificar código y ejecutar pruebas offline | [Mantenimiento](docs/MAINTENANCE.md) |
 
 ```bash
-python3 tools/verify.py              # Sintaxis Bash y paridad de clientes
+python3 tools/verify.py              # Sintaxis, paridad y pruebas de regresión
+# CI exige también ShellCheck y PowerShell:
+python3 tools/verify.py --require-shellcheck --require-powershell
 ```
 
 [Licencia MIT](LICENSE).

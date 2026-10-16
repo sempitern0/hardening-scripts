@@ -599,3 +599,6 @@ dist
 
 
 # End of https://www.toptal.com/developers/gitignore/api/linux,powershell,visualstudiocode,visualstudio,dotenv
+
+# Verified deployment bundles
+/dist/

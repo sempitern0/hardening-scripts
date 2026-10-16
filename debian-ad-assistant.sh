@@ -724,6 +724,8 @@ usage() {
     cat <<EOF
 ${SCRIPT_NAME} v${SCRIPT_VERSION}
 
+--preflight: read-only launch prerequisites; no root required.
+
 Usage:
   sudo bash $0
   sudo bash $0 --audit
@@ -797,6 +799,7 @@ detect_invocation_alias() {
 parse_args() {
     while (($#)); do
         case "$1" in
+            --preflight) MODE=preflight ;;
             --audit) MODE="audit" ;;
             --validate) MODE="validate" ;;
             --bootstrap) MODE="bootstrap" ;;
@@ -878,8 +881,8 @@ ensure_privileges() {
 
 need_tty() {
     case "$MODE" in
-        bootstrap|manage|interactive|backup|admin|users|groups|computers|permissions|gpo|security|migration|reset-domain|dependencies|ids|remote|events|install-cli)
-            [[ -r /dev/tty ]] || die "Mode '$MODE' requires a controlling TTY."
+        bootstrap|manage|interactive|backup|admin|users|groups|computers|permissions|gpo|security|samba-security|kerberos-security|migration|reset-domain|dependencies|ids|remote|events|install-cli)
+            (: </dev/tty) 2>/dev/null || die "Mode '$MODE' requires a controlling TTY."
             INPUT_FD="/dev/tty"
             ;;
         *) INPUT_FD="/dev/null" ;;
@@ -961,6 +964,7 @@ EOF
 
 is_valid_ipv4() {
     local ip="$1" x
+    [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
     local -a p
     IFS=. read -r -a p <<<"$ip"
     [[ ${#p[@]} -eq 4 ]] || return 1
@@ -14502,12 +14506,47 @@ interactive_mode() {
     fi
 }
 
+# Read-only launch check: no elevation, package installation or runtime state.
+launch_preflight() {
+    local failures=0 tool os_id=unknown
+    printf 'Preflight: Debian/Ubuntu domain controller\n'
+    printf 'Bash: %s | UID: %s\n' "$BASH_VERSION" "$EUID"
+    if [[ "$(uname -s)" != Linux ]]; then
+        printf '[FAIL] Linux is required.\n'; failures=1
+    fi
+    if [[ -r /etc/os-release ]]; then
+        os_id="$(. /etc/os-release; printf '%s' "${ID:-unknown}")"
+    fi
+    printf 'Distribution: %s\n' "$os_id"
+    if [[ ! -d /run/systemd/system ]]; then
+        printf '[FAIL] A running systemd host is required for lifecycle operations.\n'
+        failures=1
+    fi
+    for tool in ip systemctl flock hostname; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            printf '[OK] %s\n' "$tool"
+        else
+            printf '[FAIL] Missing launch prerequisite: %s\n' "$tool"; failures=1
+        fi
+    done
+    for tool in samba-tool testparm kinit dig; do
+        command -v "$tool" >/dev/null 2>&1 || printf '[WARN] Not available: %s (role operations may require it).\n' "$tool"
+    done
+    ((EUID == 0)) || printf '[INFO] Operational modes require sudo/root; this check does not.\n'
+    if [[ ! -t 0 ]]; then
+        printf '[INFO] No input terminal. Use a local console or ssh -t for interactive modes.\n'
+    fi
+    printf 'No changes made. Next: review warnings, then run --audit on the target host.\n'
+    return "$failures"
+}
+
 main() {
     parse_args "$@"
+    if [[ "$MODE" == preflight ]]; then launch_preflight; return $?; fi
     detect_invocation_alias
     detect_terminal
-    ensure_privileges "$@"
     need_tty
+    ensure_privileges "$@"
     init_runtime
     banner
 

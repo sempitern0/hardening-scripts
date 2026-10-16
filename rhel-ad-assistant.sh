@@ -251,7 +251,7 @@ valid_cidr() {
     local raw="$1" ip prefix
     [[ "$raw" == */* ]] || return 1
     ip="${raw%/*}"; prefix="${raw#*/}"
-    valid_ipv4 "$ip" && [[ "$prefix" =~ ^[0-9]+$ ]] && ((prefix >= 0 && prefix <= 32))
+    valid_ipv4 "$ip" && [[ "$prefix" =~ ^[0-9]{1,2}$ ]] && ((10#$prefix <= 32))
 }
 
 init_runtime() {
@@ -267,7 +267,7 @@ init_runtime() {
     EVENT_FILE="${STATE_DIR}/events-${RUN_ID}.tsv"
     : >"$LOG_FILE"; : >"$EVENT_FILE"; chmod 0600 "$LOG_FILE" "$EVENT_FILE"
 
-    if [[ -r /dev/tty && -w /dev/tty ]]; then exec {INPUT_FD}<>/dev/tty; TTY_MODE=1; fi
+    if { exec {INPUT_FD}<>/dev/tty; } 2>/dev/null; then TTY_MODE=1; fi
     [[ -n "${SSH_CONNECTION:-}" || -n "${SSH_CLIENT:-}" ]] && REMOTE_SESSION=1
 
     detect_os
@@ -2480,7 +2480,15 @@ EOF_TIMER
 
 defense_init(){ mkdir -p "$DEFENSE_DIR" "$DOMAIN_REPORT_DIR" "$SSH_CONTROL_DIR"; chmod 0700 "$DEFENSE_DIR" "$SSH_CONTROL_DIR" 2>/dev/null || true; touch "$DEFENSE_TRUSTED"; chmod 0600 "$DEFENSE_TRUSTED"; [[ -f "$DEFENSE_CONFIG" ]] || { printf 'BUSINESS_START=08:00\nBUSINESS_END=18:00\nBUSINESS_HOURS_WINDOW=1\nAFTER_HOURS_WINDOW=8\nBLOCK_TTL_MINUTES=30\n' >"$DEFENSE_CONFIG"; chmod 0600 "$DEFENSE_CONFIG"; }; }
 defense_load(){ defense_init; BUSINESS_START=08:00; BUSINESS_END=18:00; BUSINESS_HOURS_WINDOW=1; AFTER_HOURS_WINDOW=8; BLOCK_TTL_MINUTES=30; source "$DEFENSE_CONFIG" 2>/dev/null || true; }
-defense_public_ipv4(){ local ip="$1" a b; [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1; IFS=. read -r a b _ _ <<<"$ip"; ((a>=1&&a<=223)) || return 1; ((a==10||a==127||a==0||(a==169&&b==254)||(a==172&&b>=16&&b<=31)||(a==192&&b==168))) && return 1; return 0; }
+defense_public_ipv4() {
+    local ip="$1" a b
+    valid_ipv4 "$ip" || return 1
+    IFS=. read -r a b _ _ <<<"$ip"
+    a=$((10#$a)); b=$((10#$b))
+    ((a >= 1 && a <= 223)) || return 1
+    ((a == 10 || a == 127 || (a == 169 && b == 254) || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168))) && return 1
+    return 0
+}
 defense_nft_setup(){ command_exists nft || { warn "nft command unavailable."; return 1; }; nft list table inet rhel_ad_guard >/dev/null 2>&1 || nft add table inet rhel_ad_guard; nft list set inet rhel_ad_guard blocked4 >/dev/null 2>&1 || nft 'add set inet rhel_ad_guard blocked4 { type ipv4_addr; flags timeout; }'; nft list chain inet rhel_ad_guard input >/dev/null 2>&1 || { nft 'add chain inet rhel_ad_guard input { type filter hook input priority -5; policy accept; }'; nft add rule inet rhel_ad_guard input ip saddr @blocked4 counter drop comment 'RHEL AD guarded IPS'; }; }
 defense_list_blocks(){ defense_init; if command_exists nft && nft list set inet rhel_ad_guard blocked4 >/dev/null 2>&1; then nft list set inet rhel_ad_guard blocked4; else info "No assistant-managed temporary blocks."; fi; }
 defense_unblock(){ local ip="$1"; nft delete element inet rhel_ad_guard blocked4 "{ $ip }" 2>/dev/null && ok "Unblocked $ip." || warn "$ip not present."; }
@@ -2847,6 +2855,8 @@ Self-contained Samba Active Directory control plane for Enterprise Linux-style
 systems. Primary AD-DC targets are Rocky Linux and AlmaLinux 9/10 when the
 installed Samba build actually exposes AD-DC capabilities.
 
+--preflight: read-only launch prerequisites; no root required.
+
 Usage: sudo ./rhel-ad-assistant.sh [mode] [options]
 
 Control-plane modes:
@@ -2908,6 +2918,7 @@ parse_args() {
     while (($#)); do
         case "$1" in
             --manage|--interactive) MODE=interactive ;;
+            --preflight) MODE=preflight ;;
             --audit) MODE=audit ;;
             --validate) MODE=validate ;;
             --bootstrap) MODE=bootstrap ;;
@@ -2931,7 +2942,8 @@ parse_args() {
             --ids-daily) MODE=ids-daily ;;
             --domain-report) MODE=domain-report ;;
             --ids-alert-watch) MODE=ids-alert-watch ;;
-            --lang) shift; [[ $# -gt 0 ]] || exit 2; set_ui_language "$1" ;;
+            --lang) shift; [[ $# -gt 0 ]] || { printf 'Missing value for --lang (en|es).\n' >&2; exit 2; }; set_ui_language "$1" || exit 2 ;;
+            --lang=*) set_ui_language "${1#*=}" || exit 2 ;;
             --install-cli) MODE=install-cli ;;
             --cli-info) MODE=cli-info ;;
             --allow-unsupported-rhel-dc) ALLOW_UNSUPPORTED_RHEL_DC=1 ;;
@@ -2945,12 +2957,55 @@ parse_args() {
     done
 }
 
+# Read-only launch check: no elevation, package installation or runtime state.
+launch_preflight() {
+    local failures=0 tool os_id=unknown
+    printf 'Preflight: Enterprise Linux domain controller\n'
+    printf 'Bash: %s | UID: %s\n' "$BASH_VERSION" "$EUID"
+    if [[ "$(uname -s)" != Linux ]]; then
+        printf '[FAIL] Linux is required.\n'; failures=1
+    fi
+    if [[ -r /etc/os-release ]]; then
+        os_id="$(. /etc/os-release; printf '%s' "${ID:-unknown}")"
+    fi
+    [[ "$os_id" != rhel ]] || printf '[WARN] Samba AD DC provisioning is unsupported on RHEL.\n'
+    printf 'Distribution: %s\n' "$os_id"
+    if [[ ! -d /run/systemd/system ]]; then
+        printf '[FAIL] A running systemd host is required for lifecycle operations.\n'
+        failures=1
+    fi
+    for tool in ip systemctl flock hostname nmcli; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            printf '[OK] %s\n' "$tool"
+        else
+            printf '[FAIL] Missing launch prerequisite: %s\n' "$tool"; failures=1
+        fi
+    done
+    for tool in samba-tool testparm kinit firewall-cmd; do
+        command -v "$tool" >/dev/null 2>&1 || printf '[WARN] Not available: %s (role operations may require it).\n' "$tool"
+    done
+    ((EUID == 0)) || printf '[INFO] Operational modes require sudo/root; this check does not.\n'
+    if [[ ! -t 0 ]]; then
+        printf '[INFO] No input terminal. Use a local console or ssh -t for interactive modes.\n'
+    fi
+    printf 'No changes made. Next: review warnings, then run --audit on the target host.\n'
+    return "$failures"
+}
+
 main() {
     parse_args "$@"
+    if [[ "$MODE" == preflight ]]; then launch_preflight; return $?; fi
     UI_LANG="${UI_LANG,,}"; [[ "$UI_LANG" == en || "$UI_LANG" == es ]] || UI_LANG=en
     if ((FORCE_NO_COLOR)) || [[ ! -t 1 || -n "${NO_COLOR:-}" ]]; then
         C_RESET="" C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_CYAN="" C_MAGENTA=""
     fi
+    case "$MODE" in
+        audit|validate|status|ids-daily|domain-report|ids-alert-watch|cli-info|samba-security) ;;
+        *) if ! (: </dev/tty) 2>/dev/null; then
+               printf 'Mode %s requires a terminal. Use a local console or ssh -t.\n' "$MODE" >&2
+               return 2
+           fi ;;
+    esac
     init_runtime
     case "$MODE" in
         interactive) manage_menu ;;

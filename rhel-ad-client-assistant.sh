@@ -115,9 +115,7 @@ init_runtime() {
     : >"$RUN_LOG"
     chmod 0600 "$RUN_LOG"
 
-    if [[ -r /dev/tty && -w /dev/tty ]]; then
-        exec {INPUT_FD}<>/dev/tty
-    fi
+    if { exec {INPUT_FD}<>/dev/tty; } 2>/dev/null; then :; fi
 
     [[ -n "${SSH_CONNECTION:-}" || -n "${SSH_CLIENT:-}" ]] && REMOTE_SESSION=1
 
@@ -4033,8 +4031,9 @@ security_load_config() {
 
 security_is_public_ipv4() {
     local ip="$1" a b
-    [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    valid_ip "$ip" || return 1
     IFS=. read -r a b _ _ <<<"$ip"
+    a=$((10#$a)); b=$((10#$b))
     ((a>=1 && a<=223)) || return 1
     ((a==10 || a==127 || a==0 || (a==169 && b==254) || (a==172 && b>=16 && b<=31) || (a==192 && b==168))) && return 1
     ((a>=224)) && return 1
@@ -4314,6 +4313,8 @@ usage() {
     cat <<EOF
 $PRODUCT_NAME v$SCRIPT_VERSION
 
+--preflight: read-only launch prerequisites; no root required.
+
 Usage:
   sudo $0 [mode]
 
@@ -4350,12 +4351,47 @@ No password is persisted, no third-party repository is added, and supported join
 EOF
 }
 
+# Read-only launch check: no elevation, package installation or runtime state.
+launch_preflight() {
+    local failures=0 tool os_id=unknown
+    printf 'Preflight: Linux domain client\n'
+    printf 'Bash: %s | UID: %s\n' "$BASH_VERSION" "$EUID"
+    if [[ "$(uname -s)" != Linux ]]; then
+        printf '[FAIL] Linux is required.\n'; failures=1
+    fi
+    if [[ -r /etc/os-release ]]; then
+        os_id="$(. /etc/os-release; printf '%s' "${ID:-unknown}")"
+    fi
+    printf 'Distribution: %s\n' "$os_id"
+    if [[ ! -d /run/systemd/system ]]; then
+        printf '[FAIL] A running systemd host is required for lifecycle operations.\n'
+        failures=1
+    fi
+    for tool in ip systemctl hostname; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            printf '[OK] %s\n' "$tool"
+        else
+            printf '[FAIL] Missing launch prerequisite: %s\n' "$tool"; failures=1
+        fi
+    done
+    for tool in realm adcli kinit sssctl; do
+        command -v "$tool" >/dev/null 2>&1 || printf '[WARN] Not available: %s (role operations may require it).\n' "$tool"
+    done
+    ((EUID == 0)) || printf '[INFO] Operational modes require sudo/root; this check does not.\n'
+    if [[ ! -t 0 ]]; then
+        printf '[INFO] No input terminal. Use a local console or ssh -t for interactive modes.\n'
+    fi
+    printf 'No changes made. Next: review warnings, then run --audit on the target host.\n'
+    return "$failures"
+}
+
 main() {
     local mode="manage"
 
     while (($#)); do
         case "$1" in
             --manage|--interactive) mode="manage" ;;
+            --preflight) mode="preflight" ;;
             --audit) mode="audit" ;;
             --join) mode="join" ;;
             --status) mode="status" ;;
@@ -4391,6 +4427,14 @@ main() {
         shift
     done
 
+    if [[ "$mode" == preflight ]]; then launch_preflight; return $?; fi
+    case "$mode" in
+        audit|status|snapshots|security-watch) ;;
+        *) if ! (: </dev/tty) 2>/dev/null; then
+               printf 'Mode %s requires a terminal. Use a local console or ssh -t.\n' "$mode" >&2
+               return 2
+           fi ;;
+    esac
     init_runtime
 
     case "$mode" in

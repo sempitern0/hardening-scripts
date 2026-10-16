@@ -1,45 +1,68 @@
-# Maintenance and local validation
+# Maintenance and validation coverage
 
-[English overview](../README.md) · [Resumen en español](../README_ES.md)
+[English overview](../README.md) · [Resumen en español](../README_ES.md) · [Target deployment](DEPLOYMENT.md) · [Despliegue](DEPLOYMENT_ES.md)
 
-## Standalone Linux clients
+## Standalone scripts
 
-Edit `linux-ad-client-assistant.sh` as the canonical client, then run:
+Keep all six assistants at the repository root, independently downloadable. Do not introduce runtime imports or network downloads for shared helpers. Edit `linux-ad-client-assistant.sh` as the canonical Linux client, then regenerate its RHEL-branded sibling:
 
 ```bash
 python3 tools/sync_linux_clients.py
-python3 tools/verify.py
+python3 tools/sync_linux_clients.py --check
 ```
 
-Commit both scripts when behavior changes. The RHEL variant is generated with
-explicit compatibility substitutions (product identity, version, installed CLI,
-watcher units and nftables table). Both root files remain complete, independently
-downloadable scripts: users need neither Python nor this repository to run them.
-Do not replace the RHEL file with a wrapper that downloads or sources another file.
+Commit both outputs. The generator deliberately preserves the RHEL variant's product identity, version, installed CLI, watcher units and nftables table. Existing deployment state is not migrated or deleted by this maintenance change.
 
-`python3 tools/sync_linux_clients.py --check` detects drift without writing.
-If a platform genuinely needs different behavior, update the generator deliberately
-and test both outputs. Do not add a fix only to the generated variant.
-
-## Offline checks
+## Checks before merging
 
 ```bash
-python3 tools/verify.py              # Python 3 + Bash: syntax and client parity
+python3 tools/verify.py
+# Complete gate (requires installed Bash, Python, ShellCheck and PowerShell):
+python3 tools/verify.py --require-shellcheck --require-powershell
 ```
 
-These commands do not execute administrative modes, install packages, scan the
-network or modify system policy. They return nonzero if any check fails.
-PowerShell parsing and AD lifecycle validation need
-a suitable PowerShell/Windows environment; Bash syntax is not proof of runtime parity.
+The default command reports unavailable optional analyzers as **SKIP**; it does not silently claim those checks passed. CI requires them. No verifier installs dependencies, runs an administrative mode, joins a domain or changes system policy. Bash entrypoint tests use a detached session, temporary HOME and only help, invalid arguments, preflight and an interactive launch that must stop before runtime initialization. CI runs these as an ordinary runner user.
 
-Before releasing infrastructure changes, exercise audit → change → validation →
-recovery on disposable Linux and Windows lab hosts, including a reboot. Preserve
-existing state paths and service identities when upgrading deployed assistants.
+On Windows, from a normal console:
 
-## Review: 2026-10-14
+```powershell
+powershell.exe -NoProfile -File .\tools\verify_powershell.ps1
+pwsh.exe -NoProfile -File .\tools\verify_powershell.ps1
+```
 
-- Split the entry-point documentation from the full English/Spanish operations references.
-- Added reproducible Linux/RHEL client parity checks while preserving standalone downloads.
-- Fixed unsigned IPv4 subnet comparisons: valid 172.16/12 and 192.168/16 gateways
-  could be incorrectly flagged as outside their network. Added /0, /32 and invalid-prefix cases.
-- Check standalone scripts with `python3 tools/verify.py` before release.
+| Check | Coverage | Limit |
+|---|---|---|
+| `bash -n` | Every root Bash script | Does not execute commands |
+| ShellCheck, error severity | Shell static errors | Warnings/style debt are not a release gate |
+| Linux client parity | Canonical and generated RHEL variant | Does not certify OS equivalence |
+| Safe launch tests | Help, invalid/missing arguments, no-TTY rejection, preflight | No administrative operation executed |
+| Isolated Bash regressions | IPv4 octets, malformed inputs, CIDR boundaries and leading zeros, IPS candidates | Only allowlisted pure function bodies are evaluated |
+| PowerShell AST parser | Root, tools and test PowerShell files, including duplicate hash keys | Modules/cmdlets may still be absent on targets |
+| PowerShell regressions | DNS/computer/IP validation, multicast/invalid IPS exclusions, preflight platform guards | Pure functions have explicit system-call stubs; assistants are never dot-sourced |
+| Windows CI matrix | Windows PowerShell 5.1 and PowerShell 7 on Windows Server 2022 runner | Not an AD DC, join/reboot/recovery or GUI acceptance test |
+
+Every subprocess check has a timeout. A missing required tool, syntax error, failed assertion or timeout makes the verifier fail. Keep a regression case when fixing a runtime defect that can be exercised safely.
+
+## Packages
+
+After committing and validating a clean checkout:
+
+```bash
+python3 tools/package.py
+```
+
+The package contains the exact checked-out script bytes, bilingual docs, `release.json` with the commit, and SHA-256 checksums. Dirty checkouts are rejected. ZIP metadata is deterministic for identical file bytes and revision. The packager does not itself run validation; CI only invokes it after the Linux and Windows jobs succeed. It never deploys to a host. Checksums are integrity evidence, not a code signature.
+
+## Lab gate
+
+Before approving a production change, exercise preflight → audit → change → reboot → validation → recovery on disposable target-family hosts and a lab domain. Preserve console access, restorable backups, the revision used and the resulting logs. A successful CI run does not certify the full scripts, OS combinations, domain operations or benchmark compliance.
+
+## Review: 2026-10-16
+
+- Added non-elevated, non-mutating preflight entry points to all six standalone scripts.
+- Replaced filesystem permission tests for `/dev/tty` with an actual controlling-terminal check before interactive initialization.
+- Fixed the Windows client parser failures: duplicate translation keys and malformed `foreach` / `return` tokens.
+- Fixed malformed IPv4 acceptance, CIDR octal arithmetic and invalid/multicast IPS candidate handling.
+- Made three Windows Server scheduled operation modes propagate caught errors instead of returning apparent success.
+- Added offline regression tests, PowerShell engine CI coverage and revision/checksum deployment packages.
+- Documented launch paths, role boundaries, SSH terminal requirements and lab acceptance in English and Spanish.

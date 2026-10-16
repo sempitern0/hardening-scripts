@@ -7,8 +7,41 @@ on:
 permissions:
   contents: read
 jobs:
-  verify:
+  linux:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - run: python3 tools/verify.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Bash syntax, ShellCheck errors, safe entry points and regression tests
+        run: python3 tools/verify.py --require-shellcheck --require-powershell
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse every PowerShell script and run isolated regression tests
+        shell: ${{ matrix.shell }}
+        run: ./tools/verify_powershell.ps1
+  package:
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Package exact revision with checksums
+        run: python3 tools/package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sysadmin-${{ github.sha }}
+          path: dist/*.zip
+          if-no-files-found: error

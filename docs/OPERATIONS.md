@@ -1,5 +1,7 @@
 # Operations reference
 
+> Before first use, read [launch and deployment](DEPLOYMENT.md): non-elevated preflight, commit pinning, hashes, SSH and Windows.
+
 [Quick start](../README.md) · [Inicio rápido](../README_ES.md)
 
 ## Contents

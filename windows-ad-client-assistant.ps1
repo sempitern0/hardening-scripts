@@ -1,4 +1,4 @@
-﻿#requires -RunAsAdministrator
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     Windows AD Client Assistant - v1.5.3-runtime-sanitization
@@ -15,6 +15,10 @@
     The assistant never stores domain passwords and does not add third-party
     package managers or repositories.
 
+.EXAMPLE
+    .\windows-ad-client-assistant.ps1 -Mode Preflight
+    Check local launch prerequisites without elevation or configuration changes.
+
 .NOTES
     Run from Windows PowerShell 5.1+ as Administrator.
     Test domain lifecycle changes in a lab before broad deployment.
@@ -22,7 +26,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Interactive','Audit','Join','Status','Leave','Switch','Connectivity','Troubleshoot','Diagnostics','RemoteSetup','Security','SecurityCleanup','SecurityAwareness','Restore','Snapshots','Recover')]
+    [ValidateSet('Preflight','Interactive','Audit','Join','Status','Leave','Switch','Connectivity','Troubleshoot','Diagnostics','RemoteSetup','Security','SecurityCleanup','SecurityAwareness','Restore','Snapshots','Recover')]
     [string]$Mode = 'Interactive',
 
     [ValidateSet('en','es')]
@@ -46,6 +50,46 @@ param(
 
     [switch]$NoColor
 )
+
+# Preflight must run before path construction, logging, discovery or elevation.
+# A standalone download needs no helper modules for this check.
+function Invoke-LaunchPreflight {
+    $failed = $false
+    Write-Output 'Preflight: Windows domain client'
+    Write-Output ("PowerShell: {0}" -f $PSVersionTable.PSVersion)
+    if ($env:OS -ne 'Windows_NT') {
+        Write-Output '[FAIL] Windows is required.'
+        return 1
+    }
+    foreach ($command in @('Get-CimInstance','Get-NetAdapter','Get-DnsClientServerAddress')) {
+        if (Get-Command $command -ErrorAction SilentlyContinue) {
+            Write-Output ("[OK] {0}" -f $command)
+        } else {
+            Write-Output ("[FAIL] Missing launch prerequisite: {0}" -f $command)
+            $failed = $true
+        }
+    }
+    foreach ($module in @('Microsoft.PowerShell.Management')) {
+        if (-not (Get-Module -ListAvailable -Name $module)) {
+            Write-Output ("[WARN] Module {0} is absent; relevant role operations require it." -f $module)
+        }
+    }
+    Write-Output '[INFO] Operational modes require an elevated Windows console.'
+    Write-Output 'No changes made. Next: review warnings, then run -Mode Audit on the target host.'
+    if ($failed) { return 1 }
+    return 0
+}
+
+if ($Mode -eq 'Preflight') {
+    $result = @(Invoke-LaunchPreflight)
+    $result | Select-Object -SkipLast 1 | Write-Output
+    exit ([int]$result[-1])
+}
+if ($env:OS -ne 'Windows_NT') { throw 'This assistant requires Windows. Use -Mode Preflight for launch checks.' }
+if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw 'Administrator privileges are required. Preflight is the only non-elevated mode.'
+}
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -215,12 +259,7 @@ $script:UiSpanish = @{
     'Block IP' = 'Bloquear IP'
     'Trust selected' = 'Confiar en seleccionado'
     'Run IPS' = 'Ejecutar IPS'
-    'Blocks' = 'Bloqueos'
-    'Alerts' = 'Alertas'
-    'Refresh' = 'Actualizar'
     'Unblock' = 'Desbloquear'
-    'Unblock all' = 'Desbloquear todo'
-    'Block IP' = 'Bloquear IP'
     'Trust IP' = 'Confiar en IP'
     'Apply response' = 'Aplicar respuesta'
     'Close' = 'Cerrar'
@@ -473,6 +512,7 @@ function Test-IPv4AddressList {
 
     if ($Addresses.Count -eq 0) { return $false }
     foreach ($address in $Addresses) {
+        if ($address -notmatch '^[0-9]{1,3}(\.[0-9]{1,3}){3}$') { return $false }
         $parsed = $null
         if (-not [System.Net.IPAddress]::TryParse($address, [ref]$parsed)) { return $false }
         if ($parsed.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { return $false }
@@ -2357,7 +2397,7 @@ function Test-ClientPublicIpCandidate {
     param([string]$Address)
     if(Test-ClientDefenseTrustedIp -Address $Address){return $false}
     $ip=$null;if(-not [Net.IPAddress]::TryParse($Address,[ref]$ip)){return $false};if($ip.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork){return $false}
-    $b=$ip.GetAddressBytes();if($b[0]-eq 10 -or $b[0]-eq 127){return $false};if($b[0]-eq 169 -and $b[1]-eq 254){return $false};if($b[0]-eq 172 -and $b[1]-ge 16 -and $b[1]-le 31){return $false};if($b[0]-eq 192 -and $b[1]-eq 168){return $false};if($b[0]-eq 224 -or $b[0]-ge 240){return $false}
+    $b=$ip.GetAddressBytes();if($b[0]-eq 10 -or $b[0]-eq 127){return $false};if($b[0]-eq 169 -and $b[1]-eq 254){return $false};if($b[0]-eq 172 -and $b[1]-ge 16 -and $b[1]-le 31){return $false};if($b[0]-eq 192 -and $b[1]-eq 168){return $false};if($b[0]-eq 0 -or $b[0]-ge 224){return $false}
     try{if(@(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue|Select-Object -ExpandProperty IPAddress)-contains $Address){return $false}}catch{}
     return $true
 }
@@ -2441,10 +2481,10 @@ function Send-ClientTelegramMessage {
 }
 function Get-ClientAwarenessAlerts {
     param([int]$Hours=0,[int]$Severity=0)
-    $profile=Get-ClientAwarenessProfile;if($Hours -le 0){$Hours=$profile.WindowHours};if($Severity -le 0){$Severity=$profile.Severity};$s=Get-ClientSuricataInfo;if(-not $s.EvePath){return@()}
+    $profile=Get-ClientAwarenessProfile;if($Hours -le 0){$Hours=$profile.WindowHours};if($Severity -le 0){$Severity=$profile.Severity};$s=Get-ClientSuricataInfo;if(-not $s.EvePath){return @()}
     $cut=(Get-Date).ToUniversalTime().AddHours(-1*$Hours);$r=New-Object 'System.Collections.Generic.List[object]'
     foreach($line in Get-Content -LiteralPath $s.EvePath -Tail 8000 -ErrorAction SilentlyContinue){if([string]::IsNullOrWhiteSpace($line)){continue};try{$e=$line|ConvertFrom-Json -ErrorAction Stop}catch{continue};if($e.event_type -ne 'alert' -or -not $e.alert){continue};$sev=99;try{$sev=[int]$e.alert.severity}catch{};if($sev -gt $Severity){continue};$ts=$null;try{$ts=([datetime]$e.timestamp).ToUniversalTime()}catch{};if($ts -and $ts -lt $cut){continue};$r.Add([pscustomobject]@{Timestamp=[string]$e.timestamp;SourceIp=[string]$e.src_ip;DestinationIp=[string]$e.dest_ip;Severity=$sev;Signature=[string]$e.alert.signature;Action=[string]$e.alert.action})}
-    return@($r|Sort-Object Timestamp -Descending)
+    return @($r|Sort-Object Timestamp -Descending)
 }
 function Add-ClientManualBlock {
     param([string]$Address)
@@ -2457,9 +2497,9 @@ function Add-ClientManualBlock {
 }
 function Remove-ClientBlock {
     param([string]$Address)
-    $state=Get-ClientGuardedIpsState;if(-not $Address){$Address=Read-Value -Prompt 'IPv4 address to unblock'};$matches=@($state.Rules|Where-Object{$_.SourceIp -eq $Address});if($matches.Count -eq 0){Write-Warn 'No active assistant-managed block found.';return};foreach($r in$matches){Remove-NetFirewallRule -Name ([string]$r.RuleName) -ErrorAction SilentlyContinue};$state.Rules=@($state.Rules|Where-Object{$_.SourceIp -ne $Address});Save-ClientGuardedIpsState $state;Write-Ok ("Unblocked {0}." -f $Address)
+    $state=Get-ClientGuardedIpsState;if(-not $Address){$Address=Read-Value -Prompt 'IPv4 address to unblock'};$matches=@($state.Rules|Where-Object{$_.SourceIp -eq $Address});if($matches.Count -eq 0){Write-Warn 'No active assistant-managed block found.';return};foreach($r in $matches){Remove-NetFirewallRule -Name ([string]$r.RuleName) -ErrorAction SilentlyContinue};$state.Rules=@($state.Rules|Where-Object{$_.SourceIp -ne $Address});Save-ClientGuardedIpsState $state;Write-Ok ("Unblocked {0}." -f $Address)
 }
-function Remove-AllClientBlocks {$state=Get-ClientGuardedIpsState;foreach($r in@($state.Rules)){Remove-NetFirewallRule -Name ([string]$r.RuleName) -ErrorAction SilentlyContinue};$state.Rules=@();Save-ClientGuardedIpsState $state;Write-Ok 'All assistant-managed blocks removed.'}
+function Remove-AllClientBlocks {$state=Get-ClientGuardedIpsState;foreach($r in @($state.Rules)){Remove-NetFirewallRule -Name ([string]$r.RuleName) -ErrorAction SilentlyContinue};$state.Rules=@();Save-ClientGuardedIpsState $state;Write-Ok 'All assistant-managed blocks removed.'}
 function Add-ClientTrustedIp {
     param([string]$Address)
     if(-not $Address){$Address=Read-Value -Prompt 'IPv4 address to trust'};$ip=$null;if(-not [Net.IPAddress]::TryParse($Address,[ref]$ip)){Write-Warn 'Invalid IP.';return};$cfg=Get-ClientDefenseConfig;if(@($cfg.TrustedIps) -notcontains $Address){$cfg.TrustedIps=@($cfg.TrustedIps)+$Address;Save-ClientDefenseConfig $cfg};Remove-ClientBlock -Address $Address;Write-Ok ("Trusted IP: {0}" -f $Address)
@@ -2495,12 +2535,12 @@ function Show-ClientDefenseGui {
     $tabs=New-Object Windows.Forms.TabControl;$tabs.Dock='Fill'
     $t1=New-Object Windows.Forms.TabPage;$t1.Text=(Get-UiText 'Blocks');$grid=New-Object Windows.Forms.DataGridView;$grid.Dock='Fill';$grid.ReadOnly=$true;$grid.SelectionMode='FullRowSelect';$grid.AutoSizeColumnsMode='Fill';$grid.AllowUserToAddRows=$false
     $bar=New-Object Windows.Forms.FlowLayoutPanel;$bar.Dock='Bottom';$bar.Height=46
-    foreach($spec in@(@('Refresh','r'),@('Unblock selected','u'),@('Unblock all','ua'),@('Block IP','b'),@('Trust selected','t'),@('Run IPS','i'))){$btn=New-Object Windows.Forms.Button;$btn.Text=(Get-UiText ([string]$spec[0]));$btn.Tag=$spec[1];$btn.AutoSize=$true;[void]$bar.Controls.Add($btn)}
+    foreach($spec in @(@('Refresh','r'),@('Unblock selected','u'),@('Unblock all','ua'),@('Block IP','b'),@('Trust selected','t'),@('Run IPS','i'))){$btn=New-Object Windows.Forms.Button;$btn.Text=(Get-UiText ([string]$spec[0]));$btn.Tag=$spec[1];$btn.AutoSize=$true;[void]$bar.Controls.Add($btn)}
     [void]$t1.Controls.Add($grid);[void]$t1.Controls.Add($bar)
     $t2=New-Object Windows.Forms.TabPage;$t2.Text=(Get-UiText 'Alerts');$ag=New-Object Windows.Forms.DataGridView;$ag.Dock='Fill';$ag.ReadOnly=$true;$ag.AutoSizeColumnsMode='Fill';$ag.AllowUserToAddRows=$false;[void]$t2.Controls.Add($ag)
     [void]$tabs.TabPages.Add($t1);[void]$tabs.TabPages.Add($t2);[void]$form.Controls.Add($tabs);[void]$form.Controls.Add($status)
     $refresh={$state=Get-ClientGuardedIpsState;$p=Get-ClientAwarenessProfile;$s=Get-ClientSuricataInfo;$w=Get-ClientWazuhInfo;$status.Text=("Suricata={0} | Wazuh={1} | IPS={2} | {3}: {4}h/sev<={5}"-f$s.ServiceState,$w.ServiceState,$state.Enabled,$p.Label,$p.WindowHours,$p.Severity);$grid.DataSource=$null;$grid.DataSource=@($state.Rules|Select-Object SourceIp,Created,Expires,Signature);$ag.DataSource=$null;$ag.DataSource=@(Get-ClientAwarenessAlerts -Hours $p.WindowHours -Severity $p.Severity|Select-Object -First 150)}.GetNewClosure()
-    foreach($btn in@($bar.Controls)){$btn.Add_Click({try{switch([string]$this.Tag){'u'{if($grid.SelectedRows.Count -gt 0){Remove-ClientBlock -Address ([string]$grid.SelectedRows[0].Cells['SourceIp'].Value)}}'ua'{Remove-AllClientBlocks}'b'{Add-Type -AssemblyName Microsoft.VisualBasic;$ip=[Microsoft.VisualBasic.Interaction]::InputBox('IPv4 address','Temporary block','');if($ip){Add-ClientManualBlock -Address $ip}}'t'{if($grid.SelectedRows.Count -gt 0){Add-ClientTrustedIp -Address ([string]$grid.SelectedRows[0].Cells['SourceIp'].Value)}}'i'{Invoke-ClientGuardedIpsResponse -NonInteractive}};&$refresh}catch{[Windows.Forms.MessageBox]::Show($_.Exception.Message)|Out-Null}}.GetNewClosure())}
+    foreach($btn in @($bar.Controls)){$btn.Add_Click({try{switch([string]$this.Tag){'u'{if($grid.SelectedRows.Count -gt 0){Remove-ClientBlock -Address ([string]$grid.SelectedRows[0].Cells['SourceIp'].Value)}}'ua'{Remove-AllClientBlocks}'b'{Add-Type -AssemblyName Microsoft.VisualBasic;$ip=[Microsoft.VisualBasic.Interaction]::InputBox('IPv4 address','Temporary block','');if($ip){Add-ClientManualBlock -Address $ip}}'t'{if($grid.SelectedRows.Count -gt 0){Add-ClientTrustedIp -Address ([string]$grid.SelectedRows[0].Cells['SourceIp'].Value)}}'i'{Invoke-ClientGuardedIpsResponse -NonInteractive}};&$refresh}catch{[Windows.Forms.MessageBox]::Show($_.Exception.Message)|Out-Null}}.GetNewClosure())}
     &$refresh;[void]$form.ShowDialog();$form.Dispose()
 }
 
@@ -2542,7 +2582,7 @@ function Show-ClientSecurityMenu {
             '9'{
                 [void](Remove-ExpiredClientGuardedIpsRules);$state=Get-ClientGuardedIpsState;$cfg=Get-ClientDefenseConfig
                 Write-Ui '';Write-Ui 'BLOCKED / TRUSTED IP MANAGEMENT' Cyan
-                foreach($r in@($state.Rules)){Write-Ui ("  BLOCK {0,-16} expires={1}" -f $r.SourceIp,$r.Expires) Gray}
+                foreach($r in @($state.Rules)){Write-Ui ("  BLOCK {0,-16} expires={1}" -f $r.SourceIp,$r.Expires) Gray}
                 Write-Ui ("Trusted: {0}" -f $(if(@($cfg.TrustedIps).Count){@($cfg.TrustedIps) -join ', '}else{'none'})) Gray
                 Write-Ui '  [1] Unblock IP';Write-Ui '  [2] Unblock all';Write-Ui '  [3] Manual temporary block';Write-Ui '  [4] Trust IP';Write-Ui '  [0] Back'
                 switch((Read-Value -Prompt 'Select operation' -Default '1')){'1'{Remove-ClientBlock}'2'{if(Confirm-Choice -Prompt 'Remove all assistant-managed blocks?' -Default N){Remove-AllClientBlocks}}'3'{Add-ClientManualBlock}'4'{Add-ClientTrustedIp}}
@@ -2631,11 +2671,6 @@ function Show-MainMenu {
 try {
     Initialize-Runtime
     Write-Log ("Starting {0} v{1}; mode={2}." -f $script:ProductName,$script:Version,$Mode)
-
-    if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-        [Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw 'Administrator privileges are required.'
-    }
 
     switch ($Mode) {
         'Interactive' { Show-MainMenu }
